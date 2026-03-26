@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>코어시스템팀 — 먹은 식당 목록</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Serif+KR:wght@400;600;900&family=Noto+Sans+KR:wght@300;400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0f0e0c; --surface: #1a1916; --card: #1e1c19;
+    --border: #2e2b26; --accent: #e8a836; --text: #e8e0d0; --muted: #7a7060;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: 'Noto Sans KR', sans-serif; padding-bottom: 80px; }
+
+  /* HERO */
+  .hero { padding: 64px 40px 40px; max-width: 1000px; margin: 0 auto; }
+  .hero::after { content:''; display:block; height:1px; background:linear-gradient(90deg,var(--accent),transparent 70%); margin-top:36px; }
+  .hero-eye { font-size:11px; letter-spacing:.25em; text-transform:uppercase; color:var(--accent); margin-bottom:14px; }
+  .hero-title { font-family:'Noto Serif KR',serif; font-size:clamp(26px,4.5vw,44px); font-weight:900; line-height:1.2; }
+  .hero-title em { color:var(--accent); font-style:normal; }
+  .hero-sub { margin-top:12px; color:var(--muted); font-size:13px; line-height:1.8; max-width:500px; }
+  .stats { display:flex; gap:36px; margin-top:28px; }
+  .sn { font-family:'Noto Serif KR',serif; font-size:30px; font-weight:900; color:var(--accent); line-height:1; }
+  .sl { font-size:10px; color:var(--muted); letter-spacing:.1em; margin-top:4px; }
+
+  /* ROULETTE */
+  .rou-sec { max-width:1000px; margin:48px auto 0; padding:0 40px; }
+  .sec-label { font-size:11px; letter-spacing:.2em; text-transform:uppercase; color:var(--accent); margin-bottom:20px; }
+  .rou-box {
+    background:var(--card); border:1px solid var(--border); border-radius:16px;
+    padding:36px 40px; display:flex; gap:48px; align-items:flex-start; flex-wrap:wrap;
+  }
+  .wheel-col { display:flex; flex-direction:column; align-items:center; gap:24px; flex-shrink:0; }
+  .wheel-wrap { position:relative; width:420px; height:420px; }
+  .ptr {
+    position:absolute; top:-20px; left:50%; transform:translateX(-50%);
+    width:0; height:0;
+    border-left:14px solid transparent; border-right:14px solid transparent;
+    border-top:32px solid var(--accent); z-index:2;
+  }
+  .spin-btn {
+    padding:11px 36px; font-size:14px; font-weight:500; border-radius:50px;
+    border:1.5px solid var(--accent); background:transparent; color:var(--accent);
+    font-family:'Noto Sans KR',sans-serif; cursor:pointer;
+    transition:background .15s, color .15s, transform .1s; letter-spacing:.05em;
+  }
+  .spin-btn:hover { background:var(--accent); color:#111; }
+  .spin-btn:active { transform:scale(.97); }
+  .spin-btn:disabled { opacity:.4; cursor:not-allowed; }
+  .wheel-right { flex:1; min-width:240px; display:flex; flex-direction:column; gap:20px; }
+  .result-card {
+    background:var(--surface); border:1px solid var(--border); border-radius:12px;
+    padding:24px; min-height:110px;
+    display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; text-align:center;
+  }
+  .r-idle { font-size:14px; color:var(--muted); }
+  .r-label { font-size:11px; color:var(--accent); letter-spacing:.1em; text-transform:uppercase; }
+  .r-name { font-family:'Noto Serif KR',serif; font-size:26px; font-weight:900; color:var(--text); }
+  .r-desc { font-size:13px; color:var(--muted); }
+  .chip-title { font-size:12px; color:var(--muted); letter-spacing:.08em; margin-bottom:10px; }
+  .chips { display:flex; flex-wrap:wrap; gap:7px; }
+  .chip {
+    padding:6px 14px; font-size:12px; border-radius:6px;
+    border:1px solid var(--border); background:var(--surface); color:var(--muted);
+    cursor:pointer; transition:all .15s; font-family:'Noto Sans KR',sans-serif; user-select:none;
+  }
+  .chip:hover { border-color:var(--accent); color:var(--accent); }
+  .chip.off { opacity:.3; text-decoration:line-through; }
+
+  /* DIVIDER */
+  .divider { max-width:1000px; margin:48px auto 0; padding:0 40px; }
+  .divider::after { content:''; display:block; height:1px; background:linear-gradient(90deg,var(--border),transparent 70%); }
+
+  /* FILTERS */
+  .filters { max-width:1000px; margin:36px auto 0; padding:0 40px; display:flex; gap:8px; flex-wrap:wrap; }
+  .fb {
+    padding:7px 20px; border-radius:99px; border:1px solid var(--border);
+    background:transparent; color:var(--muted); font-size:12px;
+    font-family:'Noto Sans KR',sans-serif; cursor:pointer; transition:all .18s; letter-spacing:.04em;
+  }
+  .fb.on, .fb:hover { background:var(--accent); color:#111; border-color:var(--accent); font-weight:500; }
+
+  /* GRID */
+  .grid { max-width:1000px; margin:24px auto 0; padding:0 40px; display:grid; grid-template-columns:repeat(auto-fill,minmax(275px,1fr)); gap:18px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:14px; overflow:hidden; transition:transform .22s ease,box-shadow .22s ease; }
+  .card:hover { transform:translateY(-5px); box-shadow:0 20px 50px rgba(0,0,0,.55),0 0 0 1px #e8a83633; }
+  .card-img { width:100%; height:178px; object-fit:cover; display:block; background:#1a1916; }
+  .card-body { padding:15px 17px 17px; }
+  .tags { display:flex; gap:5px; flex-wrap:wrap; margin-bottom:9px; }
+  .tag { font-size:10px; padding:2px 8px; border-radius:4px; font-weight:500; letter-spacing:.05em; }
+  .t-del   { background:#1e2e1e; color:#6ec96e; }
+  .t-dine  { background:#1e2a3a; color:#7eaadc; }
+  .t-party { background:#2e1e1e; color:#dc8080; }
+  .t-lunch { background:#2e2810; color:#c8a840; }
+  .t-din   { background:#1a1a2a; color:#9080c8; }
+  .c-name { font-family:'Noto Serif KR',serif; font-size:16px; font-weight:600; margin-bottom:5px; line-height:1.3; }
+  .c-sub { font-size:12px; color:var(--muted); font-weight:400; }
+  .c-desc { font-size:12px; color:var(--muted); line-height:1.65; margin-bottom:13px; }
+  .c-foot { display:flex; align-items:center; justify-content:space-between; }
+  .map-btn {
+    display:inline-flex; align-items:center; gap:5px; padding:6px 13px;
+    background:#03c75a; color:#fff; text-decoration:none; border-radius:7px;
+    font-size:11px; font-weight:500; transition:opacity .18s;
+  }
+  .map-btn:hover { opacity:.82; }
+  .map-btn svg { width:12px; height:12px; flex-shrink:0; }
+  .c-cnt { font-size:11px; color:var(--muted); }
+  .c-cnt b { color:var(--accent); font-family:'Noto Serif KR',serif; }
+
+  @media(max-width:900px){
+    .wheel-wrap{width:340px;height:340px;}
+  }
+  @media(max-width:680px){
+    .hero,.rou-sec,.divider,.filters,.grid{padding-left:18px;padding-right:18px;}
+    .stats{gap:22px;} .rou-box{padding:24px 20px;gap:28px;}
+    .wheel-wrap{width:280px;height:280px;}
+  }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <p class="hero-eye">Core Systems · Pangyo · 2025~</p>
+  <h1 class="hero-title">우리 팀이 <em>먹은</em> 식당들</h1>
+  <p class="hero-sub">슬랙 #코어시스템-식대인원체크_이동윤 채널 스레드에서 직접 확인한 실제 주문 기록.</p>
+  <div class="stats">
+    <div><div class="sn">22</div><div class="sl">배달 식당</div></div>
+    <div><div class="sn">5</div><div class="sl">회식 후보</div></div>
+    <div><div class="sn">2025~</div><div class="sl">채널 시작</div></div>
+  </div>
+</div>
+
+<!-- ROULETTE -->
+<div class="rou-sec">
+  <p class="sec-label">🎰 오늘 배달 뭐 먹지?</p>
+  <div class="rou-box">
+    <div class="wheel-col">
+      <div class="wheel-wrap">
+        <div class="ptr"></div>
+        <canvas id="wc" style="display:block;border-radius:50%;"></canvas>
+      </div>
+      <button class="spin-btn" id="sbtn" onclick="spin()">돌려돌려 룰렛</button>
+    </div>
+    <div class="wheel-right">
+      <div class="result-card" id="rc">
+        <span class="r-idle">버튼을 눌러 오늘 배달 메뉴를 정하세요</span>
+      </div>
+      <div>
+        <div class="chip-title">목록 (클릭해서 제외/복원)</div>
+        <div class="chips" id="chips"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="divider"></div>
+
+<!-- FILTERS -->
+<div class="filters">
+  <button class="fb on" data-f="all">전체</button>
+  <button class="fb" data-f="del">배달</button>
+  <button class="fb" data-f="dine">직접 방문</button>
+  <button class="fb" data-f="party">회식</button>
+</div>
+
+<div class="grid" id="grid"></div>
+
+<script>
+const PIN=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5"/></svg>`;
+const FB='https://images.unsplash.com/photo-1414235077428-338989a2e8c0?w=600&q=80';
+
+const DATA=[
+  // ── 배달 (스레드 전수 확인) ──────────────────────────
+  {type:'del',name:'본도시락',sub:'판교테크노밸리점',tags:['del','lunch'],cnt:'다수',
+   desc:'팀 점심 기본픽. 스크램블에그 치킨마요, 닭강정, 스팸김치찌개 등.',
+   map:'본도시락 판교테크노밸리점',
+   img:'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600&q=80'},
+  {type:'del',name:'후토루',sub:'분당판교점',tags:['del','lunch'],cnt:'다수',
+   desc:'참치 후토마키, 지단 후토마키, 치킨 후토마키 단골.',
+   map:'후토루 분당판교점',
+   img:'https://images.unsplash.com/photo-1617196034183-421b4040ed20?w=600&q=80'},
+  {type:'del',name:'긴자료코',sub:'분당수내점',tags:['del','lunch'],cnt:'다수',
+   desc:'데미그라스 돈가스 세트, 가츠동, 오야코동.',
+   map:'긴자료코 분당수내점',
+   img:'https://images.unsplash.com/photo-1569718212165-3a8278d5f624?w=600&q=80'},
+  {type:'del',name:'원할머니명품도시락',sub:'서판교점',tags:['del','lunch'],cnt:'다수',
+   desc:'보쌈도시락, 도시락 곱배기. 동윤 자주 픽.',
+   map:'원할머니명품도시락 서판교점',
+   img:'https://images.unsplash.com/photo-1547592180-85f173990554?w=600&q=80'},
+  {type:'del',name:'아비꼬',sub:'판교파미에스몰점',tags:['del','lunch'],cnt:'다수',
+   desc:'가라아게 카레라이스 + 대파 + 마늘후레이크. 규동도.',
+   map:'아비꼬 판교파미에스몰점',
+   img:'https://images.unsplash.com/photo-1604908176997-125f25cc6f3d?w=600&q=80'},
+  {type:'del',name:'시골남자 파스타',sub:'성남점',tags:['del','lunch'],cnt:'다수',
+   desc:'봉골레·우삼겹 아리오올리오, 마라얼갈이, 베이컨크림.',
+   map:'시골남자파스타 성남점',
+   img:'https://images.unsplash.com/photo-1621996346565-e3dbc646d9a9?w=600&q=80'},
+  {type:'del',name:'브라운돈카스',sub:'서현점',tags:['del','lunch'],cnt:'다수',
+   desc:'양념치킨가스, 까르보나라 돈가스, 매운크림파스타.',
+   map:'브라운돈카스 서현점',
+   img:'https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=600&q=80'},
+  {type:'del',name:'5분덮밥',sub:'분당수내점',tags:['del','lunch'],cnt:'다수',
+   desc:'직화제육덮밥, 직화바베큐덮밥. 다수 주문 확인.',
+   map:'5분덮밥 분당수내점',
+   img:'https://images.unsplash.com/photo-1603133872878-684f208fb84b?w=600&q=80'},
+  {type:'del',name:'고기덮볶비빔밥 & 떡만둣국',tags:['del','lunch'],cnt:'다수',
+   desc:'챔비빔밥, 차돌비빔밥. 3/4·1/16·3/25 등 반복 등장.',
+   map:'고기덮비빔밥 판교',
+   img:'https://images.unsplash.com/photo-1590301157890-4810ed352733?w=600&q=80'},
+  {type:'del',name:'에그드랍',sub:'야탑역점',tags:['del','lunch'],cnt:'2회+',
+   desc:'갈릭베이컨치즈 세트, 아보가도 브런치. 1/13 확인.',
+   map:'에그드랍 야탑역점',
+   img:'https://images.unsplash.com/photo-1525351484163-7529414344d8?w=600&q=80'},
+  {type:'del',name:'오늘초밥',sub:'분당서현점',tags:['del','lunch'],cnt:'1회',
+   desc:'인기세트 도시락. 2/11 동윤 픽.',
+   map:'오늘초밥 분당서현점',
+   img:'https://images.unsplash.com/photo-1583623025817-d180a2221d0a?w=600&q=80'},
+  {type:'del',name:'THE더가득담은김치찌개',sub:'야탑판교점',tags:['del','lunch'],cnt:'1회',
+   desc:'삼겹가득 묵은지김치찌개 + 스팸·우삼겹 추가. 1/22 확인.',
+   map:'THE더가득담은김치찌개 야탑판교점',
+   img:'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=600&q=80'},
+  {type:'del',name:'날치알주먹밥',tags:['del','lunch'],cnt:'다수',
+   desc:'날치알주먹밥+계란찌개. 3/4·3/25 반복 등장.',
+   map:'날치알주먹밥 판교',
+   img:'https://images.unsplash.com/photo-1611143669185-af224c5e3252?w=600&q=80'},
+  {type:'del',name:'짜글이주의보',sub:'수내점',tags:['del','lunch'],cnt:'1회',
+   desc:'삼겹 짜글이 혼밥. 3/9 동윤 픽.',
+   map:'짜글이주의보 분당수내점',
+   img:'https://images.unsplash.com/photo-1529692236671-f1f6cf9683ba?w=600&q=80'},
+  {type:'del',name:'대박반점',tags:['del','lunch'],cnt:'1회',
+   desc:'마파밥, 제육덮밥 곱배기. 3/12 병연 픽.',
+   map:'대박반점 판교',
+   img:'https://images.unsplash.com/photo-1585032226651-759b368d7246?w=600&q=80'},
+  {type:'del',name:'스쿠푸드',sub:'판교딜리버리점',tags:['del','lunch'],cnt:'1회',
+   desc:'모짜렐라 스팸계란마리, 신김치말이국시. 1/29 병연 픽.',
+   map:'스쿠푸드 판교딜리버리점',
+   img:'https://images.unsplash.com/photo-1527477396000-e27163b481c2?w=600&q=80'},
+  {type:'del',name:'프레퍼스 다이어트푸드',sub:'판교점',tags:['del','lunch'],cnt:'1회',
+   desc:'포크커리덮밥, 비프플레이트 샐러드, 비프청양들기름파스타. 2/2 픽.',
+   map:'프레퍼스 다이어트푸드 판교점',
+   img:'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=600&q=80'},
+  {type:'del',name:'엄마손볶음밥',sub:'분당야탑점',tags:['del','lunch'],cnt:'1회',
+   desc:'오리바베큐 김치볶음밥. 3/4 병연 픽.',
+   map:'엄마손볶음밥 분당야탑점',
+   img:'https://images.unsplash.com/photo-1603133872878-684f208fb84b?w=600&q=80'},
+
+  // ── 직접 방문 ────────────────────────────────────────
+  {type:'dine',name:'흥도식당',tags:['dine','lunch'],cnt:'1회',
+   desc:'판교 근처 한식. 병연 직접 언급.',
+   map:'흥도식당 판교',
+   img:'https://images.unsplash.com/photo-1618841557871-b4664fbf0cb3?w=600&q=80'},
+
+  // ── 회식 ─────────────────────────────────────────────
+  {type:'party',name:'우붕블랙',sub:'판교점',tags:['party','lunch'],cnt:'1회',
+   desc:'소고기 런치 오마카세 10.9만원. 동윤 추천.',
+   map:'우붕블랙 판교',
+   img:'https://images.unsplash.com/photo-1558030006-450675393462?w=600&q=80'},
+  {type:'party',name:'몽중헌',tags:['party','lunch'],cnt:'1회',
+   desc:'고급 중식당. 런치 코스 11만원. 동윤 추천.',
+   map:'몽중헌 판교',
+   img:'https://images.unsplash.com/photo-1563245372-f21724e3856d?w=600&q=80'},
+  {type:'party',name:'경복궁 한정식',tags:['party','lunch'],cnt:'1회',
+   desc:'양념갈비 or 상견례 한정식 코스. 동윤 추천.',
+   map:'경복궁한정식 판교',
+   img:'https://images.unsplash.com/photo-1547592180-85f173990554?w=600&q=80'},
+  {type:'party',name:'현복집',tags:['party','lunch'],cnt:'1회',
+   desc:'복어집. 코스 12만원. 회식 후보 중 최저가.',
+   map:'현복집 판교',
+   img:'https://images.unsplash.com/photo-1510130387422-82bed34b37e9?w=600&q=80'},
+  {type:'party',name:'스시혼',tags:['party','lunch'],cnt:'후보',
+   desc:'초밥은 괜찮지만 구이 냄새 난다는 평 있음.',
+   map:'스시혼 판교',
+   img:'https://images.unsplash.com/photo-1617196034183-421b4040ed20?w=600&q=80'},
+];
+
+const TM={del:['t-del','배달'],dine:['t-dine','직접 방문'],party:['t-party','회식'],lunch:['t-lunch','점심'],din:['t-din','저녁']};
+
+function renderGrid(f){
+  const g=document.getElementById('grid');
+  g.innerHTML='';
+  DATA.filter(d=>f==='all'||d.type===f).forEach(d=>{
+    const el=document.createElement('div');
+    el.className='card';
+    const tg=d.tags.map(k=>{const[c,l]=TM[k];return`<span class="tag ${c}">${l}</span>`;}).join('');
+    const nm=d.sub?`${d.name} <span class="c-sub">${d.sub}</span>`:d.name;
+    el.innerHTML=`
+      <img class="card-img" src="${d.img}" alt="${d.name}" loading="lazy" onerror="this.onerror=null;this.src='${FB}'">
+      <div class="card-body">
+        <div class="tags">${tg}</div>
+        <div class="c-name">${nm}</div>
+        <div class="c-desc">${d.desc}</div>
+        <div class="c-foot">
+          <a class="map-btn" href="https://map.naver.com/v5/search/${encodeURIComponent(d.map)}" target="_blank">${PIN}&nbsp;네이버 지도</a>
+          <span class="c-cnt">언급 <b>${d.cnt}</b></span>
+        </div>
+      </div>`;
+    g.appendChild(el);
+  });
+}
+document.querySelectorAll('.fb').forEach(b=>b.addEventListener('click',()=>{
+  document.querySelectorAll('.fb').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on'); renderGrid(b.dataset.f);
+}));
+renderGrid('all');
+
+// ── ROULETTE ──────────────────────────────────────────
+const DEL=DATA.filter(d=>d.type==='del');
+const WC=[
+  ['#1e2a3a','#7eaadc'],['#1e2e1e','#6ec96e'],['#2e2810','#c8a840'],
+  ['#2a1e2e','#c07ed8'],['#1a2a2a','#60c8c0'],['#2e1e1e','#dc8080'],
+  ['#1e1e2e','#9080c8'],['#2a2a1a','#b8a840'],['#1a2e2a','#60d8a0'],
+  ['#2e2a1a','#d8a060'],['#1e2a1e','#80c880'],['#2a1e1e','#d86060'],
+  ['#1e2820','#70c8a0'],['#281e2a','#c080d0'],['#2a2010','#d8b060'],
+  ['#102028','#60a8d8'],['#281010','#e08080'],['#102810','#70d070'],
+];
+let excl=new Set(), ang=0, spinning=false;
+
+// 캔버스를 CSS 크기에 맞춰 DPR 고해상도로 초기화
+function initCanvas(){
+  const cv=document.getElementById('wc');
+  const wrap=cv.parentElement;
+  const size=wrap.offsetWidth||420;
+  const dpr=window.devicePixelRatio||1;
+  cv.width=size*dpr; cv.height=size*dpr;
+  cv.style.width=size+'px'; cv.style.height=size+'px';
+  cv.getContext('2d').scale(dpr,dpr);
+}
+
+function active(){return DEL.filter((_,i)=>!excl.has(i));}
+
+// 핀은 12시(위) = 각도 -π/2 위치를 가리킴
+// 각 섹터 i는 ang 기준으로 -π/2 + arc*i 에서 시작
+// 핀이 가리키는 각도 0 (절대 -π/2) 에 해당하는 섹터를 계산
+function getWinnerIdx(){
+  const items=active();
+  const arc=(Math.PI*2)/items.length;
+  // ang만큼 휠이 회전했을 때, 핀(-π/2)은 휠 좌표계에서 (-π/2 - ang)에 해당
+  // 섹터 i는 (-π/2 + arc*i) ~ (-π/2 + arc*(i+1))
+  // 따라서 핀이 속한 섹터: (-π/2 - ang - (-π/2)) = -ang → -ang mod 2π
+  let needle = ((-ang) % (Math.PI*2) + Math.PI*2) % (Math.PI*2); // 0~2π
+  return Math.floor(needle/arc) % items.length;
+}
+
+function draw(hi=-1){
+  const cv=document.getElementById('wc');
+  const size=parseInt(cv.style.width)||420;
+  const ctx=cv.getContext('2d');
+  const cx=size/2, cy=size/2, r=size/2-3;
+  ctx.clearRect(0,0,size,size);
+  const items=active(); if(!items.length)return;
+  const arc=(Math.PI*2)/items.length;
+  const fs=items.length>12?11:items.length>8?13:15;
+
+  items.forEach((item,i)=>{
+    // 섹터 i: -π/2 + arc*i  ~  -π/2 + arc*(i+1), 전체가 ang만큼 회전
+    const s=ang-Math.PI/2+arc*i, e=s+arc;
+    const[fill,stroke]=WC[i%WC.length];
+    ctx.beginPath(); ctx.moveTo(cx,cy); ctx.arc(cx,cy,r,s,e); ctx.closePath();
+    ctx.fillStyle=i===hi?stroke:fill; ctx.fill();
+    ctx.strokeStyle='#0f0e0c'; ctx.lineWidth=2; ctx.stroke();
+
+    // 텍스트: 섹터 중앙 방향으로
+    ctx.save();
+    ctx.translate(cx,cy);
+    ctx.rotate(s+arc/2);
+    ctx.textAlign='right';
+    ctx.font=`500 ${fs}px 'Noto Sans KR',sans-serif`;
+    ctx.fillStyle=i===hi?'#fff':stroke;
+    const lb=item.name.length>9?item.name.slice(0,8)+'…':item.name;
+    ctx.fillText(lb, r-14, fs*0.38);
+    ctx.restore();
+  });
+
+  // 중심 원
+  ctx.beginPath(); ctx.arc(cx,cy,22,0,Math.PI*2);
+  ctx.fillStyle='#0f0e0c'; ctx.fill();
+  ctx.strokeStyle='#e8a836'; ctx.lineWidth=2; ctx.stroke();
+}
+
+function spin(){
+  const items=active();
+  if(items.length<2){alert('2개 이상 남겨주세요!');return;}
+  if(spinning)return;
+  spinning=true;
+  document.getElementById('sbtn').disabled=true;
+
+  const arc=(Math.PI*2)/items.length;
+  // 목표 섹터를 먼저 정함
+  const ti=Math.floor(Math.random()*items.length);
+  // 최종 ang: 섹터 ti의 중앙이 핀(12시)에 오도록
+  // 핀이 가리키는 섹터 = floor((-ang mod 2π) / arc)
+  // 섹터 ti의 중앙이 핀에 오려면: -ang ≡ arc*ti + arc/2  (mod 2π)
+  // → ang ≡ -(arc*ti + arc/2)  (mod 2π)
+  const targetAngBase = (-(arc*ti + arc/2) % (Math.PI*2) + Math.PI*2) % (Math.PI*2);
+  // 현재 ang에서 targetAngBase까지 도달 + 여러 바퀴 추가
+  const spins = (7 + Math.floor(Math.random()*5)) * Math.PI*2;
+  // 현재 ang 정규화
+  const curNorm = ((ang % (Math.PI*2)) + Math.PI*2) % (Math.PI*2);
+  let delta = targetAngBase - curNorm;
+  if(delta <= 0) delta += Math.PI*2; // 반드시 양방향(시계)으로
+  const totalDelta = spins + delta;
+
+  const t0=performance.now(), dur=4000+Math.random()*1000, sa=ang;
+  function ease(t){return t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;}
+
+  function frame(now){
+    const t=Math.min((now-t0)/dur,1);
+    ang=sa+totalDelta*ease(t);
+    draw();
+    if(t<1){requestAnimationFrame(frame);}
+    else{
+      // 정확히 targetAngBase로 snap
+      ang=sa+totalDelta;
+      const winner=items[ti];
+      draw(ti);
+      document.getElementById('rc').innerHTML=`
+        <span class="r-label">오늘의 배달 픽!</span>
+        <span class="r-name">${winner.name}</span>
+        <span class="r-desc">${winner.sub||winner.desc}</span>`;
+      spinning=false;
+      document.getElementById('sbtn').disabled=false;
+    }
+  }
+  requestAnimationFrame(frame);
+}
+
+function buildChips(){
+  const el=document.getElementById('chips');
+  el.innerHTML='';
+  DEL.forEach((item,i)=>{
+    const c=document.createElement('div');
+    c.className='chip'+(excl.has(i)?' off':'');
+    c.textContent=item.name;
+    c.onclick=()=>{excl.has(i)?excl.delete(i):excl.add(i);buildChips();ang=0;draw();};
+    el.appendChild(c);
+  });
+}
+
+// 초기화: 폰트 로드 후 렌더
+document.fonts.ready.then(()=>{
+  initCanvas();
+  buildChips();
+  draw();
+});
+</script>
+</body>
+</html>
