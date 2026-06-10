@@ -1,0 +1,818 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>친밀도 일러스트 · 신규 캐릭터 체크리스트</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, 'Apple SD Gothic Neo', 'Pretendard', 'Noto Sans KR', sans-serif;
+    background: #F2F4F6;
+    color: #191F28;
+  }
+  .page {
+    max-width: 860px;
+    margin: 0 auto;
+    padding: 48px 24px 80px;
+  }
+
+  .header { margin-bottom: 28px; }
+  .badge {
+    display: inline-block;
+    background: #E8F5E9;
+    color: #1A7F37;
+    font-size: 11px;
+    font-weight: 700;
+    padding: 4px 10px;
+    border-radius: 20px;
+    margin-bottom: 10px;
+    letter-spacing: 0.04em;
+  }
+  .header h1 { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+  .header-meta { display: flex; align-items: center; justify-content: space-between; }
+  .header p { font-size: 13px; color: #8B95A1; }
+
+  /* 저장 상태 표시 */
+  .save-status {
+    font-size: 11px;
+    color: #8B95A1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .save-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: #D1D6DB;
+    transition: background 0.3s;
+  }
+  .save-dot.saved { background: #1A7F37; }
+  .copy-url-btn {
+    font-size: 11px;
+    color: #3182F6;
+    background: #EBF5FF;
+    border: none;
+    border-radius: 6px;
+    padding: 4px 10px;
+    cursor: pointer;
+    font-family: inherit;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    transition: background 0.15s;
+  }
+  .copy-url-btn:hover { background: #D6EAFF; }
+  .copy-url-btn.copied { color: #1A7F37; background: #E8F5E9; }
+
+  .card {
+    background: #fff;
+    border-radius: 16px;
+    overflow: hidden;
+    margin-bottom: 12px;
+  }
+
+  .group-header {
+    padding: 10px 20px 8px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #8B95A1;
+    letter-spacing: 0.06em;
+    background: #FAFBFC;
+    border-bottom: 1px solid #F2F4F6;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .group-header .tbl-name {
+    font-family: monospace;
+    font-size: 11px;
+    font-weight: 700;
+    background: #E6F9F0;
+    color: #1A7F37;
+    padding: 2px 8px;
+    border-radius: 5px;
+  }
+  .group-header .tbl-desc {
+    font-size: 11px;
+    font-weight: 500;
+    color: #B0B8C1;
+  }
+
+  /* 체크 행 */
+  .check-row {
+    display: flex;
+    align-items: center;
+    padding: 14px 20px;
+    border-bottom: 1px solid #F2F4F6;
+    gap: 12px;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.1s;
+  }
+  .check-row:hover { background: #FAFBFC; }
+  .check-row.done { opacity: 0.4; }
+  .check-row.done .check-title { text-decoration: line-through; color: #8B95A1; }
+
+  .cb {
+    width: 22px; height: 22px;
+    border: 2px solid #D1D6DB;
+    border-radius: 7px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    transition: all 0.15s;
+    background: #fff;
+  }
+  .check-row.done .cb { background: #1A7F37; border-color: #1A7F37; }
+  .cb svg { display: none; }
+  .check-row.done .cb svg { display: block; }
+  .check-title { font-size: 14px; font-weight: 600; color: #191F28; }
+
+  /* 진행률 */
+  .progress-wrap {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 20px;
+    border-top: 1px solid #F2F4F6;
+  }
+  .prog-label-left { font-size: 12px; color: #8B95A1; }
+  .prog-bar {
+    flex: 1; height: 6px;
+    background: #F2F4F6;
+    border-radius: 100px;
+    overflow: hidden;
+  }
+  .prog-fill {
+    height: 100%;
+    background: #1A7F37;
+    border-radius: 100px;
+    transition: width 0.3s;
+    width: 0%;
+  }
+  .prog-pct { font-size: 12px; font-weight: 700; color: #1A7F37; min-width: 32px; text-align: right; }
+
+  /* 예시 테이블 */
+  .example-wrap {
+    padding: 0 20px 16px;
+    border-top: 1px solid #F2F4F6;
+  }
+  .example-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 12px 0 0;
+    font-size: 12px;
+    font-weight: 600;
+    color: #8B95A1;
+    cursor: pointer;
+    user-select: none;
+  }
+  .example-toggle:hover { color: #4E5968; }
+  .example-toggle .arrow {
+    font-size: 10px;
+    transition: transform 0.2s;
+    display: inline-block;
+  }
+  .example-toggle.open .arrow { transform: rotate(90deg); }
+  .example-box {
+    display: none;
+    margin-top: 10px;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid #E5E8EB;
+  }
+  .example-box.open { display: block; }
+  .ex-tbl-wrap { overflow-x: auto; }
+  table.ex-tbl {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  table.ex-tbl thead th {
+    background: #F8F9FA;
+    padding: 7px 10px;
+    font-size: 10px;
+    font-weight: 700;
+    color: #8B95A1;
+    text-align: left;
+    border-bottom: 1px solid #E5E8EB;
+    letter-spacing: 0.04em;
+  }
+  table.ex-tbl tbody td {
+    padding: 8px 10px;
+    color: #333D4B;
+    border-bottom: 1px solid #F2F4F6;
+    vertical-align: middle;
+  }
+  table.ex-tbl tbody tr:last-child td { border-bottom: none; }
+  .td-id { font-family: monospace; font-size: 11px; color: #3182F6; font-weight: 600; }
+  .td-path { font-family: monospace; font-size: 10px; color: #8B95A1; }
+  .td-y { color: #1A7F37; font-weight: 700; font-size: 11px; }
+  .td-badge {
+    display: inline-block;
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: #EBF5FF;
+    color: #1D6FA4;
+  }
+
+  /* 초기화 버튼 */
+  .reset-btn {
+    margin-top: 16px;
+    display: flex;
+    justify-content: flex-end;
+  }
+  .reset-btn button {
+    font-size: 12px;
+    color: #8B95A1;
+    background: none;
+    border: 1px solid #E5E8EB;
+    border-radius: 8px;
+    padding: 6px 14px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: all 0.15s;
+  }
+  .reset-btn button:hover { border-color: #D1D6DB; color: #4E5968; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <div class="header">
+    <div class="badge">신규 캐릭터 추가 시</div>
+    <div class="header-meta">
+      <h1>친밀도 일러스트 체크리스트</h1>
+      <div class="save-status">
+        <div class="save-dot" id="save-dot"></div>
+        <span id="save-label">저장 안 됨</span>
+        <button class="copy-url-btn" id="copy-btn" onclick="copyUrl()">
+          <svg width="11" height="11" fill="none" viewBox="0 0 24 24"><path d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          URL 복사
+        </button>
+      </div>
+    </div>
+    <p>배포 전 완료 · 담당 이병연</p>
+  </div>
+
+  <div class="card" id="card-new">
+
+    <!-- 파일명 규칙 확인 -->
+    <div class="group-header">
+      <span class="tbl-name">사전 확인</span>
+      <span class="tbl-desc">친밀도 일러스트 이름 규칙 확인</span>
+    </div>
+    <div class="check-row" data-id="naming_rule_check" onclick="toggle(this)">
+      <div class="cb"><svg width="12" height="10" fill="none"><path d="M1 5l3.5 3.5L11 1" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div>
+        <div class="check-title">파일명 규칙 확인</div>
+        <div style="font-size:11px;color:#8B95A1;margin-top:3px;">아트팀 납품 파일명 기준으로 작업 전 ID 확인</div>
+      </div>
+    </div>
+    <div class="example-wrap">
+      <div class="example-toggle" onclick="toggleExample(this)">
+        <span class="arrow">▶</span> 파일명 규칙 보기
+      </div>
+      <div class="example-box">
+        <div style="padding:14px 16px;background:#FAFBFC;">
+          <div style="font-size:11px;font-weight:700;color:#8B95A1;margin-bottom:10px;letter-spacing:0.04em;">파일명 규칙</div>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            <div style="display:flex;align-items:center;gap:10px;background:#fff;border:1px solid #E5E8EB;border-radius:8px;padding:10px 14px;">
+              <div style="font-size:10px;font-weight:700;color:#8B95A1;min-width:60px;">패턴</div>
+              <div style="font-family:monospace;font-size:13px;color:#191F28;font-weight:600;">img_intimacy_illust_<span style="color:#3182F6;">{hero_id}</span></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;background:#fff;border:1px solid #E5E8EB;border-radius:8px;padding:10px 14px;">
+              <div style="font-size:10px;font-weight:700;color:#8B95A1;min-width:60px;">예시</div>
+              <div style="font-family:monospace;font-size:13px;color:#1A7F37;font-weight:600;">img_intimacy_illust_c1183</div>
+            </div>
+          </div>
+          <div style="margin-top:12px;padding:8px 12px;background:#FFF8E1;border-radius:8px;font-size:11px;color:#8B6A00;line-height:1.7;">
+            ※ <strong>hero_id</strong>는 영웅 테이블 기준 ID (예: c1183)<br>
+            ※ 아이콘 · 일러스트 · 썸네일 모두 동일 패턴 사용<br>
+            ※ 경로 포함 시: <span style="font-family:monospace;">story/bg/img_intimacy_illust_c{id}_th</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- UI 아이콘 제작 요청 -->
+    <div class="group-header">
+      <span class="tbl-name">[UI] 아이콘 제작 요청</span>
+      <span class="tbl-desc">일감 코멘트 작성</span>
+    </div>
+    <div class="check-row" data-id="ui_icon_request" onclick="toggle(this)">
+      <div class="cb"><svg width="12" height="10" fill="none"><path d="M1 5l3.5 3.5L11 1" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div class="check-title">친밀도 일러스트 아이템 아이콘 제작 요청 작성</div>
+    </div>
+    <div class="example-wrap">
+      <div class="example-toggle" onclick="toggleExample(this)">
+        <span class="arrow">▶</span> 요청 문구 보기
+      </div>
+      <div class="example-box">
+        <div style="padding:14px 16px;font-size:13px;line-height:1.8;color:#333D4B;background:#FAFBFC;">
+          <div style="font-size:11px;font-weight:700;color:#8B95A1;margin-bottom:8px;letter-spacing:0.04em;">일감 제목</div>
+          <div style="font-family:monospace;font-size:12px;background:#F2F4F6;padding:8px 12px;border-radius:8px;color:#191F28;margin-bottom:14px;">[UI] {캐릭터명} 캐릭터 : 친밀도 일러스트 아이템 아이콘 제작</div>
+          <div style="font-size:11px;font-weight:700;color:#8B95A1;margin-bottom:8px;letter-spacing:0.04em;">예시 일감</div>
+          <div style="margin-bottom:14px;">
+            <a href="https://redmine.supercreative.kr/issues/177919" target="_blank" style="font-size:12px;color:#3182F6;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:5px;background:#EBF5FF;padding:6px 12px;border-radius:8px;">
+              <svg width="12" height="12" fill="none" viewBox="0 0 24 24"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" stroke="#3182F6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Redmine #177919 · 예시 일감 보기
+            </a>
+          </div>
+          <div style="font-size:11px;font-weight:700;color:#8B95A1;margin-bottom:8px;letter-spacing:0.04em;">코멘트 내용</div>
+          <div style="background:#fff;border:1px solid #E5E8EB;border-radius:8px;padding:12px 14px;font-size:13px;color:#333D4B;line-height:1.9;">
+            친밀도 일러스트 아이템 아이콘 제작을 요청드립니다.<br>
+            id : <span style="font-family:monospace;color:#3182F6;font-weight:600;">art/img_intimacy_illust_c{캐릭터id}</span><br>
+            감사합니다.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- item_material -->
+    <div class="group-header">
+      <span class="tbl-name">item_material</span>
+      <span class="tbl-desc">스톤 레벨업 재료</span>
+    </div>
+    <div class="check-row" data-id="item_material_1" onclick="toggle(this)">
+      <div class="cb"><svg width="12" height="10" fill="none"><path d="M1 5l3.5 3.5L11 1" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div>
+        <div class="check-title">일러스트 아이템 추가</div>
+        <div style="font-size:11px;color:#8B95A1;margin-top:3px;">아이템 네임 / 설명은 영웅 기획서 참고</div>
+      </div>
+    </div>
+
+    <!-- item_material 예시 -->
+    <div class="example-wrap">
+      <div class="example-toggle" onclick="toggleExample(this)">
+        <span class="arrow">▶</span> 입력 예시 보기
+      </div>
+      <div class="example-box">
+        <div class="ex-tbl-wrap">
+          <table class="ex-tbl">
+            <thead>
+              <tr>
+                <th>id</th>
+                <th>-</th>
+                <th>export_id</th>
+                <th>*complete</th>
+                <th>name</th>
+                <th>-</th>
+                <th>sort</th>
+                <th>priority</th>
+                <th>attribute</th>
+                <th>ma_type</th>
+                <th>ma_type2</th>
+                <th>devotion_target</th>
+                <th>devotion_need_count</th>
+                <th>init_count</th>
+                <th>max_count</th>
+                <th>badge</th>
+                <th>intimacy_bonus</th>
+                <th>limit_break</th>
+                <th>att_remark</th>
+                <th>thumbnail</th>
+                <th>hide_own</th>
+                <th>icon</th>
+                <th>icon_zl</th>
+                <th>drop_icon</th>
+                <th>drop_icon_zl</th>
+                <th>sticker_img</th>
+                <th>skill</th>
+                <th>grade</th>
+                <th>price</th>
+                <th>get_xp</th>
+                <th>request_count</th>
+                <th>support_count</th>
+                <th>reward_token</th>
+                <th>reward_count</th>
+                <th>-</th>
+                <th>desc_category</th>
+                <th>-</th>
+                <th>-</th>
+                <th>quality_point</th>
+                <th>desc</th>
+                <th>-</th>
+                <th>-</th>
+                <th>select_title</th>
+                <th>select_desc</th>
+                <th>icon_frame_not_use</th>
+                <th>desc_use</th>
+                <th>frame_effect</th>
+                <th>ston_not_sale</th>
+                <th>package_gacha_item</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="td-id">ma_intimacy_illust_c1183</td>
+                <td>에스텔 스파인 일러스트</td>
+                <td class="td-badge">lbh9517_168816</td>
+                <td class="td-y">y</td>
+                <td class="td-id">ma_illust_c1183_name</td>
+                <td>미발급</td>
+                <td>1</td>
+                <td>1</td>
+                <td></td>
+                <td>illust</td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td>1</td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td class="td-y">y</td>
+                <td class="td-path">art/img_intimacy_illust_c1183</td>
+                <td class="td-path">art/img_intimacy_illust_c1183</td>
+                <td class="td-path">art/img_intimacy_illust_c1183</td>
+                <td class="td-path">art/img_intimacy_illust_c1183</td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td>item_category_illust</td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td class="td-id">ma_illust_c1183_de</td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td class="td-y">y</td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- intimacy_illust -->
+    <div class="group-header" style="margin-top:4px;">
+      <span class="tbl-name">intimacy_illust</span>
+      <span class="tbl-desc">친밀도 일러스트</span>
+    </div>
+    <div class="check-row" data-id="intimacy_illust_1" onclick="toggle(this)">
+      <div class="cb"><svg width="12" height="10" fill="none"><path d="M1 5l3.5 3.5L11 1" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div class="check-title">친밀도 일러스트 material / hero_id / 보이스 연결 추가</div>
+    </div>
+    <div class="example-wrap">
+      <div class="example-toggle" onclick="toggleExample(this)">
+        <span class="arrow">▶</span> 입력 예시 보기
+      </div>
+      <div class="example-box">
+        <div class="ex-tbl-wrap">
+          <table class="ex-tbl">
+            <thead>
+              <tr>
+                <th>hero_id</th>
+                <th>export_id</th>
+                <th>intimacy_illust</th>
+                <th>voice1</th>
+                <th>voice1_text</th>
+                <th>voice2</th>
+                <th>voice2_text</th>
+                <th>voice3</th>
+                <th>voice3_text</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="td-id">c1183</td>
+                <td class="td-badge">lbh9517_168816</td>
+                <td class="td-id">ma_intimacy_illust_c1183</td>
+                <td class="td-id">c1183_camping_01</td>
+                <td class="td-id">c_topic_8_enjoymemo</td>
+                <td class="td-id">c1183_camping_02</td>
+                <td class="td-id">c_topic_5_charmcheer</td>
+                <td></td>
+                <td></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- dic_data_illust -->
+    <div class="group-header">
+      <span class="tbl-name">dic_data_illust</span>
+      <span class="tbl-desc">일러스트 도감</span>
+    </div>
+    <div class="check-row" data-id="dic_data_illust_1" onclick="toggle(this)">
+      <div class="cb"><svg width="12" height="10" fill="none"><path d="M1 5l3.5 3.5L11 1" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div class="check-title">친밀도 탭에 일러스트 추가</div>
+    </div>
+    <div class="example-wrap">
+      <div class="example-toggle" onclick="toggleExample(this)">
+        <span class="arrow">▶</span> 입력 예시 보기
+      </div>
+      <div class="example-box">
+        <div class="ex-tbl-wrap">
+          <table class="ex-tbl">
+            <thead>
+              <tr>
+                <th>id</th>
+                <th>export_id</th>
+                <th>complete</th>
+                <th>-</th>
+                <th>parent_id</th>
+                <th>sort</th>
+                <th>con_stage</th>
+                <th>con_check</th>
+                <th>quest_id</th>
+                <th>illust_type</th>
+                <th>illust</th>
+                <th>unlock_msg</th>
+                <th>jpn_hide</th>
+                <th>con_stage_alternative</th>
+                <th>con_check_alternative</th>
+                <th>thumbnail</th>
+                <th>thumbnail_zl</th>
+                <th>disable_zoom</th>
+                <th>desc_box_text</th>
+                <th>lobby</th>
+                <th>balloon_enter</th>
+                <th>balloon_idle</th>
+                <th>balloon_touch</th>
+                <th>balloon_type</th>
+                <th>balloon_position</th>
+                <th>force_ambient_color</th>
+                <th>touch_bord</th>
+                <th>intro</th>
+                <th>unowned_hide</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="td-id">intimacy_c1183</td>
+                <td class="td-badge">lbh9517_168816</td>
+                <td class="td-y">y</td>
+                <td>에스텔 친밀도 일러스트</td>
+                <td class="td-id">intimacy_1</td>
+                <td>1</td>
+                <td>item</td>
+                <td class="td-id">ma_intimacy_illust_c1183</td>
+                <td></td>
+                <td></td>
+                <td class="td-path">img_intimacy_illust_c1183</td>
+                <td class="td-path">ui_dict_pixvi_intimacy</td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td class="td-path">story/bg/img_intimacy_illust_c1183_th</td>
+                <td class="td-path">story/bg/img_intimacy_illust_c1183_th</td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+                <td></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Redmine 머터리얼 추가 일감 -->
+    <div class="group-header">
+      <span class="tbl-name">[Redmine] 머터리얼 추가 일감</span>
+      <span class="tbl-desc">한모님 일감 본문에 내용 기입</span>
+    </div>
+    <div class="check-row" data-id="redmine_material_note" onclick="toggle(this)">
+      <div class="cb"><svg width="12" height="10" fill="none"><path d="M1 5l3.5 3.5L11 1" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+      <div>
+        <div class="check-title">한모님 일감에서 머터리얼 추가 일감 찾아 본문 기입</div>
+        <div style="font-size:11px;color:#8B95A1;margin-top:3px;">일러스트 머터리얼 ID를 해당 일감 본문에 코멘트로 남긴다</div>
+      </div>
+    </div>
+    <div class="example-wrap">
+      <div class="example-toggle" onclick="toggleExample(this)">
+        <span class="arrow">▶</span> 작성 방법 보기
+      </div>
+      <div class="example-box">
+        <div style="padding:14px 16px;background:#FAFBFC;">
+
+          <div style="font-size:11px;font-weight:700;color:#8B95A1;margin-bottom:8px;letter-spacing:0.04em;">일감 목록</div>
+          <div style="margin-bottom:14px;">
+            <a href="https://redmine.supercreative.kr/users/476" target="_blank"
+               style="font-size:12px;color:#3182F6;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:5px;background:#EBF5FF;padding:6px 12px;border-radius:8px;">
+              <svg width="12" height="12" fill="none" viewBox="0 0 24 24"><path d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" stroke="#3182F6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Redmine · 한모님 일감 목록 보기
+            </a>
+          </div>
+
+          <div style="font-size:11px;font-weight:700;color:#8B95A1;margin-bottom:8px;letter-spacing:0.04em;">찾을 일감</div>
+          <div style="background:#fff;border:1px solid #E5E8EB;border-radius:8px;padding:10px 14px;font-size:12px;color:#333D4B;margin-bottom:14px;">
+            머터리얼 추가 관련 일감 (예: <span style="font-family:monospace;color:#3182F6;">item_material 추가</span> 등)
+          </div>
+
+          <div style="font-size:11px;font-weight:700;color:#8B95A1;margin-bottom:8px;letter-spacing:0.04em;">본문에 기입할 내용</div>
+          <div style="background:#fff;border:1px solid #E5E8EB;border-radius:8px;padding:12px 14px;font-size:13px;color:#333D4B;line-height:2;">
+            <span style="font-family:monospace;color:#1A7F37;font-weight:700;">에스텔 스파인 일러스트 : ma_intimacy_illust_c1183</span>
+          </div>
+
+          <div style="margin-top:10px;padding:8px 12px;background:#FFF8E1;border-radius:8px;font-size:11px;color:#8B6A00;line-height:1.7;">
+            ※ 패턴: <span style="font-family:monospace;">{캐릭터명} 스파인 일러스트 : ma_intimacy_illust_c{hero_id}</span><br>
+            ※ 해당 일감의 코멘트 또는 본문 설명란에 추가
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="progress-wrap">
+      <span class="prog-label-left">진행률</span>
+      <div class="prog-bar"><div class="prog-fill" id="prog"></div></div>
+      <span class="prog-pct" id="pct">0%</span>
+    </div>
+
+  </div>
+
+  <div class="reset-btn">
+    <button onclick="resetAll()">초기화</button>
+  </div>
+  <div style="margin-top:10px;text-align:right;font-size:11px;color:#B0B8C1;line-height:1.6;">
+    💡 SharePoint에서 상태를 유지하려면 <strong>URL 복사</strong> 후 북마크하거나 팀즈에 공유하세요.
+  </div>
+
+</div>
+<script>
+  const SAVE_KEY = 'intimacy_illust_checklist';
+
+  /* ── 상태 직렬화 ────────────────────────────────
+     체크된 data-id 목록을 쉼표로 연결한 문자열로 변환
+     예) "naming_rule_check,ui_icon_request"
+  ─────────────────────────────────────────────── */
+  function getCheckedIds() {
+    return Array.from(document.querySelectorAll('.check-row[data-id].done'))
+                .map(r => r.dataset.id);
+  }
+
+  function encodeState(ids) {
+    return ids.join(',');
+  }
+
+  function decodeState(str) {
+    return str ? str.split(',').filter(Boolean) : [];
+  }
+
+  /* ── 저장: localStorage + URL 해시 동시 기록 ── */
+  function save() {
+    const ids = getCheckedIds();
+    const encoded = encodeState(ids);
+
+    // 1) localStorage (일반 브라우저)
+    try { localStorage.setItem(SAVE_KEY, encoded); } catch(e) {}
+
+    // 2) URL 해시 (SharePoint 등 localStorage 차단 환경)
+    try {
+      history.replaceState(null, '', '#' + encodeURIComponent(encoded));
+    } catch(e) {}
+
+    setSavedUI(ids.length > 0);
+  }
+
+  /* ── 불러오기: URL 해시 우선, 없으면 localStorage ── */
+  function load() {
+    let ids = [];
+
+    // 1) URL 해시 우선
+    const hash = location.hash.replace('#', '');
+    if (hash) {
+      try {
+        const decoded = decodeURIComponent(hash);
+        ids = decodeState(decoded);
+      } catch(e) {}
+    }
+
+    // 2) fallback: localStorage
+    if (!ids.length) {
+      try {
+        const raw = localStorage.getItem(SAVE_KEY) || '';
+        if (raw) {
+          // 구버전 JSON 포맷 {"id":true,...} 감지 → 마이그레이션
+          if (raw.trim().startsWith('{')) {
+            const obj = JSON.parse(raw);
+            ids = Object.keys(obj).filter(k => obj[k] === true);
+            localStorage.setItem(SAVE_KEY, encodeState(ids));
+          } else {
+            ids = decodeState(raw);
+          }
+        }
+      } catch(e) {
+        try { localStorage.removeItem(SAVE_KEY); } catch(e2) {}
+      }
+    }
+
+    ids.forEach(function(id) {
+      const row = document.querySelector('[data-id="' + id + '"]');
+      if (row) row.classList.add('done');
+    });
+
+    updateProgress();
+    setSavedUI(ids.length > 0);
+  }
+
+  function setSavedUI(hasSaved) {
+    const dot = document.getElementById('save-dot');
+    const label = document.getElementById('save-label');
+    if (hasSaved) {
+      dot.classList.add('saved');
+      label.textContent = '저장됨';
+    } else {
+      dot.classList.remove('saved');
+      label.textContent = '저장 안 됨';
+    }
+  }
+
+  /* ── 진행률 ─────────────────────────────────── */
+  function updateProgress() {
+    const card = document.getElementById('card-new');
+    const total = card.querySelectorAll('.check-row[data-id]').length;
+    const done  = card.querySelectorAll('.check-row[data-id].done').length;
+    const p = Math.round(done / total * 100);
+    document.getElementById('prog').style.width = p + '%';
+    document.getElementById('pct').textContent = p + '%';
+  }
+
+  /* ── 토글 ───────────────────────────────────── */
+  function toggle(row) {
+    row.classList.toggle('done');
+    updateProgress();
+    save();
+  }
+
+  function toggleExample(el) {
+    el.classList.toggle('open');
+    el.nextElementSibling.classList.toggle('open');
+  }
+
+  /* ── URL 복사 (SharePoint 공유용) ───────────── */
+  function copyUrl() {
+    save(); // 현재 상태를 해시에 반영
+    const url = location.href.split('#')[0] + location.hash;
+    const btn = document.getElementById('copy-btn');
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(url).then(() => showCopied(btn));
+    } else {
+      // 구형 환경 fallback
+      const ta = document.createElement('textarea');
+      ta.value = url;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); showCopied(btn); } catch(e) {}
+      document.body.removeChild(ta);
+    }
+  }
+
+  function showCopied(btn) {
+    btn.classList.add('copied');
+    btn.innerHTML = '<svg width="11" height="11" fill="none" viewBox="0 0 24 24"><path d="M5 13l4 4L19 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> 복사됨';
+    setTimeout(() => {
+      btn.classList.remove('copied');
+      btn.innerHTML = '<svg width="11" height="11" fill="none" viewBox="0 0 24 24"><path d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> URL 복사';
+    }, 2000);
+  }
+
+  /* ── 초기화 ─────────────────────────────────── */
+  function resetAll() {
+    if (!confirm('체크 상태를 모두 초기화할까요?')) return;
+    document.querySelectorAll('.check-row[data-id]').forEach(r => r.classList.remove('done'));
+    try { localStorage.removeItem(SAVE_KEY); } catch(e) {}
+    try { history.replaceState(null, '', location.pathname + location.search); } catch(e) {}
+    updateProgress();
+    setSavedUI(false);
+  }
+
+  load();
+</script>
+</body>
+</html>
