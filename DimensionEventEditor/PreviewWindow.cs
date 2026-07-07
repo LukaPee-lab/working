@@ -10,7 +10,7 @@ namespace DimensionEventEditor;
 public sealed class PreviewWindow : Window
 {
     private readonly Func<IReadOnlyList<DiffEntry>> _loadDiff;
-    private readonly Action<DiffEntry> _revert;
+    private readonly Action<IReadOnlyList<DiffEntry>> _revert;
     private readonly Func<string, bool, EventGraphPreview?> _loadGraphPreview;
     private readonly TextBlock _title;
     private readonly ListBox _list;
@@ -34,7 +34,7 @@ public sealed class PreviewWindow : Window
         public override string ToString() => $"{Key}  ({Entries.Count} changes)";
     }
 
-    public PreviewWindow(Func<IReadOnlyList<DiffEntry>> loadDiff, Action<DiffEntry> revert, Func<string, bool, EventGraphPreview?> loadGraphPreview, string exportId)
+    public PreviewWindow(Func<IReadOnlyList<DiffEntry>> loadDiff, Action<IReadOnlyList<DiffEntry>> revert, Func<string, bool, EventGraphPreview?> loadGraphPreview, string exportId)
     {
         _loadDiff = loadDiff;
         _revert = revert;
@@ -46,6 +46,7 @@ public sealed class PreviewWindow : Window
         Background = new SolidColorBrush(Color.FromRgb(27, 27, 27));
         Foreground = Brushes.White;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
+        PreviewKeyDown += PreviewWindow_PreviewKeyDown;
 
         var root = new DockPanel { Margin = new Thickness(14) };
         _title = new TextBlock
@@ -143,6 +144,16 @@ public sealed class PreviewWindow : Window
         Content = root;
 
         ReloadDiff();
+    }
+
+    private void PreviewWindow_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Escape)
+            return;
+
+        e.Handled = true;
+        DialogResult = false;
+        Close();
     }
 
     public IReadOnlyList<DiffEntry> UncheckedEntries => _list.Items
@@ -655,8 +666,7 @@ public sealed class PreviewWindow : Window
         if (selected.Count == 0)
             return;
 
-        foreach (var entry in selected)
-            _revert(entry);
+        _revert(selected);
         ReloadDiff();
     }
 

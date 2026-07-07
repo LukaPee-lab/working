@@ -184,6 +184,11 @@ public sealed class AppSettings
     public double RightPaneWidth { get; set; } = 640;
     public double HierarchyPaneWidth { get; set; } = 270;
     public double ConsoleHeight { get; set; } = 150;
+    public bool ShowEventList { get; set; } = true;
+    public bool ShowScene { get; set; } = true;
+    public bool ShowHierarchy { get; set; } = true;
+    public bool ShowInspector { get; set; } = true;
+    public bool ShowConsole { get; set; } = true;
     public string LastExportId { get; set; } = EventWorkbookService.DefaultEventExportId;
 }
 

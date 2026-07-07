@@ -1,5 +1,9 @@
 using System.Globalization;
 using System.IO;
+using System.IO.Compression;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Xml.Linq;
 using ClosedXML.Excel;
 
 namespace DimensionEventEditor;
@@ -13,8 +17,23 @@ public static class EventWorkbookService
     public const string LayoutSheetName = "이벤트툴_레이아웃";
     public const string DefaultEventExportId = "manmo2429_175126";
     public const string DefaultTextExportId = "251023.lbh9517_142227";
+    public const string BattleResultChoiceSuffix = "_BATTLE_RESULT";
 
-    public static EventWorkbook Load(string path)
+    private static readonly string[] ExitMemoVariants =
+    [
+        "{0}의 여운이 잦아들고 차원 탐사가 마무리된다.",
+        "{0}에서 얻은 단서를 정리한 뒤 균열 밖으로 물러난다.",
+        "{0}의 흔적이 희미해지며 일행은 다음 탐사를 준비한다.",
+        "{0}을 뒤로하고 불안정한 차원의 문이 조용히 닫힌다.",
+        "{0}의 기척이 사라지고 주변 공간이 원래의 고요를 되찾는다.",
+        "{0}의 마지막 파동을 확인하고 탐사를 종료한다.",
+        "{0}의 결말을 마음에 새긴 채 차원의 틈을 빠져나온다.",
+        "{0}의 잔상이 흩어지고 이번 조사는 여기서 끝난다.",
+        "{0}을 둘러싼 이상 현상이 가라앉으며 발걸음을 돌린다.",
+        "{0}의 기록을 남기고 낯선 공간에서 벗어난다."
+    ];
+
+    public static EventWorkbook Load(string path, bool normalizeExitTerminals = true)
     {
         using var workbook = OpenWorkbookSnapshot(path);
         var model = new EventWorkbook { SourcePath = path };
@@ -27,6 +46,8 @@ public static class EventWorkbookService
             LoadLayout(layoutSheet, model);
         if (workbook.Worksheets.TryGetWorksheet("매뉴얼", out var manualSheet))
             LoadManual(manualSheet, model);
+        if (normalizeExitTerminals)
+            NormalizeExitTerminals(model);
         return model;
     }
 
@@ -63,6 +84,8 @@ public static class EventWorkbookService
                 issues.Add(Error($"{evt.Id}: event_name TID가 비어 있습니다."));
             if (Blank(evt.FirstGroupId) || !groupSet.Contains(evt.FirstGroupId))
                 issues.Add(Error($"{evt.Id}: first_group_id가 존재하지 않습니다. ({evt.FirstGroupId})"));
+            if (!workbook.Groups.Any(g => Same(g.EventId, evt.Id) && Same(g.NextAction, "exit")))
+                issues.Add(Error($"{evt.Id}: 이벤트 종료용 next_action=exit 장면이 없습니다."));
         }
 
         foreach (var group in workbook.Groups)
@@ -77,10 +100,46 @@ public static class EventWorkbookService
                 issues.Add(Error($"{group.Id}: situation_text TID가 비어 있습니다."));
             if (group.NextAction == "choice" && workbook.Choices.All(c => !Same(c.GroupId, group.Id)))
                 issues.Add(Warning($"{group.Id}: next_action=choice지만 선택지가 없습니다."));
+            if (Same(group.NextAction, "exit") && workbook.Choices.Any(c => Same(c.GroupId, group.Id)))
+                issues.Add(Warning($"{group.Id}: next_action=exit 장면에 선택지가 남아 있습니다."));
             if (Same(group.NextAction, "battle") && Blank(group.StageId))
                 issues.Add(Error($"{group.Id}: next_action=battle인데 stage_id가 없습니다."));
+            if (Same(group.NextAction, "battle"))
+            {
+                var resultChoice = FindBattleResultChoice(workbook, group);
+                if (resultChoice is null)
+                    issues.Add(Error($"{group.Id}: battle 결과용 선택지 row가 없습니다. ({BattleResultChoiceId(group.Id)})"));
+                else if (Same(resultChoice.SuccessRewardType, "none"))
+                    issues.Add(Warning($"{group.Id}: battle 성공 보상이 없습니다."));
+            }
             if (!Same(group.NextAction, "battle") && NotBlank(group.StageId))
                 issues.Add(Warning($"{group.Id}: stage_id가 있지만 next_action이 battle이 아닙니다. ({group.NextAction})"));
+        }
+
+        foreach (var evt in workbook.Events)
+        {
+            var eventGroups = workbook.Groups
+                .Where(g => Same(g.EventId, evt.Id))
+                .ToList();
+            var battleGroupIds = eventGroups
+                .Where(g => Same(g.NextAction, "battle"))
+                .Select(g => g.Id)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            if (battleGroupIds.Count == 0)
+                continue;
+
+            var sourceGroupIds = workbook.Choices
+                .Where(c => groupById.TryGetValue(c.GroupId, out var owner)
+                            && Same(owner.EventId, evt.Id)
+                            && !IsBattleResultChoice(c, owner)
+                            && (battleGroupIds.Contains(c.SuccessNextGroupId) || battleGroupIds.Contains(c.FailNextGroupId)))
+                .Select(c => c.GroupId)
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+            foreach (var sourceGroupId in sourceGroupIds)
+            {
+                if (!HasPlainEscapeChoice(workbook, sourceGroupId, groupById))
+                    issues.Add(Error($"{sourceGroupId}: battle 진입 전 도망 선택지가 없습니다."));
+            }
         }
 
         foreach (var choice in workbook.Choices)
@@ -103,8 +162,11 @@ public static class EventWorkbookService
                 issues.Add(Error($"{choice.Id}: fail_reward_type이 {choice.FailRewardType}인데 amount가 없습니다."));
             var groupEndsWithExit = groupById.TryGetValue(choice.GroupId, out var group)
                 && Same(group.NextAction, "exit");
-            if (Blank(choice.SuccessNextGroupId) && choice.SuccessRewardType == "none" && !groupEndsWithExit && !HasChoiceExit(workbook, choice.Id, "success"))
-                issues.Add(Warning($"{choice.Id}: 성공 보상도 다음 group도 없습니다."));
+            var isBattleResult = group is not null && IsBattleResultChoice(choice, group);
+            if (Blank(choice.SuccessNextGroupId) && !groupEndsWithExit)
+                issues.Add(Error($"{choice.Id}: 성공 경로가 exit 장면에 연결되지 않았습니다."));
+            if ((choice.SuccessRate is not null || isBattleResult) && Blank(choice.FailNextGroupId) && !groupEndsWithExit)
+                issues.Add(Error($"{choice.Id}: 실패 경로가 exit 장면에 연결되지 않았습니다."));
         }
 
         foreach (var duplicateTid in workbook.TextEntries.Where(t => NotBlank(t.Tid))
@@ -120,7 +182,8 @@ public static class EventWorkbookService
 
     public static List<DiffEntry> BuildDiff(EventWorkbook edited)
     {
-        var original = File.Exists(edited.SourcePath) ? Load(edited.SourcePath) : new EventWorkbook();
+        NormalizeExitTerminals(edited);
+        var original = File.Exists(edited.SourcePath) ? Load(edited.SourcePath, normalizeExitTerminals: false) : new EventWorkbook();
         var diff = new List<DiffEntry>();
         CompareRows(diff, BaseSheetName, SnapshotBase(original), SnapshotBase(edited));
         CompareRows(diff, GroupSheetName, SnapshotGroups(original), SnapshotGroups(edited));
@@ -151,6 +214,29 @@ public static class EventWorkbookService
             return false;
 
         var original = Load(edited.SourcePath);
+        return RevertDiff(edited, original, entry);
+    }
+
+    public static int RevertDiffs(EventWorkbook edited, IEnumerable<DiffEntry> entries)
+    {
+        var revertable = entries
+            .Where(e => e.CanRevert)
+            .ToList();
+        if (revertable.Count == 0 || !File.Exists(edited.SourcePath))
+            return 0;
+
+        var original = Load(edited.SourcePath);
+        var reverted = 0;
+        foreach (var entry in revertable)
+        {
+            if (RevertDiff(edited, original, entry))
+                reverted++;
+        }
+        return reverted;
+    }
+
+    private static bool RevertDiff(EventWorkbook edited, EventWorkbook original, DiffEntry entry)
+    {
         return entry.Sheet switch
         {
             BaseSheetName => RevertBaseRow(edited, original, entry),
@@ -191,6 +277,8 @@ public static class EventWorkbookService
 
     public static void SaveAs(EventWorkbook model, string outputPath, bool createBackup)
     {
+        NormalizeExitTerminals(model);
+
         if (createBackup && File.Exists(outputPath))
         {
             var backup = Path.Combine(Path.GetDirectoryName(outputPath) ?? "",
@@ -205,6 +293,87 @@ public static class EventWorkbookService
         WriteText(EnsureSheet(workbook, TextSheetName), model);
         WriteLayout(NormalizeLayoutSheet(workbook), model);
         workbook.SaveAs(outputPath);
+        FixWorksheetDimensions(outputPath, model);
+    }
+
+    public static int NormalizeExitTerminals(EventWorkbook workbook)
+    {
+        var changed = 0;
+        changed += RemoveDeprecatedTerminalLayouts(workbook);
+        changed += NormalizeExitActionGroups(workbook);
+        changed += EnsureReferencedGroups(workbook);
+        changed += EnsureBattleResultChoices(workbook);
+
+        var groupsByEvent = workbook.Groups
+            .Where(g => NotBlank(g.EventId))
+            .GroupBy(g => g.EventId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
+        var groupsById = workbook.Groups.ToDictionary(g => g.Id, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var evt in workbook.Events)
+        {
+            if (!groupsByEvent.TryGetValue(evt.Id, out var eventGroups) || eventGroups.Count == 0)
+                continue;
+
+            changed += EnsurePreBattleEscapeChoices(workbook, evt, eventGroups, groupsById);
+
+            ChoiceGroupRow? exitGroup = null;
+            foreach (var choice in workbook.Choices.Where(c => groupsById.TryGetValue(c.GroupId, out var owner)
+                                                                && Same(owner.EventId, evt.Id)))
+            {
+                if (!groupsById.TryGetValue(choice.GroupId, out var ownerGroup))
+                    continue;
+                if (Same(ownerGroup.NextAction, "exit"))
+                    continue;
+                var isBattleResult = IsBattleResultChoice(choice, ownerGroup);
+                var canonicalExitId = CanonicalExitGroupId(evt.Id);
+
+                if (NotBlank(choice.SuccessNextGroupId)
+                    && groupsById.TryGetValue(choice.SuccessNextGroupId, out var successTarget)
+                    && Same(successTarget.NextAction, "exit")
+                    && !Same(successTarget.Id, canonicalExitId))
+                {
+                    exitGroup ??= EnsureExitGroup(workbook, evt, eventGroups);
+                    groupsById[exitGroup.Id] = exitGroup;
+                    choice.SuccessNextGroupId = exitGroup.Id;
+                    changed++;
+                }
+                else if (Blank(choice.SuccessNextGroupId))
+                {
+                    exitGroup ??= EnsureExitGroup(workbook, evt, eventGroups);
+                    groupsById[exitGroup.Id] = exitGroup;
+                    choice.SuccessNextGroupId = exitGroup.Id;
+                    changed++;
+                }
+
+                if (NotBlank(choice.FailNextGroupId)
+                    && groupsById.TryGetValue(choice.FailNextGroupId, out var failTarget)
+                    && Same(failTarget.NextAction, "exit")
+                    && !Same(failTarget.Id, canonicalExitId))
+                {
+                    exitGroup ??= EnsureExitGroup(workbook, evt, eventGroups);
+                    groupsById[exitGroup.Id] = exitGroup;
+                    choice.FailNextGroupId = exitGroup.Id;
+                    changed++;
+                }
+                else if ((choice.SuccessRate is not null || isBattleResult) && Blank(choice.FailNextGroupId))
+                {
+                    exitGroup ??= EnsureExitGroup(workbook, evt, eventGroups);
+                    groupsById[exitGroup.Id] = exitGroup;
+                    choice.FailNextGroupId = exitGroup.Id;
+                    changed++;
+                }
+            }
+
+            if (!eventGroups.Any(g => Same(g.Id, CanonicalExitGroupId(evt.Id)) && Same(g.NextAction, "exit")))
+            {
+                EnsureExitGroup(workbook, evt, eventGroups);
+                changed++;
+            }
+        }
+
+        changed += EnsureExitMemos(workbook);
+        return changed;
     }
 
     public static string NextEventId(EventWorkbook workbook)
@@ -242,6 +411,514 @@ public static class EventWorkbookService
             Comment = $"선택지: {c.Id}"
         }));
         return entries.Where(e => NotBlank(e.Tid)).ToList();
+    }
+
+    private static int RemoveDeprecatedTerminalLayouts(EventWorkbook workbook)
+    {
+        var staleKeys = workbook.Layouts.Keys
+            .Where(IsDeprecatedTerminalLayout)
+            .ToList();
+        foreach (var key in staleKeys)
+            workbook.Layouts.Remove(key);
+        return staleKeys.Count;
+    }
+
+    private static bool IsDeprecatedTerminalLayout(string key)
+        => key.StartsWith("exit|", StringComparison.OrdinalIgnoreCase)
+           || key.StartsWith("choice_exit|", StringComparison.OrdinalIgnoreCase)
+           || key.StartsWith("pending_exit|", StringComparison.OrdinalIgnoreCase)
+           || key.StartsWith("group_reward|", StringComparison.OrdinalIgnoreCase);
+
+    private static int NormalizeExitActionGroups(EventWorkbook workbook)
+    {
+        var changed = 0;
+        var groupsWithChoices = workbook.Choices
+            .Where(c => NotBlank(c.GroupId))
+            .Select(c => c.GroupId)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var group in workbook.Groups.Where(g => Same(g.NextAction, "exit") && groupsWithChoices.Contains(g.Id)))
+        {
+            group.NextAction = "choice";
+            if (NotBlank(group.StageId))
+                group.StageId = "";
+            changed++;
+        }
+
+        return changed;
+    }
+
+    public static string BattleResultChoiceId(string groupId) => $"{groupId}{BattleResultChoiceSuffix}";
+
+    private static EventChoiceRow? FindBattleResultChoice(EventWorkbook workbook, ChoiceGroupRow group)
+        => workbook.Choices.FirstOrDefault(c => Same(c.Id, BattleResultChoiceId(group.Id)) && Same(c.GroupId, group.Id));
+
+    private static bool IsBattleResultChoice(EventChoiceRow choice, ChoiceGroupRow group)
+        => Same(group.NextAction, "battle")
+           && Same(choice.GroupId, group.Id)
+           && Same(choice.Id, BattleResultChoiceId(group.Id));
+
+    private static int EnsureBattleResultChoices(EventWorkbook workbook)
+    {
+        var changed = 0;
+        foreach (var group in workbook.Groups.Where(g => Same(g.NextAction, "battle")).OrderBy(g => g.Id))
+        {
+            var id = BattleResultChoiceId(group.Id);
+            var choice = workbook.Choices.FirstOrDefault(c => Same(c.Id, id));
+            if (choice is null)
+            {
+                var nextSeq = workbook.Choices
+                    .Where(c => Same(c.GroupId, group.Id))
+                    .Select(c => c.Seq)
+                    .DefaultIfEmpty(0)
+                    .Max() + 1;
+                choice = new EventChoiceRow
+                {
+                    Id = id,
+                    Memo = "전투 결과",
+                    ExportId = DefaultEventExportId,
+                    GroupId = group.Id,
+                    Seq = Math.Max(1, nextSeq),
+                    ChoiceTextTid = $"{id}_choice_text",
+                    CostType = "none",
+                    SuccessRewardType = "relic",
+                    SuccessRewardAmount = 1,
+                    FailRewardType = "none"
+                };
+                workbook.Choices.Add(choice);
+                changed++;
+            }
+
+            changed += EnsureBattleResultDefaults(choice, group);
+        }
+
+        return changed;
+    }
+
+    private static int EnsureBattleResultDefaults(EventChoiceRow choice, ChoiceGroupRow group)
+    {
+        var changed = 0;
+        if (!Same(choice.GroupId, group.Id))
+        {
+            choice.GroupId = group.Id;
+            changed++;
+        }
+        if (Blank(choice.Memo))
+        {
+            choice.Memo = "전투 결과";
+            changed++;
+        }
+        if (Blank(choice.ExportId))
+        {
+            choice.ExportId = DefaultEventExportId;
+            changed++;
+        }
+        if (choice.Seq <= 0)
+        {
+            choice.Seq = 1;
+            changed++;
+        }
+        if (Blank(choice.ChoiceTextTid))
+        {
+            choice.ChoiceTextTid = $"{choice.Id}_choice_text";
+            changed++;
+        }
+        if (Blank(choice.CostType))
+        {
+            choice.CostType = "none";
+            changed++;
+        }
+        if (Blank(choice.SuccessRewardType) || (Same(choice.SuccessRewardType, "none") && choice.SuccessRewardAmount is null))
+        {
+            choice.SuccessRewardType = "relic";
+            choice.SuccessRewardAmount = 1;
+            changed++;
+        }
+        else if (!Same(choice.SuccessRewardType, "none") && choice.SuccessRewardAmount is null)
+        {
+            choice.SuccessRewardAmount = 1;
+            changed++;
+        }
+        if (Blank(choice.FailRewardType))
+        {
+            choice.FailRewardType = "none";
+            changed++;
+        }
+
+        return changed;
+    }
+
+    private static int EnsurePreBattleEscapeChoices(
+        EventWorkbook workbook,
+        EventBaseRow evt,
+        List<ChoiceGroupRow> eventGroups,
+        Dictionary<string, ChoiceGroupRow> groupsById)
+    {
+        var battleGroupIds = eventGroups
+            .Where(g => Same(g.NextAction, "battle"))
+            .Select(g => g.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (battleGroupIds.Count == 0)
+            return 0;
+
+        var sourceGroupIds = workbook.Choices
+            .Where(c => groupsById.TryGetValue(c.GroupId, out var owner)
+                        && Same(owner.EventId, evt.Id)
+                        && !IsBattleResultChoice(c, owner)
+                        && (battleGroupIds.Contains(c.SuccessNextGroupId) || battleGroupIds.Contains(c.FailNextGroupId)))
+            .Select(c => c.GroupId)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (sourceGroupIds.Count == 0)
+            return 0;
+
+        var changed = 0;
+        var exitGroup = EnsureExitGroup(workbook, evt, eventGroups);
+        groupsById[exitGroup.Id] = exitGroup;
+
+        foreach (var sourceGroupId in sourceGroupIds)
+        {
+            if (!groupsById.TryGetValue(sourceGroupId, out var sourceGroup))
+                continue;
+            if (Same(sourceGroup.NextAction, "battle") || Same(sourceGroup.NextAction, "exit"))
+                continue;
+            if (HasPlainEscapeChoice(workbook, sourceGroup.Id, groupsById))
+                continue;
+
+            if (!Same(sourceGroup.NextAction, "choice"))
+            {
+                sourceGroup.NextAction = "choice";
+                sourceGroup.StageId = "";
+                changed++;
+            }
+
+            var nextSeq = workbook.Choices
+                .Where(c => Same(c.GroupId, sourceGroup.Id))
+                .Select(c => c.Seq)
+                .DefaultIfEmpty(0)
+                .Max() + 1;
+            var id = NextChoiceId(workbook, sourceGroup.Id);
+            workbook.Choices.Add(new EventChoiceRow
+            {
+                Id = id,
+                Memo = "무시하고 지나친다.",
+                ExportId = DefaultEventExportId,
+                GroupId = sourceGroup.Id,
+                Seq = nextSeq,
+                ChoiceTextTid = $"{id}_choice_text",
+                CostType = "none",
+                SuccessRewardType = "none",
+                SuccessNextGroupId = exitGroup.Id,
+                FailRewardType = "none"
+            });
+            changed++;
+        }
+
+        return changed;
+    }
+
+    private static bool HasPlainEscapeChoice(
+        EventWorkbook workbook,
+        string sourceGroupId,
+        Dictionary<string, ChoiceGroupRow> groupsById)
+        => workbook.Choices.Any(c =>
+            Same(c.GroupId, sourceGroupId)
+            && Same(c.CostType, "none")
+            && c.CostAmount is null
+            && Same(c.SuccessRewardType, "none")
+            && c.SuccessRewardAmount is null
+            && Same(c.FailRewardType, "none")
+            && c.FailRewardAmount is null
+            && NotBlank(c.SuccessNextGroupId)
+            && groupsById.TryGetValue(c.SuccessNextGroupId, out var target)
+            && Same(target.NextAction, "exit"));
+
+    private static string NextChoiceId(EventWorkbook workbook, string groupId)
+    {
+        for (var seq = workbook.Choices
+                     .Where(c => Same(c.GroupId, groupId))
+                     .Select(c => c.Seq)
+                     .DefaultIfEmpty(0)
+                     .Max() + 1;
+             ; seq++)
+        {
+            var id = $"{groupId}_C{seq}";
+            if (workbook.Choices.All(c => !Same(c.Id, id)))
+                return id;
+        }
+    }
+
+    private static int EnsureReferencedGroups(EventWorkbook workbook)
+    {
+        var eventIds = workbook.Events.Select(e => e.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var existingGroupIds = workbook.Groups.Select(g => g.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var referenced = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var evt in workbook.Events.Where(e => NotBlank(e.FirstGroupId)))
+            referenced.Add(evt.FirstGroupId);
+        foreach (var choice in workbook.Choices)
+        {
+            if (NotBlank(choice.GroupId))
+                referenced.Add(choice.GroupId);
+            if (NotBlank(choice.SuccessNextGroupId))
+                referenced.Add(choice.SuccessNextGroupId);
+            if (NotBlank(choice.FailNextGroupId))
+                referenced.Add(choice.FailNextGroupId);
+        }
+
+        var added = 0;
+        foreach (var groupId in referenced.OrderBy(x => x))
+        {
+            if (existingGroupIds.Contains(groupId))
+                continue;
+
+            var eventId = InferEventIdFromGroupId(groupId);
+            if (Blank(eventId) || !eventIds.Contains(eventId))
+                continue;
+
+            var template = workbook.Groups
+                .Where(g => Same(g.EventId, eventId))
+                .OrderBy(g => g.Id)
+                .FirstOrDefault();
+            var hasChoices = workbook.Choices.Any(c => Same(c.GroupId, groupId));
+            var isExit = groupId.Contains("_EXIT", StringComparison.OrdinalIgnoreCase) || !hasChoices;
+            var evt = workbook.Events.FirstOrDefault(e => Same(e.Id, eventId));
+            var group = new ChoiceGroupRow
+            {
+                Id = groupId,
+                Memo = isExit ? ExitMemoForEvent(evt, eventId) : "장면 내용을 입력하세요.",
+                ExportId = DefaultEventExportId,
+                EventId = eventId,
+                Background = template?.Background ?? "dimension_spiral",
+                NpcId = template?.NpcId ?? "",
+                SituationTextTid = $"{groupId}_situation_text",
+                NextAction = isExit ? "exit" : "choice",
+                StageId = ""
+            };
+            workbook.Groups.Add(group);
+            existingGroupIds.Add(groupId);
+            added++;
+        }
+
+        return added;
+    }
+
+    private static string InferEventIdFromGroupId(string groupId)
+    {
+        var match = Regex.Match(groupId, @"^s\d+_EVT_\d{3}", RegexOptions.IgnoreCase);
+        return match.Success ? match.Value : "";
+    }
+
+    private static ChoiceGroupRow EnsureExitGroup(EventWorkbook workbook, EventBaseRow evt, List<ChoiceGroupRow> eventGroups)
+    {
+        var canonicalId = CanonicalExitGroupId(evt.Id);
+        var existing = eventGroups
+            .Where(g => Same(g.Id, canonicalId)
+                        && Same(g.NextAction, "exit")
+                        && !workbook.Choices.Any(c => Same(c.GroupId, g.Id)))
+            .FirstOrDefault();
+        if (existing is not null)
+            return existing;
+
+        var template = eventGroups
+            .OrderByDescending(g => workbook.Choices.Any(c => Same(c.GroupId, g.Id) && (Blank(c.SuccessNextGroupId) || (c.SuccessRate is not null && Blank(c.FailNextGroupId)))))
+            .ThenBy(g => g.Id)
+            .First();
+        var id = NextExitGroupId(workbook, evt.Id);
+        var exitGroup = new ChoiceGroupRow
+        {
+            Id = id,
+            Memo = ExitMemoForEvent(evt, evt.Id),
+            ExportId = EventWorkbookService.DefaultEventExportId,
+            EventId = evt.Id,
+            Background = Default(template.Background, "dimension_spiral"),
+            NpcId = template.NpcId,
+            SituationTextTid = $"{id}_situation_text",
+            NextAction = "exit",
+            StageId = ""
+        };
+        workbook.Groups.Add(exitGroup);
+        eventGroups.Add(exitGroup);
+
+        if (workbook.Layouts.TryGetValue(template.Id, out var sourceLayout))
+        {
+            workbook.Layouts[id] = new NodeLayout
+            {
+                EventId = evt.Id,
+                GroupId = id,
+                X = sourceLayout.X + 520,
+                Y = sourceLayout.Y,
+                Width = 340,
+                Height = 138
+            };
+        }
+
+        return exitGroup;
+    }
+
+    private static int EnsureExitMemos(EventWorkbook workbook)
+    {
+        var changed = 0;
+        foreach (var group in workbook.Groups.Where(g => Same(g.NextAction, "exit")))
+        {
+            if (!IsGeneratedExitMemo(group.Memo))
+                continue;
+            var evt = workbook.Events.FirstOrDefault(e => Same(e.Id, group.EventId));
+            var memo = ExitMemoForEvent(evt, group.EventId);
+            if (Same(group.Memo, memo))
+                continue;
+            group.Memo = memo;
+            changed++;
+        }
+        return changed;
+    }
+
+    private static bool IsGeneratedExitMemo(string memo)
+    {
+        if (Blank(memo))
+            return true;
+        var trimmed = memo.Trim();
+        return Same(trimmed, "이벤트가 종료된다.")
+               || Same(trimmed, "이벤트가 종료됩니다.")
+               || Same(trimmed, "event end")
+               || Same(trimmed, "이벤트 종료");
+    }
+
+    private static string ExitMemoForEvent(EventBaseRow? evt, string eventId)
+    {
+        var title = evt is not null && NotBlank(evt.Memo) ? evt.Memo.Trim() : eventId;
+        if (Blank(title))
+            title = "이번 사건";
+        var index = StableIndex(evt?.Id ?? eventId, ExitMemoVariants.Length);
+        return string.Format(CultureInfo.InvariantCulture, ExitMemoVariants[index], title);
+    }
+
+    private static int StableIndex(string key, int count)
+    {
+        if (count <= 0)
+            return 0;
+        unchecked
+        {
+            var hash = 23;
+            foreach (var ch in key)
+                hash = hash * 31 + ch;
+            var positive = hash == int.MinValue ? 0 : Math.Abs(hash);
+            return positive % count;
+        }
+    }
+
+    private static string NextExitGroupId(EventWorkbook workbook, string eventId)
+    {
+        var existing = workbook.Groups
+            .Select(g => g.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var candidate = CanonicalExitGroupId(eventId);
+        if (!existing.Contains(candidate))
+            return candidate;
+
+        for (var i = 2; ; i++)
+        {
+            candidate = $"{eventId}_G999_EXIT_{i}";
+            if (!existing.Contains(candidate))
+                return candidate;
+        }
+    }
+
+    private static string CanonicalExitGroupId(string eventId) => $"{eventId}_G999_EXIT";
+
+    private static void FixWorksheetDimensions(string outputPath, EventWorkbook model)
+    {
+        using var archive = ZipFile.Open(outputPath, ZipArchiveMode.Update);
+        var sheetPaths = GetWorksheetPaths(archive);
+        var dimensions = new Dictionary<string, (int LastRow, int LastColumn)>(StringComparer.OrdinalIgnoreCase)
+        {
+            [BaseSheetName] = (Math.Max(3, model.Events.Count + 3), 9),
+            [GroupSheetName] = (Math.Max(3, model.Groups.Count + 3), 9),
+            [ChoiceSheetName] = (Math.Max(3, model.Choices.Count + 3), 15),
+            [TextSheetName] = (Math.Max(1, GenerateTextEntries(model).Count + 1), 4),
+            [LayoutSheetName] = (Math.Max(1, model.Layouts.Count + 1), 7)
+        };
+
+        foreach (var (sheetName, size) in dimensions)
+        {
+            if (!sheetPaths.TryGetValue(sheetName, out var entryName))
+                continue;
+            SetWorksheetDimension(archive, entryName, $"A1:{ColumnName(size.LastColumn)}{size.LastRow}");
+        }
+    }
+
+    private static Dictionary<string, string> GetWorksheetPaths(ZipArchive archive)
+    {
+        var workbookEntry = archive.GetEntry("xl/workbook.xml");
+        var relsEntry = archive.GetEntry("xl/_rels/workbook.xml.rels");
+        if (workbookEntry is null || relsEntry is null)
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        XDocument workbook;
+        XDocument rels;
+        using (var stream = workbookEntry.Open())
+            workbook = XDocument.Load(stream);
+        using (var stream = relsEntry.Open())
+            rels = XDocument.Load(stream);
+
+        XNamespace spreadsheet = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        XNamespace relationships = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+        XNamespace packageRelationships = "http://schemas.openxmlformats.org/package/2006/relationships";
+
+        var targets = rels.Root?
+            .Elements(packageRelationships + "Relationship")
+            .Where(e => e.Attribute("Id") is not null && e.Attribute("Target") is not null)
+            .ToDictionary(e => e.Attribute("Id")!.Value, e => e.Attribute("Target")!.Value, StringComparer.OrdinalIgnoreCase)
+            ?? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var sheet in workbook.Root?.Element(spreadsheet + "sheets")?.Elements(spreadsheet + "sheet") ?? [])
+        {
+            var name = sheet.Attribute("name")?.Value;
+            var rid = sheet.Attribute(relationships + "id")?.Value;
+            if (Blank(name) || Blank(rid) || !targets.TryGetValue(rid!, out var target))
+                continue;
+            var entryName = target.TrimStart('/');
+            if (!entryName.StartsWith("xl/", StringComparison.OrdinalIgnoreCase))
+                entryName = "xl/" + entryName;
+            result[name!] = entryName;
+        }
+
+        return result;
+    }
+
+    private static void SetWorksheetDimension(ZipArchive archive, string entryName, string dimension)
+    {
+        var entry = archive.GetEntry(entryName);
+        if (entry is null)
+            return;
+
+        string xml;
+        using (var reader = new StreamReader(entry.Open(), Encoding.UTF8, detectEncodingFromByteOrderMarks: true))
+            xml = reader.ReadToEnd();
+
+        xml = Regex.Replace(
+            xml,
+            @"(<(?:\w+:)?dimension\s+ref="")[^""]+(""\s*/>)",
+            $"$1{dimension}$2",
+            RegexOptions.IgnoreCase);
+
+        entry.Delete();
+        var replacement = archive.CreateEntry(entryName, CompressionLevel.Optimal);
+        using var writer = new StreamWriter(replacement.Open(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: xml.StartsWith('\ufeff')));
+        writer.Write(xml.TrimStart('\ufeff'));
+    }
+
+    private static string ColumnName(int column)
+    {
+        var name = "";
+        while (column > 0)
+        {
+            column--;
+            name = (char)('A' + column % 26) + name;
+            column /= 26;
+        }
+        return name;
     }
 
     private static void LoadBase(IXLWorksheet ws, EventWorkbook model)

@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -173,7 +173,7 @@ public sealed class BackgroundImagePickerWindow : Window
         var path = _pathBox.Text.Trim().Trim('"');
         if (!Directory.Exists(path))
         {
-            MessageBox.Show(this, "Image folder path is invalid.", "Invalid path", MessageBoxButton.OK, MessageBoxImage.Warning);
+            ThemedMessageBox.Show(this, "Image folder path is invalid.", "Invalid path", MessageBoxButton.OK, MessageBoxImage.Warning);
             _pathBox.Text = CurrentRoot;
             return;
         }
@@ -341,7 +341,7 @@ public sealed class BackgroundImagePickerWindow : Window
     {
         if (_selectedItem is null)
         {
-            MessageBox.Show(this, "Select an image first.", "Select Background", MessageBoxButton.OK, MessageBoxImage.Information);
+            ThemedMessageBox.Show(this, "Select an image first.", "Select Background", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -428,3 +428,4 @@ public sealed class BackgroundImagePickerWindow : Window
         public static BackgroundImageItem None() => new(null, "", "None", null);
     }
 }
+

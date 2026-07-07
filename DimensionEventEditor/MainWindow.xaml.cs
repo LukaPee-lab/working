@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
@@ -7,6 +7,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
@@ -27,7 +28,7 @@ public partial class MainWindow : Window
     private const double ChoiceRowGap = 8;
     private const double PinSize = 15;
     private const double RewardNodeWidth = 190;
-    private const double RewardNodeHeight = 66;
+    private const double RewardNodeHeight = 88;
     private const double BattleNodeWidth = 210;
     private const double BattleNodeHeight = 72;
     private const double ExitNodeWidth = 180;
@@ -38,6 +39,7 @@ public partial class MainWindow : Window
     private const string PendingExitPrefix = "pending_exit|";
     private const string ChoiceExitPrefix = "choice_exit|";
     private const string GroupRewardPrefix = "group_reward|";
+    private const string ChoiceArrayDragFormat = "DimensionEventEditor.ChoiceArrayDrag";
     private const string DefaultBackgroundImageRoot = @"D:\repos\dev\game\Resources\res\nexus";
     private static readonly string[] BackgroundImageExtensions = [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"];
     private const double GraphDefaultX = 4200;
@@ -62,7 +64,26 @@ public partial class MainWindow : Window
     private string? _linkGroupActionId;
     private string? _linkChoiceId;
     private string? _linkBranch;
-    private Line? _linkPreviewLine;
+    private string? _linkRewardChoiceId;
+    private string? _linkRewardBranch;
+    private string? _linkBattleGroupId;
+    private string? _linkBattleBranch;
+    private System.Windows.Shapes.Path? _linkPreviewPath;
+    private Point _linkPreviewStart;
+    private Rect? _linkPreviewSourceRect;
+    private string? _linkPreviewSourcePinKey;
+    private bool _linkDragMoved;
+    private string? _selectedPinKey;
+    private readonly List<GraphLink> _currentLinks = [];
+    private bool _showEventList = true;
+    private bool _showScene = true;
+    private bool _showHierarchy = true;
+    private bool _showInspector = true;
+    private bool _showConsole = true;
+    private double _lastLeftPaneWidth = 250;
+    private double _lastRightPaneWidth = 640;
+    private double _lastHierarchyPaneWidth = 270;
+    private double _lastConsoleHeight = 150;
     private readonly ScaleTransform _graphScale = new(1, 1);
     private double _zoom = 1.0;
     private AppSettings _settings = new();
@@ -82,6 +103,7 @@ public partial class MainWindow : Window
     private readonly HashSet<string> _selectedNodeKeys = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, Point> _multiDragStartPositions = [];
     private bool _isDraggingNodeSelection;
+    private bool _isDraggingSharedObject;
     private Point _multiDragStartMouse;
     private bool _isBoxSelecting;
     private Point _boxSelectStart;
@@ -90,12 +112,30 @@ public partial class MainWindow : Window
     private bool _initialLoadStarted;
     private bool _isLoadingWorkbook;
     private bool _suppressEventSelectionChanged;
+    private string? _lastInspectorAttentionKey;
+    private int _inspectorAttentionClickCount;
+    private DateTime _lastInspectorAttentionClickUtc = DateTime.MinValue;
+    private string? _choiceArrayDragChoiceId;
+    private Point _choiceArrayDragStart;
+    private Grid? _choiceArrayDragSourceRow;
+    private Grid? _choiceArrayActiveDropRow;
+    private Border? _choiceArrayActiveDropIndicator;
+    private Dictionary<string, Point> _sharedObjectDragStartPositions = [];
     private Process? _playerProcess;
     private bool _playerPaused;
     private bool _runtimeLocked;
     private string? _playerExePathInUse;
     private string? _runtimeRelicWorkbookPath;
     private readonly DispatcherTimer _playerWatchTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
+
+    private sealed record GraphLink(
+        string Key,
+        string SourcePinKey,
+        string TargetPinKey,
+        string Kind,
+        string SourceId,
+        string Branch,
+        string TargetId);
 
     [DllImport("ntdll.dll")]
     private static extern int NtSuspendProcess(IntPtr processHandle);
@@ -106,8 +146,11 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        WindowState = WindowState.Maximized;
         _settings = NexusPathResolver.LoadSettings();
         ApplyLayoutCache();
+        RememberCurrentPaneSizes();
+        ApplyPaneVisibility();
         GraphCanvas.LayoutTransform = _graphScale;
         EventList.PreviewMouseRightButtonDown += EventList_PreviewMouseRightButtonDown;
         _playerWatchTimer.Tick += PlayerWatchTimer_Tick;
@@ -163,7 +206,6 @@ public partial class MainWindow : Window
             _settings.EventWorkbookPath = path;
             _settings.ReposRoot = FindReposRoot(path);
             NexusPathResolver.SaveSettings(_settings);
-            PathText.Text = path;
             _selectedEvent = _workbook.Events
                 .OrderBy(e => e.Id)
                 .FirstOrDefault(e => string.Equals(e.Id, _selectedEvent?.Id, StringComparison.OrdinalIgnoreCase))
@@ -177,11 +219,21 @@ public partial class MainWindow : Window
             RefreshEventList();
             RefreshHierarchy();
             RefreshIssues();
-            Log($"로드 완료: {_workbook.Events.Count} events / {_workbook.Groups.Count} groups / {_workbook.Choices.Count} choices");
+            if (_selectedEvent is not null)
+            {
+                EventList.SelectedItem = _selectedEvent;
+                EventList.ScrollIntoView(_selectedEvent);
+                DrawGraph();
+            }
+            else
+            {
+                BuildEventInspector();
+            }
+            Log($"로드 완료: {IoPath.GetFileName(path)} / {_workbook.Events.Count} events / {_workbook.Groups.Count} groups / {_workbook.Choices.Count} choices / {path}");
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, ex.Message, "Load failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            ThemedMessageBox.Show(this, ex.Message, "Load failed", MessageBoxButton.OK, MessageBoxImage.Error);
         }
         finally
         {
@@ -206,9 +258,14 @@ public partial class MainWindow : Window
     private void ApplyLayoutCache()
     {
         SetColumnWidth(LeftPaneColumn, _settings.LeftPaneWidth, 180, 520);
-        SetColumnWidth(RightPaneColumn, _settings.RightPaneWidth, 520, 1500);
+        SetColumnWidth(RightPaneColumn, _settings.RightPaneWidth, 260, 1500);
         SetColumnWidth(HierarchyPaneColumn, _settings.HierarchyPaneWidth, 140, 720);
         SetRowHeight(ConsoleRow, _settings.ConsoleHeight, 72, 760);
+        _showEventList = _settings.ShowEventList;
+        _showScene = _settings.ShowScene;
+        _showHierarchy = _settings.ShowHierarchy;
+        _showInspector = _settings.ShowInspector;
+        _showConsole = _settings.ShowConsole;
     }
 
     private static void SetColumnWidth(ColumnDefinition column, double value, double min, double max)
@@ -227,11 +284,163 @@ public partial class MainWindow : Window
 
     private void SaveLayoutCache()
     {
-        _settings.LeftPaneWidth = LeftPaneColumn.ActualWidth > 0 ? LeftPaneColumn.ActualWidth : LeftPaneColumn.Width.Value;
-        _settings.RightPaneWidth = RightPaneColumn.ActualWidth > 0 ? RightPaneColumn.ActualWidth : RightPaneColumn.Width.Value;
-        _settings.HierarchyPaneWidth = HierarchyPaneColumn.ActualWidth > 0 ? HierarchyPaneColumn.ActualWidth : HierarchyPaneColumn.Width.Value;
-        _settings.ConsoleHeight = ConsoleRow.ActualHeight > 0 ? ConsoleRow.ActualHeight : ConsoleRow.Height.Value;
+        if (_showEventList)
+            _lastLeftPaneWidth = PositiveOrDefault(LeftPaneColumn.ActualWidth, LeftPaneColumn.Width.Value, _lastLeftPaneWidth);
+        if (_showHierarchy || _showInspector)
+            _lastRightPaneWidth = PositiveOrDefault(RightPaneColumn.ActualWidth, RightPaneColumn.Width.Value, _lastRightPaneWidth);
+        if (_showHierarchy)
+            _lastHierarchyPaneWidth = PositiveOrDefault(HierarchyPaneColumn.ActualWidth, HierarchyPaneColumn.Width.Value, _lastHierarchyPaneWidth);
+        if (_showConsole)
+            _lastConsoleHeight = PositiveOrDefault(ConsoleRow.ActualHeight, ConsoleRow.Height.Value, _lastConsoleHeight);
+
+        _settings.LeftPaneWidth = _lastLeftPaneWidth;
+        _settings.RightPaneWidth = _lastRightPaneWidth;
+        _settings.HierarchyPaneWidth = _lastHierarchyPaneWidth;
+        _settings.ConsoleHeight = _lastConsoleHeight;
+        _settings.ShowEventList = _showEventList;
+        _settings.ShowScene = _showScene;
+        _settings.ShowHierarchy = _showHierarchy;
+        _settings.ShowInspector = _showInspector;
+        _settings.ShowConsole = _showConsole;
         NexusPathResolver.SaveSettings(_settings);
+    }
+
+    private void RememberCurrentPaneSizes()
+    {
+        _lastLeftPaneWidth = PositiveOrDefault(LeftPaneColumn.ActualWidth, LeftPaneColumn.Width.Value, 250);
+        _lastRightPaneWidth = PositiveOrDefault(RightPaneColumn.ActualWidth, RightPaneColumn.Width.Value, 640);
+        _lastHierarchyPaneWidth = PositiveOrDefault(HierarchyPaneColumn.ActualWidth, HierarchyPaneColumn.Width.Value, 270);
+        _lastConsoleHeight = PositiveOrDefault(ConsoleRow.ActualHeight, ConsoleRow.Height.Value, 150);
+    }
+
+    private static double PositiveOrDefault(double first, double second, double fallback)
+        => first > 1 ? first : second > 1 ? second : fallback;
+
+    private void WindowPaneMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is MenuItem { Tag: string key } item)
+            SetPaneVisible(key, item.IsChecked);
+    }
+
+    private void ClosePaneButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is FrameworkElement { Tag: string key })
+            SetPaneVisible(key, false);
+    }
+
+    private void ResetLayoutMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        _showEventList = true;
+        _showScene = true;
+        _showHierarchy = true;
+        _showInspector = true;
+        _showConsole = true;
+        _lastLeftPaneWidth = 250;
+        _lastRightPaneWidth = 640;
+        _lastHierarchyPaneWidth = 270;
+        _lastConsoleHeight = 150;
+        LeftPaneColumn.Width = new GridLength(_lastLeftPaneWidth);
+        RightPaneColumn.Width = new GridLength(_lastRightPaneWidth);
+        HierarchyPaneColumn.Width = new GridLength(_lastHierarchyPaneWidth);
+        InspectorPaneColumn.Width = new GridLength(1, GridUnitType.Star);
+        ConsoleRow.Height = new GridLength(_lastConsoleHeight);
+        ApplyPaneVisibility();
+        SaveLayoutCache();
+    }
+
+    private void SetPaneVisible(string key, bool visible)
+    {
+        if (!visible)
+            RememberPaneSize(key);
+
+        switch (key)
+        {
+            case "eventList":
+                _showEventList = visible;
+                break;
+            case "scene":
+                _showScene = visible;
+                break;
+            case "hierarchy":
+                _showHierarchy = visible;
+                break;
+            case "inspector":
+                _showInspector = visible;
+                break;
+            case "console":
+                _showConsole = visible;
+                break;
+        }
+
+        ApplyPaneVisibility();
+        SaveLayoutCache();
+    }
+
+    private void RememberPaneSize(string key)
+    {
+        switch (key)
+        {
+            case "eventList":
+                _lastLeftPaneWidth = PositiveOrDefault(LeftPaneColumn.ActualWidth, LeftPaneColumn.Width.Value, _lastLeftPaneWidth);
+                break;
+            case "hierarchy":
+                _lastHierarchyPaneWidth = PositiveOrDefault(HierarchyPaneColumn.ActualWidth, HierarchyPaneColumn.Width.Value, _lastHierarchyPaneWidth);
+                goto case "right";
+            case "inspector":
+            case "right":
+                _lastRightPaneWidth = PositiveOrDefault(RightPaneColumn.ActualWidth, RightPaneColumn.Width.Value, _lastRightPaneWidth);
+                break;
+            case "console":
+                _lastConsoleHeight = PositiveOrDefault(ConsoleRow.ActualHeight, ConsoleRow.Height.Value, _lastConsoleHeight);
+                break;
+        }
+    }
+
+    private void ApplyPaneVisibility()
+    {
+        EventListMenuItem.IsChecked = _showEventList;
+        SceneMenuItem.IsChecked = _showScene;
+        HierarchyMenuItem.IsChecked = _showHierarchy;
+        InspectorMenuItem.IsChecked = _showInspector;
+        ConsoleMenuItem.IsChecked = _showConsole;
+
+        EventListPane.Visibility = _showEventList ? Visibility.Visible : Visibility.Collapsed;
+        LeftPaneColumn.MinWidth = _showEventList ? 180 : 0;
+        LeftPaneColumn.Width = _showEventList ? new GridLength(Math.Clamp(_lastLeftPaneWidth, 180, 520)) : new GridLength(0);
+
+        ScenePane.Visibility = _showScene ? Visibility.Visible : Visibility.Collapsed;
+        ScenePaneColumn.MinWidth = _showScene ? 220 : 0;
+        ScenePaneColumn.Width = _showScene ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
+
+        var showEventSceneSplitter = _showEventList && _showScene;
+        EventSceneSplitter.Visibility = showEventSceneSplitter ? Visibility.Visible : Visibility.Collapsed;
+        LeftPaneSplitterColumn.Width = showEventSceneSplitter ? new GridLength(5) : new GridLength(0);
+
+        ConsolePane.Visibility = _showConsole ? Visibility.Visible : Visibility.Collapsed;
+        ConsoleSplitter.Visibility = _showConsole ? Visibility.Visible : Visibility.Collapsed;
+        ConsoleSplitterRow.Height = _showConsole ? new GridLength(8) : new GridLength(0);
+        ConsoleRow.MinHeight = _showConsole ? 72 : 0;
+        ConsoleRow.Height = _showConsole ? new GridLength(Math.Clamp(_lastConsoleHeight, 72, 760)) : new GridLength(0);
+
+        var showRight = _showHierarchy || _showInspector;
+        RightDockArea.Visibility = showRight ? Visibility.Visible : Visibility.Collapsed;
+        RightPaneSplitter.Visibility = showRight ? Visibility.Visible : Visibility.Collapsed;
+        RightPaneSplitterColumn.Width = showRight ? new GridLength(5) : new GridLength(0);
+        var rightMinWidth = _showHierarchy && _showInspector ? 520 : 260;
+        RightPaneColumn.MinWidth = showRight ? rightMinWidth : 0;
+        RightPaneColumn.Width = showRight ? new GridLength(Math.Clamp(_lastRightPaneWidth, rightMinWidth, 1500)) : new GridLength(0);
+
+        HierarchyPane.Visibility = _showHierarchy ? Visibility.Visible : Visibility.Collapsed;
+        HierarchyPaneColumn.MinWidth = _showHierarchy ? 140 : 0;
+        HierarchyPaneColumn.Width = _showHierarchy ? new GridLength(Math.Clamp(_lastHierarchyPaneWidth, 140, 720)) : new GridLength(0);
+
+        InspectorPane.Visibility = _showInspector ? Visibility.Visible : Visibility.Collapsed;
+        InspectorPaneColumn.MinWidth = _showInspector ? 120 : 0;
+        InspectorPaneColumn.Width = _showInspector ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
+
+        var showRightInnerSplitter = _showHierarchy && _showInspector;
+        HierarchyInspectorSplitter.Visibility = showRightInnerSplitter ? Visibility.Visible : Visibility.Collapsed;
+        HierarchyInspectorSplitterColumn.Width = showRightInnerSplitter ? new GridLength(5) : new GridLength(0);
     }
 
     private void RefreshEventList()
@@ -298,16 +507,23 @@ public partial class MainWindow : Window
                || (!string.IsNullOrWhiteSpace(entry.TargetId)
                    && entry.TargetId.Contains(filter, StringComparison.OrdinalIgnoreCase));
 
-        NotiList.Items.Clear();
-        WarningList.Items.Clear();
-        ErrorList.Items.Clear();
+        ConsoleList.Items.Clear();
 
-        foreach (var message in _notiMessages.TakeLast(500).Where(m => Matches(m, filter)))
-            NotiList.Items.Add(message);
-        foreach (var entry in _warningMessages.Where(m => MatchesEntry(m, filter)))
-            WarningList.Items.Add(CreateConsoleIssueListItem(entry));
-        foreach (var entry in _errorMessages.Where(m => MatchesEntry(m, filter)))
-            ErrorList.Items.Add(CreateConsoleIssueListItem(entry));
+        if (ConsoleInfoToggle?.IsChecked != false)
+        {
+            foreach (var message in _notiMessages.TakeLast(500).Where(m => Matches(m, filter)))
+                ConsoleList.Items.Add(CreateConsoleLogListItem("Info", message));
+        }
+        if (ConsoleWarningToggle?.IsChecked != false)
+        {
+            foreach (var entry in _warningMessages.Where(m => MatchesEntry(m, filter)))
+                ConsoleList.Items.Add(CreateConsoleIssueListItem(entry));
+        }
+        if (ConsoleErrorToggle?.IsChecked != false)
+        {
+            foreach (var entry in _errorMessages.Where(m => MatchesEntry(m, filter)))
+                ConsoleList.Items.Add(CreateConsoleIssueListItem(entry));
+        }
 
         ConsoleNotiCount.Text = _notiMessages.Count.ToString();
         ConsoleWarningCount.Text = _warningMessages.Count.ToString();
@@ -328,26 +544,35 @@ public partial class MainWindow : Window
 
     private ListBoxItem CreateConsoleIssueListItem(ConsoleLogEntry entry)
     {
-        var foreground = entry.Severity == "Error"
+        var item = CreateConsoleLogListItem(entry.Severity, entry.Message, entry);
+        item.Cursor = entry.IsNavigable ? Cursors.Hand : Cursors.Arrow;
+        item.ToolTip = entry.IsNavigable
+            ? $"{entry.TargetKind}: {entry.TargetId}\nClick to focus the node."
+            : "No matching node target was found.";
+        item.PreviewMouseLeftButtonUp += ConsoleIssueListItem_PreviewMouseLeftButtonUp;
+        return item;
+    }
+
+    private ListBoxItem CreateConsoleLogListItem(string severity, string message, ConsoleLogEntry? entry = null)
+    {
+        var foreground = severity == "Error"
             ? new SolidColorBrush(Color.FromRgb(255, 128, 104))
-            : new SolidColorBrush(Color.FromRgb(255, 204, 86));
+            : severity == "Warning"
+                ? new SolidColorBrush(Color.FromRgb(255, 204, 86))
+                : new SolidColorBrush(Color.FromRgb(205, 205, 205));
         var item = new ListBoxItem
         {
-            Content = entry.Message,
             Tag = entry,
             Foreground = new SolidColorBrush(Color.FromRgb(220, 220, 220)),
             Background = Brushes.Transparent,
-            Cursor = entry.IsNavigable ? Cursors.Hand : Cursors.Arrow,
-            ToolTip = entry.IsNavigable
-                ? $"{entry.TargetKind}: {entry.TargetId}\nClick to focus the node."
-                : "No matching node target was found."
+            Padding = new Thickness(4, 1, 4, 1),
+            Cursor = Cursors.Arrow
         };
-        item.PreviewMouseLeftButtonUp += ConsoleIssueListItem_PreviewMouseLeftButtonUp;
 
         var panel = new DockPanel { LastChildFill = true };
         var icon = new TextBlock
         {
-            Text = "!",
+            Text = severity == "Info" ? "i" : "!",
             Foreground = foreground,
             FontWeight = FontWeights.Bold,
             Margin = new Thickness(0, 0, 8, 0),
@@ -358,8 +583,10 @@ public partial class MainWindow : Window
 
         panel.Children.Add(new TextBlock
         {
-            Text = entry.Message,
+            Text = message,
             Foreground = new SolidColorBrush(Color.FromRgb(218, 218, 218)),
+            FontFamily = new FontFamily("Consolas"),
+            FontSize = 12,
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center
         });
@@ -503,6 +730,7 @@ public partial class MainWindow : Window
     private void DrawGraph()
     {
         GraphCanvas.Children.Clear();
+        _currentLinks.Clear();
 
         if (_workbook is null || _selectedEvent is null)
             return;
@@ -518,23 +746,22 @@ public partial class MainWindow : Window
             .ToDictionary(g => g.Key, g => g.OrderBy(c => c.Seq).ToList(), StringComparer.OrdinalIgnoreCase);
         var groupsById = groups.ToDictionary(g => g.Id, StringComparer.OrdinalIgnoreCase);
 
-        foreach (var choice in choices)
+        foreach (var group in groups)
+            _workbook.Layouts.Remove(BattleLayoutKey(group.Id));
+
+        foreach (var choice in choices.Where(c => !IsBattleResultChoice(c, groupsById)))
         {
             DrawBranch(choice, "success", choice.SuccessRewardType, choice.SuccessRewardAmount, choice.SuccessNextGroupId, groupSet, groupsById, choicesByGroup);
             if (IsFailPinEnabled(choice))
                 DrawBranch(choice, "fail", choice.FailRewardType, choice.FailRewardAmount, choice.FailNextGroupId, groupSet, groupsById, choicesByGroup);
         }
-
         foreach (var group in groups.Where(IsBattleGroup))
-            DrawBattleNode(group);
-        foreach (var group in groups.Where(IsGroupRewardTerminal))
-            DrawGroupRewardNode(group);
-        foreach (var group in groups.Where(g => IsExitGroup(g) && !IsGroupRewardTerminal(g)))
-            DrawExitNode(group, choicesByGroup);
+            DrawBattleResultBranches(group, groupSet, groupsById);
+
         DrawPendingObjectNodes();
 
         foreach (var group in groups)
-            DrawNode(group, choicesByGroup.TryGetValue(group.Id, out var groupChoices) ? groupChoices : []);
+            DrawNode(group, VisibleChoicesForGroup(group, choicesByGroup.TryGetValue(group.Id, out var groupChoices) ? groupChoices : []));
 
         RefreshHierarchy();
         if (_selectedNodeKeys.Count > 1)
@@ -569,7 +796,7 @@ public partial class MainWindow : Window
                 Tag = $"group|{group.Id}",
                 IsExpanded = true
             };
-            foreach (var choice in _workbook.Choices.Where(c => c.GroupId == group.Id).OrderBy(c => c.Seq))
+            foreach (var choice in VisibleChoicesForGroup(group, _workbook.Choices.Where(c => c.GroupId == group.Id).OrderBy(c => c.Seq)))
             {
                 var isSelectedChoice = string.Equals(_selectedChoice?.Id, choice.Id, StringComparison.OrdinalIgnoreCase);
                 groupItem.Items.Add(new TreeViewItem
@@ -682,7 +909,7 @@ public partial class MainWindow : Window
             {
                 _workbook.Layouts[group.Id].Width = NodeWidth;
                 _workbook.Layouts[group.Id].Height = CalculateNodeHeight(
-                    _workbook.Choices.Count(c => c.GroupId == group.Id));
+                    VisibleChoicesForGroup(group, _workbook.Choices.Where(c => c.GroupId == group.Id)).Count);
             }
             index++;
         }
@@ -693,8 +920,16 @@ public partial class MainWindow : Window
         if (_workbook is null || _selectedEvent is null)
             return;
 
+        AutoLayoutEvent(_selectedEvent);
+    }
+
+    private void AutoLayoutEvent(EventBaseRow evt)
+    {
+        if (_workbook is null)
+            return;
+
         var groups = _workbook.Groups
-            .Where(g => string.Equals(g.EventId, _selectedEvent.Id, StringComparison.OrdinalIgnoreCase))
+            .Where(g => string.Equals(g.EventId, evt.Id, StringComparison.OrdinalIgnoreCase))
             .OrderBy(g => g.Id)
             .ToList();
         if (groups.Count == 0)
@@ -710,7 +945,7 @@ public partial class MainWindow : Window
             .ToDictionary(x => x.Id, x => x.Index, StringComparer.OrdinalIgnoreCase);
 
         var depth = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        var first = groupSet.Contains(_selectedEvent.FirstGroupId) ? _selectedEvent.FirstGroupId : groups[0].Id;
+        var first = groupSet.Contains(evt.FirstGroupId) ? evt.FirstGroupId : groups[0].Id;
         var queue = new Queue<string>();
         depth[first] = 0;
         queue.Enqueue(first);
@@ -735,6 +970,14 @@ public partial class MainWindow : Window
         foreach (var group in groups.Where(g => !depth.ContainsKey(g.Id)))
             depth[group.Id] = fallbackDepth++;
 
+        var exitDepth = groups
+            .Where(g => !IsExitGroup(g))
+            .Select(g => depth[g.Id])
+            .DefaultIfEmpty(0)
+            .Max() + 1;
+        foreach (var group in groups.Where(IsExitGroup))
+            depth[group.Id] = exitDepth;
+
         const double xGap = 560;
         const double yGap = 230;
         var occupied = new List<Rect>();
@@ -746,13 +989,15 @@ public partial class MainWindow : Window
             for (var i = 0; i < rows.Count; i++)
             {
                 var group = rows[i];
-                var choiceCount = choicesByGroup.TryGetValue(group.Id, out var choices) ? choices.Count : 0;
+                var choiceCount = choicesByGroup.TryGetValue(group.Id, out var choices)
+                    ? VisibleChoicesForGroup(group, choices).Count
+                    : 0;
                 var height = CalculateNodeHeight(choiceCount);
                 var x = GraphDefaultX + column.Key * xGap;
                 var y = GraphDefaultY + i * yGap;
                 _workbook.Layouts[group.Id] = new NodeLayout
                 {
-                    EventId = _selectedEvent.Id,
+                    EventId = evt.Id,
                     GroupId = group.Id,
                     X = x,
                     Y = y,
@@ -767,44 +1012,24 @@ public partial class MainWindow : Window
         {
             if (!choicesByGroup.TryGetValue(group.Id, out var choices))
                 choices = [];
-            foreach (var choice in choices)
+            foreach (var choice in VisibleChoicesForGroup(group, choices))
             {
                 AutoLayoutReward(choice, "success", choice.SuccessRewardType, choice.SuccessRewardAmount, choicesByGroup, occupied);
                 if (IsFailPinEnabled(choice))
                     AutoLayoutReward(choice, "fail", choice.FailRewardType, choice.FailRewardAmount, choicesByGroup, occupied);
             }
-
-            if (!_workbook.Layouts.TryGetValue(group.Id, out var groupLayout))
-                continue;
-            var groupRect = new Rect(groupLayout.X, groupLayout.Y, groupLayout.Width, groupLayout.Height);
-            if (IsBattleGroup(group))
+            if (IsBattleGroup(group) && GetBattleResultChoice(group, create: false) is { } result)
             {
-                var rect = PlaceObject(new Rect(groupRect.Right + 120, groupRect.Top + 18, BattleNodeWidth, BattleNodeHeight), occupied);
-                _workbook.Layouts[BattleLayoutKey(group.Id)] = LayoutFromRect(group.EventId, BattleLayoutKey(group.Id), rect);
-            }
-            else
-            {
-                _workbook.Layouts.Remove(BattleLayoutKey(group.Id));
+                AutoLayoutBattleReward(group, result, "success", result.SuccessRewardType, result.SuccessRewardAmount, occupied);
+                AutoLayoutBattleReward(group, result, "fail", result.FailRewardType, result.FailRewardAmount, occupied);
             }
 
-            if (IsGroupRewardTerminal(group))
-            {
-                var rect = PlaceObject(new Rect(groupRect.Right + 120, groupRect.Top + Math.Max(0, groupRect.Height - RewardNodeHeight) / 2, RewardNodeWidth, RewardNodeHeight), occupied);
-                _workbook.Layouts[GroupRewardLayoutKey(group.Id)] = LayoutFromRect(group.EventId, GroupRewardLayoutKey(group.Id), rect);
-                _workbook.Layouts.Remove(ExitLayoutKey(group.Id));
-            }
-            else if (IsExitGroup(group))
-            {
-                var rect = PlaceObject(new Rect(groupRect.Right + 120, groupRect.Top + Math.Max(0, groupRect.Height - ExitNodeHeight) / 2, ExitNodeWidth, ExitNodeHeight), occupied);
-                _workbook.Layouts[ExitLayoutKey(group.Id)] = LayoutFromRect(group.EventId, ExitLayoutKey(group.Id), rect);
-                _workbook.Layouts.Remove(GroupRewardLayoutKey(group.Id));
-            }
-            else
-            {
-                _workbook.Layouts.Remove(ExitLayoutKey(group.Id));
-                _workbook.Layouts.Remove(GroupRewardLayoutKey(group.Id));
-            }
+            _workbook.Layouts.Remove(BattleLayoutKey(group.Id));
+            _workbook.Layouts.Remove(ExitLayoutKey(group.Id));
+            _workbook.Layouts.Remove(GroupRewardLayoutKey(group.Id));
         }
+
+        PushExitColumnAfterObjectNodes(evt, groups);
     }
 
     private void AutoLayoutReward(
@@ -823,6 +1048,83 @@ public partial class MainWindow : Window
         var rect = PlaceObject(new Rect(x, y, RewardNodeWidth, RewardNodeHeight), occupied);
         var key = RewardLayoutKey(choice.Id, branch);
         _workbook.Layouts[key] = LayoutFromRect(groupLayout.EventId, key, rect);
+    }
+
+    private void AutoLayoutBattleReward(
+        ChoiceGroupRow group,
+        EventChoiceRow choice,
+        string branch,
+        string rewardType,
+        int? rewardAmount,
+        List<Rect> occupied)
+    {
+        if (_workbook is null || string.Equals(rewardType, "none", StringComparison.OrdinalIgnoreCase) || !_workbook.Layouts.TryGetValue(group.Id, out var groupLayout))
+            return;
+        var from = GetBattlePinPoint(group.Id, branch);
+        var x = from.X + 72;
+        var y = from.Y - RewardNodeHeight / 2 + (branch == "fail" ? 22 : -22);
+        var rect = PlaceObject(new Rect(x, y, RewardNodeWidth, RewardNodeHeight), occupied);
+        var key = RewardLayoutKey(choice.Id, branch);
+        _workbook.Layouts[key] = LayoutFromRect(groupLayout.EventId, key, rect);
+    }
+
+    private void AutoLayoutBattleObject(ChoiceGroupRow group, List<Rect> occupied)
+    {
+        if (_workbook is null || !_workbook.Layouts.TryGetValue(group.Id, out var groupLayout))
+            return;
+
+        var preferred = new Rect(groupLayout.X + groupLayout.Width + 104, groupLayout.Y + 18, BattleNodeWidth, BattleNodeHeight);
+        var rect = PlaceObject(preferred, occupied);
+        var key = BattleLayoutKey(group.Id);
+        _workbook.Layouts[key] = LayoutFromRect(group.EventId, key, rect);
+    }
+
+    private void PushExitColumnAfterObjectNodes(EventBaseRow evt, IReadOnlyList<ChoiceGroupRow> groups)
+    {
+        if (_workbook is null)
+            return;
+
+        var exitGroups = groups
+            .Where(IsExitGroup)
+            .OrderBy(g => g.Id)
+            .ToList();
+        if (exitGroups.Count == 0)
+            return;
+
+        var groupIds = groups.Select(g => g.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var choiceIds = _workbook.Choices
+            .Where(c => groupIds.Contains(c.GroupId))
+            .Select(c => c.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var maxRight = groups
+            .Where(g => !IsExitGroup(g))
+            .Select(g => _workbook.Layouts.TryGetValue(g.Id, out var layout) ? layout.X + layout.Width : 0)
+            .DefaultIfEmpty(GraphDefaultX)
+            .Max();
+
+        foreach (var pair in _workbook.Layouts)
+        {
+            if (!string.Equals(pair.Value.EventId, evt.Id, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (!pair.Key.StartsWith("reward|", StringComparison.OrdinalIgnoreCase)
+                && !pair.Key.StartsWith("battle|", StringComparison.OrdinalIgnoreCase))
+                continue;
+            var objectOwnerId = pair.Key.Split('|').ElementAtOrDefault(1) ?? "";
+            if (!choiceIds.Contains(objectOwnerId) && !groupIds.Contains(objectOwnerId))
+                continue;
+            maxRight = Math.Max(maxRight, pair.Value.X + pair.Value.Width);
+        }
+
+        var exitX = RoundCanvasCoord(maxRight + 120);
+        foreach (var group in exitGroups)
+        {
+            if (!_workbook.Layouts.TryGetValue(group.Id, out var layout))
+                continue;
+            layout.X = Math.Max(layout.X, exitX);
+            layout.Width = NodeWidth;
+            layout.Height = CalculateNodeHeight(0);
+        }
     }
 
     private static NodeLayout LayoutFromRect(string eventId, string key, Rect rect) => new()
@@ -980,6 +1282,7 @@ public partial class MainWindow : Window
             || string.Equals(_selectedGroup?.Id, group.Id, StringComparison.OrdinalIgnoreCase)
             || choices.Any(c => string.Equals(_selectedChoice?.Id, c.Id, StringComparison.OrdinalIgnoreCase));
         var isStartNode = string.Equals(_selectedEvent?.FirstGroupId, group.Id, StringComparison.OrdinalIgnoreCase);
+        var isExitNode = IsExitGroup(group);
 
         var root = new Grid
         {
@@ -994,11 +1297,11 @@ public partial class MainWindow : Window
             Width = layout.Width,
             Height = layout.Height,
             Background = new SolidColorBrush(selected
-                ? (isStartNode ? Color.FromRgb(37, 55, 76) : Color.FromRgb(52, 52, 52))
-                : (isStartNode ? Color.FromRgb(30, 45, 65) : Color.FromRgb(42, 42, 42))),
+                ? (isStartNode ? Color.FromRgb(37, 55, 76) : isExitNode ? Color.FromRgb(68, 42, 44) : Color.FromRgb(52, 52, 52))
+                : (isStartNode ? Color.FromRgb(30, 45, 65) : isExitNode ? Color.FromRgb(47, 31, 34) : Color.FromRgb(42, 42, 42))),
             BorderBrush = new SolidColorBrush(selected
                 ? Color.FromRgb(222, 202, 116)
-                : (isStartNode ? Color.FromRgb(77, 163, 255) : Color.FromRgb(98, 98, 98))),
+                : (isStartNode ? Color.FromRgb(77, 163, 255) : isExitNode ? Color.FromRgb(211, 91, 101) : Color.FromRgb(98, 98, 98))),
             BorderThickness = new Thickness(selected ? 2.5 : 1.4),
             CornerRadius = new CornerRadius(5),
             Padding = new Thickness(10),
@@ -1009,19 +1312,24 @@ public partial class MainWindow : Window
         stack.Children.Add(new TextBlock
         {
             Text = group.Id,
-            Foreground = new SolidColorBrush(Color.FromRgb(118, 188, 255)),
+            Foreground = new SolidColorBrush(isExitNode ? Color.FromRgb(255, 142, 150) : Color.FromRgb(118, 188, 255)),
             FontWeight = FontWeights.Bold,
             TextWrapping = TextWrapping.Wrap,
             Height = 24
         });
-        stack.Children.Add(new TextBlock
+        var memoText = new TextBlock
         {
             Text = group.Memo,
             Foreground = Brushes.White,
             TextWrapping = TextWrapping.Wrap,
             Height = NodeSituationHeight,
-            Margin = new Thickness(0, 5, 0, 10)
-        });
+            Margin = new Thickness(0, 5, 0, 10),
+            Cursor = Cursors.IBeam,
+            Tag = group.Id,
+            ToolTip = "더블 클릭해서 메모/상황문 수정"
+        };
+        memoText.MouseLeftButtonDown += SceneMemoText_MouseLeftButtonDown;
+        stack.Children.Add(memoText);
 
         foreach (var choice in choices)
         {
@@ -1043,6 +1351,7 @@ public partial class MainWindow : Window
                     ? Brushes.White
                     : Brushes.Black
             };
+            button.PreviewMouseLeftButtonDown += ChoiceButton_PreviewMouseLeftButtonDown;
             button.Click += ChoiceButton_Click;
             Grid.SetColumn(button, 0);
             row.Children.Add(button);
@@ -1065,43 +1374,397 @@ public partial class MainWindow : Window
         border.Child = stack;
         root.Children.Add(border);
 
-        var inputPin = PinShape("#dfe7ff", "IN");
-        inputPin.Tag = $"pin|{group.Id}|input";
-        Canvas.SetLeft(inputPin, -PinSize / 2);
-        Canvas.SetTop(inputPin, NodeTitleHeight + 10);
         var overlay = new Canvas();
-        overlay.Children.Add(inputPin);
-        var actionPin = GroupExitPin(group.Id);
-        Canvas.SetLeft(actionPin, layout.Width - PinSize / 2);
-        Canvas.SetTop(actionPin, NodeTitleHeight + 10);
-        overlay.Children.Add(actionPin);
+        if (!isStartNode)
+        {
+            var inputPin = InputPin(GroupInPinKey(group.Id), "IN: 연결된 라인 선택");
+            Canvas.SetLeft(inputPin, -PinSize / 2);
+            Canvas.SetTop(inputPin, NodeTitleHeight + 10);
+            overlay.Children.Add(inputPin);
+        }
+        if (IsBattleGroup(group))
+        {
+            var successPin = BattleOutputPin("T", group.Id, "success", "#3cb878");
+            Canvas.SetLeft(successPin, layout.Width - 34);
+            Canvas.SetTop(successPin, NodeTitleHeight + 44);
+            overlay.Children.Add(successPin);
+
+            var failPin = BattleOutputPin("F", group.Id, "fail", "#c65a5a");
+            Canvas.SetLeft(failPin, layout.Width - 34);
+            Canvas.SetTop(failPin, NodeTitleHeight + 66);
+            overlay.Children.Add(failPin);
+        }
+        var stateText = IsExitGroup(group)
+            ? "EXIT"
+            : IsBattleGroup(group)
+                ? "BATTLE"
+                : "CHOICE";
+        var stateBrush = IsExitGroup(group)
+            ? Color.FromRgb(157, 67, 76)
+            : IsBattleGroup(group)
+                ? Color.FromRgb(151, 72, 58)
+                : Color.FromRgb(63, 121, 82);
+        AddSceneBadge(overlay, stateText, stateBrush, layout.Width, isStartNode ? 1 : 0);
         if (isStartNode)
         {
-            var badge = new Border
-            {
-                Background = new SolidColorBrush(Color.FromRgb(38, 116, 198)),
-                BorderBrush = new SolidColorBrush(Color.FromRgb(116, 190, 255)),
-                BorderThickness = new Thickness(1),
-                CornerRadius = new CornerRadius(3),
-                Padding = new Thickness(7, 2, 7, 2),
-                Child = new TextBlock
-                {
-                    Text = "START",
-                    Foreground = Brushes.White,
-                    FontWeight = FontWeights.Bold,
-                    FontSize = 10
-                },
-                IsHitTestVisible = false
-            };
-            Canvas.SetLeft(badge, layout.Width - 62);
-            Canvas.SetTop(badge, 8);
-            overlay.Children.Add(badge);
+            AddSceneBadge(overlay, "START", Color.FromRgb(38, 116, 198), layout.Width, 0);
         }
         root.Children.Add(overlay);
 
         Canvas.SetLeft(root, layout.X);
         Canvas.SetTop(root, layout.Y);
         GraphCanvas.Children.Add(root);
+    }
+
+    private void SceneMemoText_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ClickCount < 2 || sender is not FrameworkElement { Tag: string groupId } || _workbook is null)
+            return;
+
+        var group = _workbook.Groups.FirstOrDefault(g => string.Equals(g.Id, groupId, StringComparison.OrdinalIgnoreCase));
+        if (group is null)
+            return;
+
+        BeginInlineGroupMemoEdit(group);
+        e.Handled = true;
+    }
+
+    private void BeginInlineGroupMemoEdit(ChoiceGroupRow group)
+    {
+        if (_workbook is null || !_workbook.Layouts.TryGetValue(group.Id, out var layout))
+            return;
+
+        _selectedNodeKeys.Clear();
+        _selectedGroup = group;
+        _selectedChoice = null;
+        _selectedObjectKey = null;
+        RefreshHierarchy();
+        BuildGroupInspector(group);
+
+        var editor = new TextBox
+        {
+            Text = group.Memo,
+            AcceptsReturn = true,
+            TextWrapping = TextWrapping.Wrap,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            FontSize = 13,
+            Padding = new Thickness(6, 4, 6, 4),
+            Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)),
+            Foreground = Brushes.White,
+            BorderBrush = new SolidColorBrush(Color.FromRgb(77, 163, 255)),
+            BorderThickness = new Thickness(1.5)
+        };
+
+        var original = group.Memo;
+        var finished = false;
+        void Finish(bool commit)
+        {
+            if (finished)
+                return;
+
+            finished = true;
+            editor.LostFocus -= OnLostFocus;
+            editor.PreviewKeyDown -= OnPreviewKeyDown;
+            GraphCanvas.Children.Remove(editor);
+
+            if (commit)
+            {
+                var next = editor.Text.Trim();
+                if (!string.Equals(original, next, StringComparison.Ordinal))
+                {
+                    PushUndo();
+                    group.Memo = next;
+                }
+            }
+
+            RefreshHierarchy();
+            RefreshIssues();
+            DrawGraph();
+            BuildGroupInspector(group);
+        }
+
+        void OnLostFocus(object sender, RoutedEventArgs e) => Finish(commit: true);
+
+        void OnPreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Escape)
+            {
+                Finish(commit: false);
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key == Key.Enter && (Keyboard.Modifiers & ModifierKeys.Shift) == 0)
+            {
+                Finish(commit: true);
+                e.Handled = true;
+            }
+        }
+
+        editor.LostFocus += OnLostFocus;
+        editor.PreviewKeyDown += OnPreviewKeyDown;
+
+        Canvas.SetLeft(editor, layout.X + 10);
+        Canvas.SetTop(editor, layout.Y + NodeSituationTop);
+        editor.Width = Math.Max(80, layout.Width - 20);
+        editor.Height = NodeSituationHeight + 6;
+        Canvas.SetZIndex(editor, 3000);
+        GraphCanvas.Children.Add(editor);
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            editor.Focus();
+            Keyboard.Focus(editor);
+            editor.SelectAll();
+        }, DispatcherPriority.Input);
+    }
+
+    private void ChoiceButton_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ClickCount < 2 || sender is not FrameworkElement { Tag: string choiceId } || _workbook is null)
+            return;
+
+        var choice = _workbook.Choices.FirstOrDefault(c => string.Equals(c.Id, choiceId, StringComparison.OrdinalIgnoreCase));
+        if (choice is null)
+            return;
+
+        BeginInlineChoiceMemoEdit(choice);
+        e.Handled = true;
+    }
+
+    private void BeginInlineChoiceMemoEdit(EventChoiceRow choice)
+    {
+        if (_workbook is null)
+            return;
+
+        var group = _workbook.Groups.FirstOrDefault(g => string.Equals(g.Id, choice.GroupId, StringComparison.OrdinalIgnoreCase));
+        if (group is null || !_workbook.Layouts.TryGetValue(group.Id, out var layout))
+            return;
+
+        var visibleChoices = VisibleChoicesForGroup(group, _workbook.Choices.Where(c => string.Equals(c.GroupId, group.Id, StringComparison.OrdinalIgnoreCase)));
+        var index = visibleChoices.FindIndex(c => string.Equals(c.Id, choice.Id, StringComparison.OrdinalIgnoreCase));
+        if (index < 0)
+            return;
+
+        _selectedNodeKeys.Clear();
+        _selectedGroup = group;
+        _selectedChoice = choice;
+        _selectedObjectKey = null;
+        RefreshHierarchy();
+        BuildChoiceInspector(choice);
+
+        var editor = new TextBox
+        {
+            Text = choice.Memo,
+            TextWrapping = TextWrapping.Wrap,
+            VerticalContentAlignment = VerticalAlignment.Center,
+            FontSize = 12,
+            Padding = new Thickness(6, 0, 6, 0),
+            Background = new SolidColorBrush(Color.FromRgb(245, 245, 245)),
+            Foreground = Brushes.Black,
+            BorderBrush = new SolidColorBrush(Color.FromRgb(77, 163, 255)),
+            BorderThickness = new Thickness(1.5)
+        };
+
+        var original = choice.Memo;
+        var finished = false;
+        void Finish(bool commit)
+        {
+            if (finished)
+                return;
+
+            finished = true;
+            editor.LostFocus -= OnLostFocus;
+            editor.PreviewKeyDown -= OnPreviewKeyDown;
+            GraphCanvas.Children.Remove(editor);
+
+            if (commit)
+            {
+                var next = editor.Text.Trim();
+                if (!string.Equals(original, next, StringComparison.Ordinal))
+                {
+                    PushUndo();
+                    choice.Memo = next;
+                }
+            }
+
+            RefreshHierarchy();
+            RefreshIssues();
+            DrawGraph();
+            BuildChoiceInspector(choice);
+        }
+
+        void OnLostFocus(object sender, RoutedEventArgs e) => Finish(commit: true);
+
+        void OnPreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Escape)
+            {
+                Finish(commit: false);
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key == Key.Enter)
+            {
+                Finish(commit: true);
+                e.Handled = true;
+            }
+        }
+
+        editor.LostFocus += OnLostFocus;
+        editor.PreviewKeyDown += OnPreviewKeyDown;
+
+        Canvas.SetLeft(editor, layout.X + 10);
+        Canvas.SetTop(editor, layout.Y + ChoiceStartY + index * (ChoiceRowHeight + ChoiceRowGap));
+        editor.Width = Math.Max(80, layout.Width - 62);
+        editor.Height = ChoiceRowHeight;
+        Canvas.SetZIndex(editor, 3000);
+        GraphCanvas.Children.Add(editor);
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            editor.Focus();
+            Keyboard.Focus(editor);
+            editor.SelectAll();
+        }, DispatcherPriority.Input);
+    }
+
+    private void RewardField_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ClickCount < 2 || sender is not FrameworkElement { Tag: string tag } || _workbook is null)
+            return;
+
+        var parts = tag.Split('|');
+        if (parts.Length < 3)
+            return;
+
+        var choice = _workbook.Choices.FirstOrDefault(c => string.Equals(c.Id, parts[0], StringComparison.OrdinalIgnoreCase));
+        if (choice is null)
+            return;
+
+        BeginInlineRewardFieldEdit(choice, parts[1], parts[2]);
+        e.Handled = true;
+    }
+
+    private void BeginInlineRewardFieldEdit(EventChoiceRow choice, string branch, string field)
+    {
+        if (_workbook is null)
+            return;
+
+        var key = RewardLayoutKey(choice.Id, branch);
+        if (!_workbook.Layouts.TryGetValue(key, out var layout))
+            return;
+
+        var (type, amount) = GetChoiceReward(choice, branch);
+        var original = field == "amount" ? amount?.ToString() ?? "" : type;
+        _selectedNodeKeys.Clear();
+        _selectedObjectKey = key;
+        _selectedChoice = choice;
+        _selectedGroup = _workbook.Groups.FirstOrDefault(g => string.Equals(g.Id, choice.GroupId, StringComparison.OrdinalIgnoreCase));
+        RefreshHierarchy();
+        BuildChoiceInspector(choice);
+
+        var editor = new TextBox
+        {
+            Text = original,
+            FontSize = 11,
+            Padding = new Thickness(6, 0, 6, 0),
+            VerticalContentAlignment = VerticalAlignment.Center,
+            Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)),
+            Foreground = Brushes.White,
+            BorderBrush = new SolidColorBrush(Color.FromRgb(255, 221, 141)),
+            BorderThickness = new Thickness(1.5)
+        };
+
+        var finished = false;
+        void Finish(bool commit)
+        {
+            if (finished)
+                return;
+
+            finished = true;
+            editor.LostFocus -= OnLostFocus;
+            editor.PreviewKeyDown -= OnPreviewKeyDown;
+            GraphCanvas.Children.Remove(editor);
+
+            if (commit)
+            {
+                var next = editor.Text.Trim();
+                if (!string.Equals(original, next, StringComparison.Ordinal))
+                {
+                    PushUndo();
+                    ApplyRewardClusterField(choice, branch, field, next);
+                }
+            }
+
+            RefreshHierarchy();
+            RefreshIssues();
+            DrawGraph();
+            if (_workbook?.Choices.Contains(choice) == true)
+                BuildChoiceInspector(choice);
+        }
+
+        void OnLostFocus(object sender, RoutedEventArgs e) => Finish(commit: true);
+
+        void OnPreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Escape)
+            {
+                Finish(commit: false);
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key == Key.Enter)
+            {
+                Finish(commit: true);
+                e.Handled = true;
+            }
+        }
+
+        editor.LostFocus += OnLostFocus;
+        editor.PreviewKeyDown += OnPreviewKeyDown;
+
+        Canvas.SetLeft(editor, layout.X + 14);
+        Canvas.SetTop(editor, layout.Y + (field == "amount" ? 55 : 32));
+        editor.Width = Math.Max(80, layout.Width - 32);
+        editor.Height = 20;
+        Canvas.SetZIndex(editor, 3000);
+        GraphCanvas.Children.Add(editor);
+
+        Dispatcher.BeginInvoke(() =>
+        {
+            editor.Focus();
+            Keyboard.Focus(editor);
+            editor.SelectAll();
+        }, DispatcherPriority.Input);
+    }
+
+    private static void AddSceneBadge(Canvas overlay, string text, Color background, double nodeWidth, int slot)
+    {
+        var badge = new Border
+        {
+            Background = new SolidColorBrush(background),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(
+                (byte)Math.Min(255, background.R + 58),
+                (byte)Math.Min(255, background.G + 58),
+                (byte)Math.Min(255, background.B + 58))),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(3),
+            Padding = new Thickness(7, 2, 7, 2),
+            Child = new TextBlock
+            {
+                Text = text,
+                Foreground = Brushes.White,
+                FontWeight = FontWeights.Bold,
+                FontSize = 10
+            },
+            IsHitTestVisible = false
+        };
+        Canvas.SetLeft(badge, nodeWidth - 66 - slot * 70);
+        Canvas.SetTop(badge, 8);
+        overlay.Children.Add(badge);
     }
 
     private FrameworkElement ConnectorPin(string text, string choiceId, string branch, string color)
@@ -1132,13 +1795,14 @@ public partial class MainWindow : Window
         Grid.SetColumn(label, 0);
         panel.Children.Add(label);
 
+        var pinKey = ChoiceOutPinKey(choiceId, branch);
         var pin = new Ellipse
         {
             Width = PinSize,
             Height = PinSize,
             Fill = brush,
-            Stroke = Brushes.Black,
-            StrokeThickness = 1,
+            Stroke = IsPinSelected(pinKey) ? new SolidColorBrush(Color.FromRgb(255, 224, 108)) : Brushes.Black,
+            StrokeThickness = IsPinSelected(pinKey) ? 2.4 : 1,
             Tag = $"{choiceId}|{branch}",
             VerticalAlignment = VerticalAlignment.Center,
             HorizontalAlignment = HorizontalAlignment.Right,
@@ -1152,15 +1816,64 @@ public partial class MainWindow : Window
         return panel;
     }
 
+    private FrameworkElement BattleOutputPin(string text, string groupId, string branch, string color)
+    {
+        var brush = (SolidColorBrush)new BrushConverter().ConvertFromString(color)!;
+        var panel = new Grid
+        {
+            Width = 34,
+            Height = 18,
+            ToolTip = branch == "success"
+                ? "Battle T 출력: 승리 후 다음 장면 연결"
+                : "Battle F 출력: 패배 후 다음 장면 연결"
+        };
+        panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(12) });
+        panel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var label = new TextBlock
+        {
+            Text = text,
+            Foreground = Brushes.White,
+            FontWeight = FontWeights.Bold,
+            FontSize = 10,
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            IsHitTestVisible = false
+        };
+        Grid.SetColumn(label, 0);
+        panel.Children.Add(label);
+
+        var pinKey = BattleOutPinKey(groupId, branch);
+        var pin = new Ellipse
+        {
+            Width = PinSize,
+            Height = PinSize,
+            Fill = brush,
+            Stroke = IsPinSelected(pinKey) ? new SolidColorBrush(Color.FromRgb(255, 224, 108)) : Brushes.Black,
+            StrokeThickness = IsPinSelected(pinKey) ? 2.4 : 1,
+            Tag = $"{groupId}|{branch}",
+            VerticalAlignment = VerticalAlignment.Center,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Cursor = Cursors.Hand
+        };
+        pin.PreviewMouseLeftButtonDown += BattleOutputConnector_MouseLeftButtonDown;
+        pin.PreviewMouseRightButtonDown += BattleOutputConnector_MouseRightButtonDown;
+        Grid.SetColumn(pin, 1);
+        panel.Children.Add(pin);
+
+        return panel;
+    }
+
     private FrameworkElement GroupExitPin(string groupId)
     {
+        var pinKey = GroupOutPinKey(groupId);
         var pin = new Ellipse
         {
             Width = PinSize,
             Height = PinSize,
             Fill = new SolidColorBrush(Color.FromRgb(160, 160, 160)),
-            Stroke = Brushes.Black,
-            StrokeThickness = 1,
+            Stroke = IsPinSelected(pinKey) ? new SolidColorBrush(Color.FromRgb(255, 224, 108)) : Brushes.Black,
+            StrokeThickness = IsPinSelected(pinKey) ? 2.4 : 1,
             Tag = groupId,
             ToolTip = "터미널 출력: Battle / Reward / Exit 노드에 연결",
             Cursor = Cursors.Hand
@@ -1171,6 +1884,96 @@ public partial class MainWindow : Window
     }
 
     private static bool IsFailPinEnabled(EventChoiceRow choice) => choice.SuccessRate is not null;
+
+    private static string BattleResultChoiceId(string groupId) => EventWorkbookService.BattleResultChoiceId(groupId);
+
+    private static bool IsBattleResultChoice(EventChoiceRow choice, Dictionary<string, ChoiceGroupRow> groupsById)
+        => groupsById.TryGetValue(choice.GroupId, out var group) && IsBattleResultChoice(choice, group);
+
+    private static bool IsBattleResultChoice(EventChoiceRow choice, ChoiceGroupRow group)
+        => IsBattleGroup(group)
+           && string.Equals(choice.GroupId, group.Id, StringComparison.OrdinalIgnoreCase)
+           && string.Equals(choice.Id, BattleResultChoiceId(group.Id), StringComparison.OrdinalIgnoreCase);
+
+    private static List<EventChoiceRow> VisibleChoicesForGroup(ChoiceGroupRow group, IEnumerable<EventChoiceRow> choices)
+        => choices
+            .Where(choice => !IsBattleResultChoice(choice, group))
+            .OrderBy(choice => choice.Seq)
+            .ThenBy(choice => choice.Id)
+            .ToList();
+
+    private EventChoiceRow? GetBattleResultChoice(ChoiceGroupRow group, bool create)
+    {
+        if (_workbook is null || !IsBattleGroup(group))
+            return null;
+
+        var id = BattleResultChoiceId(group.Id);
+        var choice = _workbook.Choices.FirstOrDefault(c => string.Equals(c.Id, id, StringComparison.OrdinalIgnoreCase));
+        if (choice is null)
+        {
+            if (!create)
+                return null;
+            var nextSeq = _workbook.Choices
+                .Where(c => string.Equals(c.GroupId, group.Id, StringComparison.OrdinalIgnoreCase))
+                .Select(c => c.Seq)
+                .DefaultIfEmpty(0)
+                .Max() + 1;
+            choice = new EventChoiceRow
+            {
+                Id = id,
+                Memo = "전투 결과",
+                ExportId = EventWorkbookService.DefaultEventExportId,
+                GroupId = group.Id,
+                Seq = Math.Max(1, nextSeq),
+                ChoiceTextTid = $"{id}_choice_text",
+                CostType = "none",
+                SuccessRewardType = "relic",
+                SuccessRewardAmount = 1,
+                FailRewardType = "none"
+            };
+            _workbook.Choices.Add(choice);
+        }
+
+        NormalizeBattleResultChoice(choice, group);
+        return choice;
+    }
+
+    private static void NormalizeBattleResultChoice(EventChoiceRow choice, ChoiceGroupRow group)
+    {
+        choice.GroupId = group.Id;
+        if (string.IsNullOrWhiteSpace(choice.Memo))
+            choice.Memo = "전투 결과";
+        if (string.IsNullOrWhiteSpace(choice.ExportId))
+            choice.ExportId = EventWorkbookService.DefaultEventExportId;
+        if (choice.Seq <= 0)
+            choice.Seq = 1;
+        if (string.IsNullOrWhiteSpace(choice.ChoiceTextTid))
+            choice.ChoiceTextTid = $"{choice.Id}_choice_text";
+        if (string.IsNullOrWhiteSpace(choice.CostType))
+            choice.CostType = "none";
+        if (string.IsNullOrWhiteSpace(choice.SuccessRewardType)
+            || (string.Equals(choice.SuccessRewardType, "none", StringComparison.OrdinalIgnoreCase) && choice.SuccessRewardAmount is null))
+        {
+            choice.SuccessRewardType = "relic";
+            choice.SuccessRewardAmount = 1;
+        }
+        else if (!string.Equals(choice.SuccessRewardType, "none", StringComparison.OrdinalIgnoreCase) && choice.SuccessRewardAmount is null)
+        {
+            choice.SuccessRewardAmount = 1;
+        }
+        if (string.IsNullOrWhiteSpace(choice.FailRewardType))
+            choice.FailRewardType = "none";
+    }
+
+    private void RemoveBattleResultChoice(ChoiceGroupRow group)
+    {
+        if (_workbook is null)
+            return;
+        var id = BattleResultChoiceId(group.Id);
+        _workbook.Choices.RemoveAll(c => string.Equals(c.Id, id, StringComparison.OrdinalIgnoreCase));
+        _workbook.Layouts.Remove(RewardLayoutKey(id, "success"));
+        _workbook.Layouts.Remove(RewardLayoutKey(id, "fail"));
+    }
 
     private static double CalculateNodeHeight(int choiceCount)
         => Math.Max(NodeMinHeight, ChoiceStartY + Math.Max(1, choiceCount) * (ChoiceRowHeight + ChoiceRowGap) + 8);
@@ -1188,6 +1991,24 @@ public partial class MainWindow : Window
             ToolTip = tooltip,
             IsHitTestVisible = false
         };
+    }
+
+    private Ellipse InputPin(string pinKey, string tooltip)
+    {
+        var pin = new Ellipse
+        {
+            Width = PinSize,
+            Height = PinSize,
+            Fill = new SolidColorBrush(Color.FromRgb(223, 231, 255)),
+            Stroke = IsPinSelected(pinKey) ? new SolidColorBrush(Color.FromRgb(255, 224, 108)) : Brushes.Black,
+            StrokeThickness = IsPinSelected(pinKey) ? 2.4 : 1,
+            Tag = pinKey,
+            ToolTip = tooltip,
+            Cursor = Cursors.Hand
+        };
+        pin.PreviewMouseLeftButtonDown += InputPin_MouseLeftButtonDown;
+        pin.PreviewMouseRightButtonDown += InputPin_MouseRightButtonDown;
+        return pin;
     }
 
     private Point GetInputPinPoint(string groupId)
@@ -1222,6 +2043,100 @@ public partial class MainWindow : Window
         return new Point(x, y);
     }
 
+    private Point GetBattlePinPoint(string groupId, string branch)
+    {
+        if (_workbook is null || !_workbook.Layouts.TryGetValue(groupId, out var layout))
+            return new Point();
+        var top = branch == "fail" ? NodeTitleHeight + 66 : NodeTitleHeight + 44;
+        return new Point(layout.X + layout.Width + PinSize / 2, layout.Y + top + 9);
+    }
+
+    private Rect GetBattleNodeRect(ChoiceGroupRow group)
+    {
+        if (_workbook is null || !_workbook.Layouts.TryGetValue(group.Id, out var layout))
+            return default;
+
+        return RectFromLayout(EnsureObjectLayout(
+            BattleLayoutKey(group.Id),
+            group.EventId,
+            layout.X + layout.Width + 84,
+            layout.Y + 18,
+            BattleNodeWidth,
+            BattleNodeHeight));
+    }
+
+    private Point GetBattleInputPinPoint(string groupId)
+    {
+        if (_workbook is null || !_workbook.Layouts.TryGetValue(BattleLayoutKey(groupId), out var layout))
+            return GetInputPinPoint(groupId);
+        return new Point(layout.X, layout.Y + layout.Height / 2);
+    }
+
+    private Rect? GetNextTargetRect(string groupId, Dictionary<string, ChoiceGroupRow> groupsById)
+    {
+        return GetGroupRect(groupId);
+    }
+
+    private Point GetNextTargetInputPoint(string groupId, Dictionary<string, ChoiceGroupRow> groupsById)
+    {
+        return GetInputPinPoint(groupId);
+    }
+
+    private static string GetNextTargetInputPinKey(string groupId, Dictionary<string, ChoiceGroupRow> groupsById)
+        => GroupInPinKey(groupId);
+
+    private void DrawBattleResultBranches(ChoiceGroupRow group, HashSet<string> groupSet, Dictionary<string, ChoiceGroupRow> groupsById)
+    {
+        if (_workbook is null || !_workbook.Layouts.ContainsKey(group.Id))
+            return;
+
+        var result = GetBattleResultChoice(group, create: false);
+        if (result is null)
+            return;
+
+        DrawBattleResultBranch(group, result, "success", result.SuccessRewardType, result.SuccessRewardAmount, result.SuccessNextGroupId, groupSet, groupsById);
+        DrawBattleResultBranch(group, result, "fail", result.FailRewardType, result.FailRewardAmount, result.FailNextGroupId, groupSet, groupsById);
+    }
+
+    private void DrawBattleResultBranch(
+        ChoiceGroupRow group,
+        EventChoiceRow result,
+        string branch,
+        string rewardType,
+        int? rewardAmount,
+        string nextGroupId,
+        HashSet<string> groupSet,
+        Dictionary<string, ChoiceGroupRow> groupsById)
+    {
+        var hasReward = !string.Equals(rewardType, "none", StringComparison.OrdinalIgnoreCase);
+        var hasNext = !string.IsNullOrWhiteSpace(nextGroupId) && groupSet.Contains(nextGroupId);
+        if (!hasReward && !hasNext)
+            return;
+
+        var color = branch == "success" ? "#79d38a" : "#d37a7a";
+        var label = branch == "success" ? "T" : "F";
+        var brush = (SolidColorBrush)new BrushConverter().ConvertFromString(color)!;
+        var from = GetBattlePinPoint(group.Id, branch);
+
+        if (hasReward)
+        {
+            var rewardRect = GetBattleRewardNodeRect(group, result, branch);
+            var rewardIn = new Point(rewardRect.Left, rewardRect.Top + rewardRect.Height / 2);
+            var rewardOut = new Point(rewardRect.Right, rewardRect.Top + rewardRect.Height / 2);
+            DrawCurve(from, rewardIn, brush, label, GetGroupRect(group.Id), rewardRect,
+                new GraphLink($"battle_reward|{result.Id}|{branch}", BattleOutPinKey(group.Id, branch), RewardInPinKey(result.Id, branch), "battle_reward", result.Id, branch, ""));
+            DrawRewardNode(result, branch, rewardType, rewardAmount, rewardRect);
+            if (hasNext)
+                DrawCurve(rewardOut, GetNextTargetInputPoint(nextGroupId, groupsById), brush, "", rewardRect, GetNextTargetRect(nextGroupId, groupsById),
+                    new GraphLink($"reward_next|{result.Id}|{branch}|{nextGroupId}", RewardOutPinKey(result.Id, branch), GetNextTargetInputPinKey(nextGroupId, groupsById), "reward_next", result.Id, branch, nextGroupId));
+            return;
+        }
+
+        if (hasNext)
+            DrawCurve(from, GetNextTargetInputPoint(nextGroupId, groupsById), brush, label, GetGroupRect(group.Id), GetNextTargetRect(nextGroupId, groupsById),
+                new GraphLink($"battle_next|{result.Id}|{branch}|{nextGroupId}", BattleOutPinKey(group.Id, branch), GetNextTargetInputPinKey(nextGroupId, groupsById), "battle_next", result.Id, branch, nextGroupId));
+    }
+
     private void DrawBranch(
         EventChoiceRow choice,
         string branch,
@@ -1238,10 +2153,7 @@ public partial class MainWindow : Window
         var from = GetChoicePinPoint(choice, branch, choicesByGroup);
         var hasReward = rewardType != "none";
         var hasNext = !string.IsNullOrWhiteSpace(nextGroupId) && groupSet.Contains(nextGroupId);
-        var exitRect = default(Rect);
-        var isChoiceExit = false;
-        var hasExit = !hasNext && TryGetExitNodeRectForBranch(choice, branch, groupsById, choicesByGroup, out exitRect, out isChoiceExit);
-        if (!hasReward && !hasNext && !hasExit)
+        if (!hasReward && !hasNext)
             return;
 
         var color = branch == "success" ? "#79d38a" : "#d37a7a";
@@ -1253,29 +2165,18 @@ public partial class MainWindow : Window
             var rewardRect = GetRewardNodeRect(choice, branch, choicesByGroup);
             var rewardIn = new Point(rewardRect.Left, rewardRect.Top + rewardRect.Height / 2);
             var rewardOut = new Point(rewardRect.Right, rewardRect.Top + rewardRect.Height / 2);
-            DrawCurve(from, rewardIn, brush, label, GetGroupRect(choice.GroupId), rewardRect);
+            DrawCurve(from, rewardIn, brush, label, GetGroupRect(choice.GroupId), rewardRect,
+                new GraphLink($"choice_reward|{choice.Id}|{branch}", ChoiceOutPinKey(choice.Id, branch), RewardInPinKey(choice.Id, branch), "choice_reward", choice.Id, branch, ""));
             DrawRewardNode(choice, branch, rewardType, rewardAmount, rewardRect);
             if (hasNext)
-                DrawCurve(rewardOut, GetInputPinPoint(nextGroupId), brush, "", rewardRect, GetGroupRect(nextGroupId));
-            else if (hasExit)
-            {
-                var exitIn = new Point(exitRect.Left, exitRect.Top + exitRect.Height / 2);
-                DrawCurve(rewardOut, exitIn, brush, "", rewardRect, exitRect);
-                if (isChoiceExit)
-                    DrawChoiceExitNode(choice, branch, exitRect);
-            }
+                DrawCurve(rewardOut, GetNextTargetInputPoint(nextGroupId, groupsById), brush, "", rewardRect, GetNextTargetRect(nextGroupId, groupsById),
+                    new GraphLink($"reward_next|{choice.Id}|{branch}|{nextGroupId}", RewardOutPinKey(choice.Id, branch), GetNextTargetInputPinKey(nextGroupId, groupsById), "reward_next", choice.Id, branch, nextGroupId));
             return;
         }
 
         if (hasNext)
-            DrawCurve(from, GetInputPinPoint(nextGroupId), brush, label, GetGroupRect(choice.GroupId), GetGroupRect(nextGroupId));
-        else if (hasExit)
-        {
-            var exitIn = new Point(exitRect.Left, exitRect.Top + exitRect.Height / 2);
-            DrawCurve(from, exitIn, brush, label, GetGroupRect(choice.GroupId), exitRect);
-            if (isChoiceExit)
-                DrawChoiceExitNode(choice, branch, exitRect);
-        }
+            DrawCurve(from, GetNextTargetInputPoint(nextGroupId, groupsById), brush, label, GetGroupRect(choice.GroupId), GetNextTargetRect(nextGroupId, groupsById),
+                new GraphLink($"choice_next|{choice.Id}|{branch}|{nextGroupId}", ChoiceOutPinKey(choice.Id, branch), GetNextTargetInputPinKey(nextGroupId, groupsById), "choice_next", choice.Id, branch, nextGroupId));
     }
 
     private bool TryGetExitNodeRectForBranch(
@@ -1313,6 +2214,14 @@ public partial class MainWindow : Window
         return RectFromLayout(EnsureObjectLayout(key, eventId, from.X + 72, from.Y + yOffset, RewardNodeWidth, RewardNodeHeight));
     }
 
+    private Rect GetBattleRewardNodeRect(ChoiceGroupRow group, EventChoiceRow choice, string branch)
+    {
+        var from = GetBattlePinPoint(group.Id, branch);
+        var key = RewardLayoutKey(choice.Id, branch);
+        var yOffset = branch == "success" ? -RewardNodeHeight - 10 : 10;
+        return RectFromLayout(EnsureObjectLayout(key, group.EventId, from.X + 72, from.Y + yOffset, RewardNodeWidth, RewardNodeHeight));
+    }
+
     private Rect GetChoiceExitNodeRect(EventChoiceRow choice, string branch, Dictionary<string, List<EventChoiceRow>> choicesByGroup)
     {
         var from = GetChoicePinPoint(choice, branch, choicesByGroup);
@@ -1331,33 +2240,150 @@ public partial class MainWindow : Window
         return new Rect(layout.X, layout.Y, Math.Max(layout.Width, NodeWidth), Math.Max(layout.Height, NodeMinHeight));
     }
 
-    private void DrawCurve(Point from, Point to, Brush brush, string label, Rect? sourceRect = null, Rect? targetRect = null)
+    private void DrawCurve(Point from, Point to, Brush brush, string label, Rect? sourceRect = null, Rect? targetRect = null, GraphLink? link = null)
     {
-        var x1 = from.X;
-        var y1 = from.Y;
-        var x2 = to.X;
-        var y2 = to.Y;
-        var points = BuildOrthogonalRoute(from, to, sourceRect, targetRect);
-        var figure = RoundedPolyline(points, 14);
-
+        var highlighted = link is not null && IsLinkHighlighted(link);
+        if (link is not null)
+            _currentLinks.Add(link);
+        var stroke = highlighted
+            ? new SolidColorBrush(Color.FromRgb(255, 224, 108))
+            : brush;
+        var routePoints = BuildOrthogonalRoute(from, to, sourceRect, targetRect);
         var path = new System.Windows.Shapes.Path
         {
-            Stroke = brush,
-            StrokeThickness = 2.1,
+            Stroke = stroke,
+            StrokeThickness = highlighted ? 4.2 : 2.1,
             StrokeStartLineCap = PenLineCap.Round,
             StrokeEndLineCap = PenLineCap.Round,
-            Data = new PathGeometry([figure])
+            Data = new PathGeometry([RoundedPolyline(routePoints, 14)]),
+            IsHitTestVisible = false
         };
         GraphCanvas.Children.Add(path);
-        Canvas.SetZIndex(path, -1);
+        Canvas.SetZIndex(path, highlighted ? 30 : -1);
 
         if (!string.IsNullOrWhiteSpace(label))
+            DrawCurveLabel(label, stroke, routePoints, highlighted);
+    }
+
+    private void DrawCurveLabel(string label, Brush stroke, IReadOnlyList<Point> routePoints, bool highlighted)
+    {
+        var badge = new Border
         {
-            var text = new TextBlock { Text = label, Foreground = brush, FontWeight = FontWeights.Bold };
-            Canvas.SetLeft(text, (x1 + x2) / 2);
-            Canvas.SetTop(text, (y1 + y2) / 2);
-            GraphCanvas.Children.Add(text);
+            Background = new SolidColorBrush(Color.FromRgb(31, 31, 31)),
+            BorderBrush = stroke,
+            BorderThickness = new Thickness(highlighted ? 1.6 : 1.1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(6, 1, 6, 2),
+            IsHitTestVisible = false,
+            Child = new TextBlock
+            {
+                Text = BranchDisplayLabel(label),
+                Foreground = stroke,
+                FontSize = 10.5,
+                FontWeight = FontWeights.Bold,
+                LineHeight = 12,
+                TextAlignment = TextAlignment.Center
+            }
+        };
+
+        badge.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var position = GetCurveLabelPosition(routePoints, badge.DesiredSize, label);
+        Canvas.SetLeft(badge, position.X);
+        Canvas.SetTop(badge, position.Y);
+        GraphCanvas.Children.Add(badge);
+        Canvas.SetZIndex(badge, highlighted ? 31 : 1);
+    }
+
+    private static string BranchDisplayLabel(string label)
+    {
+        if (string.Equals(label, "T", StringComparison.OrdinalIgnoreCase))
+            return "T 성공";
+        if (string.Equals(label, "F", StringComparison.OrdinalIgnoreCase))
+            return "F 실패";
+        return label;
+    }
+
+    private static Point GetCurveLabelPosition(IReadOnlyList<Point> routePoints, Size size, string label)
+    {
+        const double gap = 7;
+        var belowLine = string.Equals(label, "F", StringComparison.OrdinalIgnoreCase);
+
+        for (var i = 0; i < routePoints.Count - 1; i++)
+        {
+            var start = routePoints[i];
+            var end = routePoints[i + 1];
+            var vector = end - start;
+            var length = vector.Length;
+            if (length < 22)
+                continue;
+
+            var t = i == 0
+                ? Math.Clamp(34 / length, 0.28, 0.72)
+                : 0.5;
+            var anchor = new Point(start.X + vector.X * t, start.Y + vector.Y * t);
+
+            if (Math.Abs(vector.X) >= Math.Abs(vector.Y))
+            {
+                var top = belowLine ? anchor.Y + gap : anchor.Y - size.Height - gap;
+                return new Point(anchor.X - size.Width / 2, top);
+            }
+
+            var left = vector.X < 0 ? anchor.X - size.Width - gap : anchor.X + gap;
+            return new Point(left, anchor.Y - size.Height / 2);
         }
+
+        var fallback = routePoints.Count > 0 ? routePoints[0] : new Point();
+        return new Point(fallback.X + gap, fallback.Y - size.Height / 2);
+    }
+
+    private bool IsLinkHighlighted(GraphLink link)
+        => !string.IsNullOrWhiteSpace(_selectedPinKey)
+           && (string.Equals(_selectedPinKey, link.SourcePinKey, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(_selectedPinKey, link.TargetPinKey, StringComparison.OrdinalIgnoreCase));
+
+    private static PathGeometry CreateRouteGeometry(Point from, Point to, Rect? sourceRect = null, Rect? targetRect = null)
+    {
+        var points = BuildOrthogonalRoute(from, to, sourceRect, targetRect);
+        return new PathGeometry([RoundedPolyline(points, 14)]);
+    }
+
+    private void StartLinkPreview(FrameworkElement element, Brush brush, Rect? sourceRect, string sourcePinKey)
+    {
+        _linkPreviewStart = element.TranslatePoint(
+            new Point(element.ActualWidth / 2, element.ActualHeight / 2),
+            GraphCanvas);
+        _linkPreviewSourceRect = sourceRect;
+        _linkPreviewSourcePinKey = sourcePinKey;
+        _selectedPinKey = sourcePinKey;
+        _linkDragMoved = false;
+        _linkPreviewPath = new System.Windows.Shapes.Path
+        {
+            Stroke = brush,
+            StrokeThickness = 2.4,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            StrokeDashArray = new DoubleCollection { 5, 4 },
+            IsHitTestVisible = false,
+            Visibility = Visibility.Hidden
+        };
+        GraphCanvas.Children.Add(_linkPreviewPath);
+        Canvas.SetZIndex(_linkPreviewPath, 1000);
+    }
+
+    private void UpdateLinkPreview(Point target)
+    {
+        if (_linkPreviewPath is null)
+            return;
+
+        if ((target - _linkPreviewStart).Length <= 8
+            || (_linkPreviewSourceRect is { } sourceRect && sourceRect.Contains(target)))
+        {
+            _linkPreviewPath.Visibility = Visibility.Hidden;
+            return;
+        }
+
+        _linkPreviewPath.Visibility = Visibility.Visible;
+        _linkPreviewPath.Data = CreateRouteGeometry(_linkPreviewStart, target, _linkPreviewSourceRect);
     }
 
     private static List<Point> BuildOrthogonalRoute(Point from, Point to, Rect? sourceRect, Rect? targetRect)
@@ -1473,40 +2499,104 @@ public partial class MainWindow : Window
             ToolTip = "보상 노드: 선택지 Inspector의 reward 칼럼으로 저장됩니다."
         };
         border.MouseLeftButtonDown += ObjectNode_MouseLeftButtonDown;
-        border.Child = new StackPanel
+        var stack = new StackPanel();
+        stack.Children.Add(new TextBlock
         {
-            Children =
-            {
-                new TextBlock
-                {
-                    Text = $"{(branch == "success" ? "T" : "F")} Reward",
-                    Foreground = new SolidColorBrush(Color.FromRgb(255, 221, 141)),
-                    FontWeight = FontWeights.Bold,
-                    FontSize = 12
-                },
-                new TextBlock
-                {
-                    Text = $"{rewardType} x{rewardAmount?.ToString() ?? "-"}",
-                    Foreground = Brushes.White,
-                    FontSize = 12,
-                    TextTrimming = TextTrimming.CharacterEllipsis
-                }
-            }
-        };
+            Text = $"{(branch == "success" ? "T" : "F")} Reward",
+            Foreground = new SolidColorBrush(Color.FromRgb(255, 221, 141)),
+            FontWeight = FontWeights.Bold,
+            FontSize = 12,
+            Margin = new Thickness(0, 0, 0, 5)
+        });
+        stack.Children.Add(RewardFieldBox(choice.Id, branch, "type", $"{branch}_reward_type", rewardType));
+        stack.Children.Add(RewardFieldBox(choice.Id, branch, "amount", $"{branch}_reward_amount", rewardAmount?.ToString() ?? ""));
+        border.Child = stack;
 
         root.Children.Add(border);
 
         var overlay = new Canvas();
-        var input = PinShape("#dfe7ff", "Reward IN");
+        var input = InputPin(RewardInPinKey(choice.Id, branch), "Reward IN: 연결된 라인 선택");
         Canvas.SetLeft(input, -PinSize / 2);
         Canvas.SetTop(input, rect.Height / 2 - PinSize / 2);
         overlay.Children.Add(input);
+
+        var output = RewardOutputPin(choice.Id, branch);
+        Canvas.SetLeft(output, rect.Width - PinSize / 2);
+        Canvas.SetTop(output, rect.Height / 2 - PinSize / 2);
+        overlay.Children.Add(output);
 
         root.Children.Add(overlay);
 
         Canvas.SetLeft(root, rect.Left);
         Canvas.SetTop(root, rect.Top);
         GraphCanvas.Children.Add(root);
+    }
+
+    private Border RewardFieldBox(string choiceId, string branch, string field, string label, string value)
+    {
+        var row = new Grid();
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(54) });
+
+        var labelText = new TextBlock
+        {
+            Text = label,
+            Foreground = new SolidColorBrush(Color.FromRgb(188, 171, 124)),
+            FontSize = 9,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        Grid.SetColumn(labelText, 0);
+        row.Children.Add(labelText);
+
+        var valueText = new TextBlock
+        {
+            Text = string.IsNullOrWhiteSpace(value) ? "-" : value,
+            Foreground = Brushes.White,
+            FontSize = 11,
+            FontWeight = FontWeights.SemiBold,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextTrimming = TextTrimming.CharacterEllipsis
+        };
+        Grid.SetColumn(valueText, 1);
+        row.Children.Add(valueText);
+
+        var box = new Border
+        {
+            Height = 20,
+            Margin = new Thickness(0, 0, 0, 3),
+            Padding = new Thickness(6, 0, 6, 0),
+            Background = new SolidColorBrush(Color.FromRgb(58, 51, 36)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(106, 86, 43)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(3),
+            Tag = $"{choiceId}|{branch}|{field}",
+            ToolTip = "더블 클릭해서 수정",
+            Child = row
+        };
+        box.MouseLeftButtonDown += RewardField_MouseLeftButtonDown;
+        return box;
+    }
+
+    private FrameworkElement RewardOutputPin(string choiceId, string branch)
+    {
+        var pin = new Ellipse
+        {
+            Width = PinSize,
+            Height = PinSize,
+            Fill = branch == "success"
+                ? new SolidColorBrush(Color.FromRgb(121, 211, 138))
+                : new SolidColorBrush(Color.FromRgb(211, 122, 122)),
+            Stroke = Brushes.Black,
+            StrokeThickness = 1,
+            Tag = $"{choiceId}|{branch}",
+            ToolTip = "Reward OUT: 드래그해서 다음 장면이나 Exit 장면에 연결",
+            Cursor = Cursors.Hand
+        };
+        pin.PreviewMouseLeftButtonDown += RewardOutputConnector_MouseLeftButtonDown;
+        pin.PreviewMouseRightButtonDown += RewardOutputConnector_MouseRightButtonDown;
+        return pin;
     }
 
     private void DrawGroupRewardNode(ChoiceGroupRow group)
@@ -1525,7 +2615,8 @@ public partial class MainWindow : Window
         var from = GetGroupActionPinPoint(group.Id);
         var to = new Point(rect.Left, rect.Top + rect.Height / 2);
         var brush = new SolidColorBrush(Color.FromRgb(214, 181, 88));
-        DrawCurve(from, to, brush, "REWARD", GetGroupRect(group.Id), rect);
+        DrawCurve(from, to, brush, "REWARD", GetGroupRect(group.Id), rect,
+            new GraphLink($"group_reward|{group.Id}", GroupOutPinKey(group.Id), GroupRewardInPinKey(group.Id), "group_reward", group.Id, "", GroupRewardLayoutKey(group.Id)));
 
         var selected = _selectedNodeKeys.Contains(key)
             || string.Equals(_selectedObjectKey, key, StringComparison.OrdinalIgnoreCase)
@@ -1574,7 +2665,7 @@ public partial class MainWindow : Window
 
         root.Children.Add(border);
         var overlay = new Canvas();
-        var input = PinShape("#dfe7ff", "Reward IN");
+        var input = InputPin(GroupRewardInPinKey(group.Id), "Reward IN: 연결된 라인 선택");
         Canvas.SetLeft(input, -PinSize / 2);
         Canvas.SetTop(input, rect.Height / 2 - PinSize / 2);
         overlay.Children.Add(input);
@@ -1594,15 +2685,11 @@ public partial class MainWindow : Window
         {
             if (pair.Key.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase))
             {
-                DrawPendingObjectNode(pair.Key, "Reward", "장면 출력 핀으로 연결", pair.Value, "reward");
+                DrawPendingObjectNode(pair.Key, "Reward", "T/F 핀으로 연결", pair.Value, "reward");
             }
             else if (pair.Key.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase))
             {
-                DrawPendingObjectNode(pair.Key, "Battle", "장면 출력 핀으로 연결", pair.Value, "battle");
-            }
-            else if (pair.Key.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase))
-            {
-                DrawPendingObjectNode(pair.Key, "Exit", "Set scene next_action=exit", pair.Value, "exit");
+                DrawPendingObjectNode(pair.Key, "Battle", "T/F 핀으로 연결", pair.Value, "battle");
             }
         }
     }
@@ -1624,9 +2711,7 @@ public partial class MainWindow : Window
             Height = layout.Height,
             Background = new SolidColorBrush(kind == "battle"
                 ? Color.FromRgb(52, 34, 31)
-                : kind == "exit"
-                    ? Color.FromRgb(38, 38, 38)
-                    : Color.FromRgb(48, 43, 30)),
+                : Color.FromRgb(48, 43, 30)),
             BorderBrush = new SolidColorBrush(selected ? Color.FromRgb(222, 202, 116) : Color.FromRgb(120, 120, 120)),
             BorderThickness = new Thickness(selected ? 2.0 : 1.2),
             CornerRadius = new CornerRadius(5),
@@ -1644,9 +2729,7 @@ public partial class MainWindow : Window
                     Text = title,
                     Foreground = new SolidColorBrush(kind == "battle"
                         ? Color.FromRgb(255, 172, 144)
-                        : kind == "exit"
-                            ? Color.FromRgb(220, 220, 220)
-                            : Color.FromRgb(255, 221, 141)),
+                        : Color.FromRgb(255, 221, 141)),
                     FontWeight = FontWeights.Bold,
                     FontSize = 13
                 },
@@ -1662,7 +2745,7 @@ public partial class MainWindow : Window
         root.Children.Add(border);
 
         var overlay = new Canvas();
-        var input = PinShape("#dfe7ff", $"{title} IN");
+        var input = InputPin(PendingInPinKey(key), $"{title} IN");
         Canvas.SetLeft(input, -PinSize / 2);
         Canvas.SetTop(input, layout.Height / 2 - PinSize / 2);
         overlay.Children.Add(input);
@@ -1695,11 +2778,27 @@ public partial class MainWindow : Window
     private static string PendingRewardLayoutKey(string eventId, string branch) => $"{PendingRewardPrefix}{eventId}|{branch}|{Guid.NewGuid():N}";
     private static string PendingBattleLayoutKey(string eventId) => $"{PendingBattlePrefix}{eventId}|{Guid.NewGuid():N}";
     private static string PendingExitLayoutKey(string eventId) => $"{PendingExitPrefix}{eventId}|{Guid.NewGuid():N}";
+    private static string ChoiceOutPinKey(string choiceId, string branch) => $"out|choice|{choiceId}|{branch}";
+    private static string RewardOutPinKey(string choiceId, string branch) => $"out|reward|{choiceId}|{branch}";
+    private static string BattleOutPinKey(string groupId, string branch) => $"out|battle|{groupId}|{branch}";
+    private static string GroupOutPinKey(string groupId) => $"out|group|{groupId}";
+    private static string GroupInPinKey(string groupId) => $"in|group|{groupId}";
+    private static string RewardInPinKey(string choiceId, string branch) => $"in|reward|{choiceId}|{branch}";
+    private static string BattleInPinKey(string groupId) => $"in|battle|{groupId}";
+    private static string ExitInPinKey(string groupId) => $"in|exit|{groupId}";
+    private static string GroupRewardInPinKey(string groupId) => $"in|group_reward|{groupId}";
+    private static string PendingInPinKey(string key) => $"in|pending|{key}";
+    private bool IsPinSelected(string pinKey) => string.Equals(_selectedPinKey, pinKey, StringComparison.OrdinalIgnoreCase);
     private static string PendingRewardBranch(string key)
     {
         var parts = key.Split('|');
         return parts.Length >= 3 ? parts[2] : "success";
     }
+
+    private static bool IsPendingObjectLayoutKey(string key)
+        => key.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase)
+           || key.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase)
+           || key.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase);
 
     private NodeLayout EnsureObjectLayout(string key, string eventId, double x, double y, double width, double height)
     {
@@ -1727,6 +2826,13 @@ public partial class MainWindow : Window
     }
 
     private static Rect RectFromLayout(NodeLayout layout) => new(layout.X, layout.Y, layout.Width, layout.Height);
+
+    private Rect? GetLayoutRect(string key)
+    {
+        if (_workbook is null || !_workbook.Layouts.TryGetValue(key, out var layout))
+            return null;
+        return RectFromLayout(layout);
+    }
 
     private bool HasOverlappingGroupExit(Rect rect, string eventId)
     {
@@ -1757,23 +2863,18 @@ public partial class MainWindow : Window
 
     private void DrawBattleNode(ChoiceGroupRow group, bool linkedFromChoice = false)
     {
-        if (_workbook is null || !_workbook.Layouts.TryGetValue(group.Id, out var layout))
+        if (_workbook is null || !_workbook.Layouts.ContainsKey(group.Id))
             return;
 
         var key = BattleLayoutKey(group.Id);
-        var rect = RectFromLayout(EnsureObjectLayout(
-            key,
-            group.EventId,
-            layout.X + layout.Width + 84,
-            layout.Y + 18,
-            BattleNodeWidth,
-            BattleNodeHeight));
+        var rect = GetBattleNodeRect(group);
         var brush = new SolidColorBrush(Color.FromRgb(214, 116, 86));
         if (!linkedFromChoice)
         {
             var from = GetGroupActionPinPoint(group.Id);
             var to = new Point(rect.Left, rect.Top + rect.Height / 2);
-            DrawCurve(from, to, brush, "BATTLE", GetGroupRect(group.Id), rect);
+            DrawCurve(from, to, brush, "BATTLE", GetGroupRect(group.Id), rect,
+                new GraphLink($"group_battle|{group.Id}", GroupOutPinKey(group.Id), BattleInPinKey(group.Id), "group_battle", group.Id, "", BattleLayoutKey(group.Id)));
         }
 
         var selected = _selectedNodeKeys.Contains(key)
@@ -1823,10 +2924,21 @@ public partial class MainWindow : Window
 
         root.Children.Add(border);
         var overlay = new Canvas();
-        var input = PinShape("#dfe7ff", "Battle IN");
+        var input = InputPin(BattleInPinKey(group.Id), "Battle IN: 연결된 라인 선택");
         Canvas.SetLeft(input, -PinSize / 2);
         Canvas.SetTop(input, rect.Height / 2 - PinSize / 2);
         overlay.Children.Add(input);
+
+        var successPin = BattleOutputPin("T", group.Id, "success", "#3cb878");
+        Canvas.SetLeft(successPin, rect.Width - 34);
+        Canvas.SetTop(successPin, rect.Height / 2 - 20);
+        overlay.Children.Add(successPin);
+
+        var failPin = BattleOutputPin("F", group.Id, "fail", "#c65a5a");
+        Canvas.SetLeft(failPin, rect.Width - 34);
+        Canvas.SetTop(failPin, rect.Height / 2 + 2);
+        overlay.Children.Add(failPin);
+
         root.Children.Add(overlay);
 
         Canvas.SetLeft(root, rect.Left);
@@ -1849,8 +2961,9 @@ public partial class MainWindow : Window
             ExitNodeHeight));
         var from = GetGroupActionPinPoint(group.Id);
         var to = new Point(rect.Left, rect.Top + rect.Height / 2);
-        var brush = new SolidColorBrush(Color.FromRgb(160, 160, 160));
-        DrawCurve(from, to, brush, "EXIT", GetGroupRect(group.Id), rect);
+        var brush = new SolidColorBrush(Color.FromRgb(211, 91, 101));
+        DrawCurve(from, to, brush, "EXIT", GetGroupRect(group.Id), rect,
+            new GraphLink($"group_exit|{group.Id}", GroupOutPinKey(group.Id), ExitInPinKey(group.Id), "group_exit", group.Id, "", ExitLayoutKey(group.Id)));
 
         var selected = _selectedNodeKeys.Contains(key)
             || string.Equals(_selectedObjectKey, key, StringComparison.OrdinalIgnoreCase)
@@ -1866,8 +2979,8 @@ public partial class MainWindow : Window
         {
             Width = rect.Width,
             Height = rect.Height,
-            Background = new SolidColorBrush(Color.FromRgb(38, 38, 38)),
-            BorderBrush = new SolidColorBrush(selected ? Color.FromRgb(222, 202, 116) : Color.FromRgb(135, 135, 135)),
+            Background = new SolidColorBrush(Color.FromRgb(50, 31, 34)),
+            BorderBrush = new SolidColorBrush(selected ? Color.FromRgb(222, 202, 116) : Color.FromRgb(211, 91, 101)),
             BorderThickness = new Thickness(selected ? 2.0 : 1.2),
             CornerRadius = new CornerRadius(5),
             Padding = new Thickness(14, 8, 18, 8),
@@ -1882,14 +2995,14 @@ public partial class MainWindow : Window
                 new TextBlock
                 {
                     Text = "Exit",
-                    Foreground = new SolidColorBrush(Color.FromRgb(220, 220, 220)),
+                    Foreground = new SolidColorBrush(Color.FromRgb(255, 142, 150)),
                     FontWeight = FontWeights.Bold,
                     FontSize = 13
                 },
                 new TextBlock
                 {
                     Text = "event end",
-                    Foreground = Brushes.White,
+                    Foreground = new SolidColorBrush(Color.FromRgb(255, 228, 228)),
                     FontSize = 12,
                     TextTrimming = TextTrimming.CharacterEllipsis
                 }
@@ -1898,7 +3011,7 @@ public partial class MainWindow : Window
 
         root.Children.Add(border);
         var overlay = new Canvas();
-        var input = PinShape("#dfe7ff", "Exit IN");
+        var input = InputPin(ExitInPinKey(group.Id), "Exit IN: 연결된 라인 선택");
         Canvas.SetLeft(input, -PinSize / 2);
         Canvas.SetTop(input, rect.Height / 2 - PinSize / 2);
         overlay.Children.Add(input);
@@ -1929,8 +3042,8 @@ public partial class MainWindow : Window
         {
             Width = rect.Width,
             Height = rect.Height,
-            Background = new SolidColorBrush(Color.FromRgb(38, 38, 38)),
-            BorderBrush = new SolidColorBrush(selected ? Color.FromRgb(222, 202, 116) : Color.FromRgb(135, 135, 135)),
+            Background = new SolidColorBrush(Color.FromRgb(50, 31, 34)),
+            BorderBrush = new SolidColorBrush(selected ? Color.FromRgb(222, 202, 116) : Color.FromRgb(211, 91, 101)),
             BorderThickness = new Thickness(selected ? 2.0 : 1.2),
             CornerRadius = new CornerRadius(5),
             Padding = new Thickness(14, 8, 18, 8),
@@ -1945,14 +3058,14 @@ public partial class MainWindow : Window
                 new TextBlock
                 {
                     Text = $"{(branch == "success" ? "T" : "F")} Exit",
-                    Foreground = new SolidColorBrush(Color.FromRgb(220, 220, 220)),
+                    Foreground = new SolidColorBrush(Color.FromRgb(255, 142, 150)),
                     FontWeight = FontWeights.Bold,
                     FontSize = 13
                 },
                 new TextBlock
                 {
                     Text = "event end",
-                    Foreground = Brushes.White,
+                    Foreground = new SolidColorBrush(Color.FromRgb(255, 228, 228)),
                     FontSize = 12,
                     TextTrimming = TextTrimming.CharacterEllipsis
                 }
@@ -1961,7 +3074,7 @@ public partial class MainWindow : Window
         root.Children.Add(border);
 
         var overlay = new Canvas();
-        var input = PinShape("#dfe7ff", "Exit IN");
+        var input = InputPin(ExitInPinKey(key), "Exit IN: 연결된 라인 선택");
         Canvas.SetLeft(input, -PinSize / 2);
         Canvas.SetTop(input, rect.Height / 2 - PinSize / 2);
         overlay.Children.Add(input);
@@ -2042,61 +3155,12 @@ public partial class MainWindow : Window
         AddText("situation_text TID", group.SituationTextTid, v => group.SituationTextTid = v);
         Action? refreshBackgroundPreview = null;
         AddBackgroundText(group, () => refreshBackgroundPreview?.Invoke());
-        AddText("next_action", group.NextAction, v => { group.NextAction = v; DrawGraph(); });
+        AddNextActionRadios(group);
         AddText("npc_id", group.NpcId, v => group.NpcId = v);
         AddText("stage_id", group.StageId, v => { group.StageId = v; DrawGraph(); });
+        AddChoiceArray(group);
 
-        var battle = new Button
-        {
-            Content = IsBattleGroup(group) ? "전투 노드 제거" : "전투 노드 추가",
-            Margin = new Thickness(0, 12, 0, 0),
-            Height = 32
-        };
-        battle.Click += (_, _) =>
-        {
-            PushUndo();
-            if (IsBattleGroup(group))
-            {
-                group.NextAction = "choice";
-                group.StageId = "";
-            }
-            else
-            {
-                group.NextAction = "battle";
-                if (string.IsNullOrWhiteSpace(group.StageId))
-                    group.StageId = "STG_EVT_";
-            }
-            DrawGraph();
-            RefreshIssues();
-        };
-        InspectorPanel.Children.Add(battle);
-
-        var exit = new Button
-        {
-            Content = IsExitGroup(group) ? "Exit node remove" : "Exit node add",
-            Margin = new Thickness(0, 8, 0, 0),
-            Height = 32
-        };
-        exit.Click += (_, _) =>
-        {
-            PushUndo();
-            if (IsExitGroup(group))
-            {
-                group.NextAction = "choice";
-            }
-            else
-            {
-                group.NextAction = "exit";
-                group.StageId = "";
-            }
-            DrawGraph();
-            RefreshIssues();
-        };
-        InspectorPanel.Children.Add(exit);
-        InspectorPanel.Children.Remove(battle);
-        InspectorPanel.Children.Remove(exit);
-
-        var addChoice = new Button { Content = "선택지 추가", Margin = new Thickness(0, 8, 0, 0), Height = 32 };
+        var addChoice = new Button { Content = "선택지 추가", Margin = new Thickness(0, 8, 0, 0), Height = 32, IsEnabled = !IsBattleGroup(group) };
         addChoice.Click += (_, _) => AddChoice(group);
         InspectorPanel.Children.Add(addChoice);
 
@@ -2111,6 +3175,416 @@ public partial class MainWindow : Window
         delete.Click += (_, _) => DeleteGroup(group);
         InspectorPanel.Children.Add(delete);
         refreshBackgroundPreview = AddBackgroundPreview(group);
+    }
+
+    private void AddChoiceArray(ChoiceGroupRow group)
+    {
+        if (_workbook is null)
+            return;
+
+        var choices = VisibleChoicesForGroup(group, _workbook.Choices.Where(c => string.Equals(c.GroupId, group.Id, StringComparison.OrdinalIgnoreCase)));
+        var expander = new Expander
+        {
+            Header = "Choices",
+            IsExpanded = true,
+            Foreground = new SolidColorBrush(Color.FromRgb(220, 220, 220)),
+            Margin = new Thickness(0, 12, 0, 4)
+        };
+
+        var panel = new StackPanel { Margin = new Thickness(0, 4, 0, 0) };
+        var sizeRow = new Grid { Height = 26, Margin = new Thickness(0, 0, 0, 3) };
+        sizeRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(22) });
+        sizeRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(74) });
+        sizeRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        sizeRow.Children.Add(new TextBlock
+        {
+            Text = "",
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        var sizeLabel = new TextBlock
+        {
+            Text = "Size",
+            Foreground = new SolidColorBrush(Color.FromRgb(180, 180, 180)),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        Grid.SetColumn(sizeLabel, 1);
+        sizeRow.Children.Add(sizeLabel);
+        var sizeBox = new TextBox
+        {
+            Text = choices.Count.ToString(),
+            IsReadOnly = true,
+            Height = 24,
+            MinHeight = 24,
+            Padding = new Thickness(5, 1, 5, 1),
+            Background = new SolidColorBrush(Color.FromRgb(45, 45, 45)),
+            Foreground = new SolidColorBrush(Color.FromRgb(210, 210, 210)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(65, 65, 65))
+        };
+        Grid.SetColumn(sizeBox, 2);
+        sizeRow.Children.Add(sizeBox);
+        panel.Children.Add(sizeRow);
+
+        for (var i = 0; i < choices.Count; i++)
+        {
+            var choice = choices[i];
+            var row = new Grid
+            {
+                Height = 26,
+                Margin = new Thickness(0, 0, 0, 3),
+                Tag = choice.Id,
+                AllowDrop = true,
+                Background = Brushes.Transparent
+            };
+            row.DragOver += ChoiceArrayRow_DragOver;
+            row.Drop += ChoiceArrayRow_Drop;
+            row.DragLeave += ChoiceArrayRow_DragLeave;
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(22) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(74) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+            var handle = new Border
+            {
+                Tag = choice.Id,
+                Width = 18,
+                Height = 22,
+                Background = Brushes.Transparent,
+                Cursor = Cursors.SizeAll,
+                ToolTip = "드래그해서 선택지 순서 변경",
+                Child = new TextBlock
+                {
+                    Text = "≡",
+                    Foreground = new SolidColorBrush(Color.FromRgb(165, 165, 165)),
+                    FontSize = 15,
+                    FontWeight = FontWeights.Bold,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    LineHeight = 15
+                }
+            };
+            handle.PreviewMouseLeftButtonDown += ChoiceArrayDragHandle_MouseLeftButtonDown;
+            handle.PreviewMouseMove += ChoiceArrayDragHandle_MouseMove;
+            Grid.SetColumn(handle, 0);
+            row.Children.Add(handle);
+
+            var elementLabel = new TextBlock
+            {
+                Text = $"Element {i}",
+                Foreground = new SolidColorBrush(Color.FromRgb(180, 180, 180)),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            var elementDragZone = new Border
+            {
+                Tag = choice.Id,
+                Background = Brushes.Transparent,
+                Cursor = Cursors.SizeAll,
+                ToolTip = "드래그해서 선택지 순서 변경",
+                Child = elementLabel
+            };
+            elementDragZone.PreviewMouseLeftButtonDown += ChoiceArrayDragHandle_MouseLeftButtonDown;
+            elementDragZone.PreviewMouseMove += ChoiceArrayDragHandle_MouseMove;
+            Grid.SetColumn(elementDragZone, 1);
+            row.Children.Add(elementDragZone);
+
+            var button = new Button
+            {
+                Tag = choice.Id,
+                Height = 24,
+                MinHeight = 24,
+                Padding = new Thickness(6, 0, 6, 0),
+                HorizontalContentAlignment = HorizontalAlignment.Left,
+                Background = string.Equals(_selectedChoice?.Id, choice.Id, StringComparison.OrdinalIgnoreCase)
+                    ? new SolidColorBrush(Color.FromRgb(67, 84, 98))
+                    : new SolidColorBrush(Color.FromRgb(58, 58, 58)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(36, 36, 36)),
+                Content = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Children =
+                    {
+                        new TextBlock
+                        {
+                            Text = "◆",
+                            Foreground = new SolidColorBrush(Color.FromRgb(86, 175, 210)),
+                            FontSize = 10,
+                            VerticalAlignment = VerticalAlignment.Center,
+                            Margin = new Thickness(0, 0, 5, 0)
+                        },
+                        new TextBlock
+                        {
+                            Text = $"{choice.Seq}. {TrimForHeader(choice.Memo)}",
+                            Foreground = new SolidColorBrush(Color.FromRgb(220, 220, 220)),
+                            VerticalAlignment = VerticalAlignment.Center,
+                            TextTrimming = TextTrimming.CharacterEllipsis
+                        }
+                    }
+                },
+                ToolTip = "클릭해서 선택지 상세 보기"
+            };
+            button.Click += ChoiceArrayItem_Click;
+            Grid.SetColumn(button, 2);
+            row.Children.Add(button);
+
+            var dropIndicator = new Border
+            {
+                Height = 3,
+                Margin = new Thickness(1, 0, 1, 0),
+                Background = new SolidColorBrush(Color.FromRgb(85, 185, 255)),
+                CornerRadius = new CornerRadius(2),
+                Visibility = Visibility.Collapsed,
+                IsHitTestVisible = false
+            };
+            Grid.SetColumnSpan(dropIndicator, 3);
+            Panel.SetZIndex(dropIndicator, 20);
+            row.Resources["DropIndicator"] = dropIndicator;
+            row.Children.Add(dropIndicator);
+            panel.Children.Add(row);
+        }
+
+        if (choices.Count == 0)
+        {
+            panel.Children.Add(new TextBlock
+            {
+                Text = "선택지가 없습니다.",
+                Foreground = new SolidColorBrush(Color.FromRgb(145, 145, 145)),
+                Margin = new Thickness(0, 2, 0, 2)
+            });
+        }
+
+        expander.Content = panel;
+        InspectorPanel.Children.Add(expander);
+    }
+
+    private void ChoiceArrayItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string choiceId } || _workbook is null)
+            return;
+
+        var choice = _workbook.Choices.FirstOrDefault(c => string.Equals(c.Id, choiceId, StringComparison.OrdinalIgnoreCase));
+        if (choice is null)
+            return;
+
+        _selectedNodeKeys.Clear();
+        _selectedObjectKey = null;
+        BuildChoiceInspector(choice);
+        RefreshHierarchy();
+        DrawGraph();
+    }
+
+    private void ChoiceArrayDragHandle_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string choiceId })
+            return;
+
+        _choiceArrayDragChoiceId = choiceId;
+        _choiceArrayDragStart = e.GetPosition(this);
+        e.Handled = true;
+    }
+
+    private void ChoiceArrayDragHandle_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed
+            || sender is not DependencyObject dragSource
+            || sender is not FrameworkElement { Tag: string choiceId }
+            || !string.Equals(_choiceArrayDragChoiceId, choiceId, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var point = e.GetPosition(this);
+        if (Math.Abs(point.X - _choiceArrayDragStart.X) < SystemParameters.MinimumHorizontalDragDistance
+            && Math.Abs(point.Y - _choiceArrayDragStart.Y) < SystemParameters.MinimumVerticalDragDistance)
+            return;
+
+        var data = new DataObject(ChoiceArrayDragFormat, choiceId);
+        _choiceArrayDragSourceRow = FindVisualParent<Grid>(dragSource);
+        if (_choiceArrayDragSourceRow is not null)
+            _choiceArrayDragSourceRow.Opacity = 0.58;
+        try
+        {
+            DragDrop.DoDragDrop(dragSource, data, DragDropEffects.Move);
+        }
+        finally
+        {
+            if (_choiceArrayDragSourceRow is not null)
+                _choiceArrayDragSourceRow.Opacity = 1.0;
+            _choiceArrayDragSourceRow = null;
+            _choiceArrayDragChoiceId = null;
+            ClearChoiceArrayDropIndicator();
+            e.Handled = true;
+        }
+    }
+
+    private void ChoiceArrayRow_DragOver(object sender, DragEventArgs e)
+    {
+        if (sender is Grid row && CanDropChoiceArrayRow(row, e))
+        {
+            var insertAfter = e.GetPosition(row).Y > row.ActualHeight / 2;
+            ShowChoiceArrayDropIndicator(row, insertAfter);
+            e.Effects = DragDropEffects.Move;
+        }
+        else
+        {
+            ClearChoiceArrayDropIndicator();
+            e.Effects = DragDropEffects.None;
+        }
+        e.Handled = true;
+    }
+
+    private void ChoiceArrayRow_DragLeave(object sender, DragEventArgs e)
+    {
+        if (ReferenceEquals(sender, _choiceArrayActiveDropRow))
+            ClearChoiceArrayDropIndicator();
+        e.Handled = true;
+    }
+
+    private void ChoiceArrayRow_Drop(object sender, DragEventArgs e)
+    {
+        if (!CanDropChoiceArrayRow(sender, e)
+            || sender is not FrameworkElement { Tag: string targetChoiceId })
+            return;
+
+        var sourceChoiceId = (string)e.Data.GetData(ChoiceArrayDragFormat)!;
+        var targetElement = (FrameworkElement)sender;
+        var insertAfter = e.GetPosition(targetElement).Y > targetElement.ActualHeight / 2;
+        ClearChoiceArrayDropIndicator();
+        ReorderChoiceInGroup(sourceChoiceId, targetChoiceId, insertAfter);
+        e.Handled = true;
+    }
+
+    private void ShowChoiceArrayDropIndicator(Grid row, bool insertAfter)
+    {
+        if (!ReferenceEquals(_choiceArrayActiveDropRow, row))
+            ClearChoiceArrayDropIndicator();
+
+        _choiceArrayActiveDropRow = row;
+        row.Background = new SolidColorBrush(Color.FromRgb(46, 56, 60));
+        if (row.Resources["DropIndicator"] is not Border indicator)
+            return;
+
+        _choiceArrayActiveDropIndicator = indicator;
+        indicator.VerticalAlignment = insertAfter ? VerticalAlignment.Bottom : VerticalAlignment.Top;
+        indicator.Visibility = Visibility.Visible;
+    }
+
+    private void ClearChoiceArrayDropIndicator()
+    {
+        if (_choiceArrayActiveDropIndicator is not null)
+            _choiceArrayActiveDropIndicator.Visibility = Visibility.Collapsed;
+        if (_choiceArrayActiveDropRow is not null)
+            _choiceArrayActiveDropRow.Background = Brushes.Transparent;
+
+        _choiceArrayActiveDropIndicator = null;
+        _choiceArrayActiveDropRow = null;
+    }
+
+    private bool CanDropChoiceArrayRow(object sender, DragEventArgs e)
+    {
+        if (_workbook is null
+            || !e.Data.GetDataPresent(ChoiceArrayDragFormat)
+            || sender is not FrameworkElement { Tag: string targetChoiceId })
+            return false;
+
+        var sourceChoiceId = e.Data.GetData(ChoiceArrayDragFormat) as string;
+        if (string.IsNullOrWhiteSpace(sourceChoiceId)
+            || string.Equals(sourceChoiceId, targetChoiceId, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var source = _workbook.Choices.FirstOrDefault(c => string.Equals(c.Id, sourceChoiceId, StringComparison.OrdinalIgnoreCase));
+        var target = _workbook.Choices.FirstOrDefault(c => string.Equals(c.Id, targetChoiceId, StringComparison.OrdinalIgnoreCase));
+        return source is not null
+               && target is not null
+               && string.Equals(source.GroupId, target.GroupId, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void ReorderChoiceInGroup(string sourceChoiceId, string targetChoiceId, bool insertAfter)
+    {
+        if (_workbook is null)
+            return;
+
+        var source = _workbook.Choices.FirstOrDefault(c => string.Equals(c.Id, sourceChoiceId, StringComparison.OrdinalIgnoreCase));
+        var target = _workbook.Choices.FirstOrDefault(c => string.Equals(c.Id, targetChoiceId, StringComparison.OrdinalIgnoreCase));
+        if (source is null || target is null || !string.Equals(source.GroupId, target.GroupId, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var group = _workbook.Groups.FirstOrDefault(g => string.Equals(g.Id, source.GroupId, StringComparison.OrdinalIgnoreCase));
+        if (group is null)
+            return;
+
+        var ordered = VisibleChoicesForGroup(group, _workbook.Choices.Where(c => string.Equals(c.GroupId, group.Id, StringComparison.OrdinalIgnoreCase)));
+        ordered.RemoveAll(c => string.Equals(c.Id, source.Id, StringComparison.OrdinalIgnoreCase));
+        var targetIndex = ordered.FindIndex(c => string.Equals(c.Id, target.Id, StringComparison.OrdinalIgnoreCase));
+        if (targetIndex < 0)
+            return;
+
+        var insertIndex = Math.Clamp(targetIndex + (insertAfter ? 1 : 0), 0, ordered.Count);
+        ordered.Insert(insertIndex, source);
+
+        if (ordered.Select((choice, index) => (choice, seq: index + 1)).All(pair => pair.choice.Seq == pair.seq))
+            return;
+
+        PushUndo();
+        for (var i = 0; i < ordered.Count; i++)
+            ordered[i].Seq = i + 1;
+
+        _selectedGroup = group;
+        _selectedChoice = null;
+        _selectedObjectKey = null;
+        _selectedNodeKeys.Clear();
+        RefreshHierarchy();
+        RefreshIssues();
+        DrawGraph();
+    }
+
+    private void AddNextActionRadios(ChoiceGroupRow group)
+    {
+        InspectorPanel.Children.Add(new TextBlock
+        {
+            Text = "next_action",
+            Foreground = new SolidColorBrush(Color.FromRgb(190, 190, 190)),
+            FontSize = 12,
+            Margin = new Thickness(0, 10, 0, 4)
+        });
+
+        var panel = new WrapPanel { Margin = new Thickness(0, 0, 0, 6) };
+        AddNextActionRadio(panel, group, "choice", "Choice");
+        AddNextActionRadio(panel, group, "exit", "Exit");
+        AddNextActionRadio(panel, group, "battle", "Battle");
+        InspectorPanel.Children.Add(panel);
+    }
+
+    private void AddNextActionRadio(Panel panel, ChoiceGroupRow group, string value, string label)
+    {
+        var radio = new RadioButton
+        {
+            Content = label,
+            GroupName = $"next_action_{group.Id}",
+            IsChecked = string.Equals(group.NextAction, value, StringComparison.OrdinalIgnoreCase),
+            Foreground = Brushes.White,
+            Margin = new Thickness(0, 0, 14, 0),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        radio.Checked += (_, _) =>
+        {
+            if (string.Equals(group.NextAction, value, StringComparison.OrdinalIgnoreCase))
+                return;
+            PushUndo();
+            group.NextAction = value;
+            if (!string.Equals(value, "battle", StringComparison.OrdinalIgnoreCase))
+            {
+                group.StageId = "";
+                RemoveBattleResultChoice(group);
+            }
+            else if (string.IsNullOrWhiteSpace(group.StageId))
+            {
+                group.StageId = DefaultBattleStageId;
+                GetBattleResultChoice(group, create: true);
+            }
+            else
+            {
+                GetBattleResultChoice(group, create: true);
+            }
+            DrawGraph();
+            RefreshIssues();
+        };
+        panel.Children.Add(radio);
     }
 
     private void BuildChoiceInspector(EventChoiceRow choice)
@@ -2398,7 +3872,7 @@ public partial class MainWindow : Window
                 Background = new SolidColorBrush(Color.FromRgb(54, 54, 54)),
                 Foreground = new SolidColorBrush(Color.FromRgb(210, 220, 235))
             };
-            info.Click += (_, _) => MessageBox.Show(this, help.Tooltip, $"{help.Table}.{help.Column}", MessageBoxButton.OK, MessageBoxImage.Information);
+            info.Click += (_, _) => ThemedMessageBox.Show(this, help.Tooltip, $"{help.Table}.{help.Column}", MessageBoxButton.OK, MessageBoxImage.Information);
             header.Children.Add(info);
         }
         InspectorPanel.Children.Add(header);
@@ -2473,6 +3947,19 @@ public partial class MainWindow : Window
 
     private static string InferColumnName(string label)
     {
+        var trimmed = label.Trim();
+        var localized = trimmed switch
+        {
+            "메모/이벤트명" => "event_name",
+            "희귀도" => "rarity",
+            "가중치" => "weight",
+            "메모/상황문" => "situation_text",
+            "메모/선택지 문구" => "choice_text",
+            _ => ""
+        };
+        if (!string.IsNullOrWhiteSpace(localized))
+            return localized;
+
         var lower = label.ToLowerInvariant();
         var known = new[]
         {
@@ -2508,9 +3995,13 @@ public partial class MainWindow : Window
             ChoiceTextTid = $"{id}_choice_text"
         };
         _workbook.Choices.Add(choice);
+        _selectedNodeKeys.Clear();
+        _selectedGroup = group;
+        _selectedChoice = null;
+        _selectedObjectKey = null;
         RefreshHierarchy();
+        RefreshIssues();
         DrawGraph();
-        BuildChoiceInspector(choice);
     }
 
     private void AddGroup() => AddGroupAt(null);
@@ -2578,11 +4069,11 @@ public partial class MainWindow : Window
 
         if (_workbook.Events.Count <= 1)
         {
-            MessageBox.Show(this, "최소 1개의 이벤트가 필요합니다.", "Delete blocked", MessageBoxButton.OK, MessageBoxImage.Warning);
+            ThemedMessageBox.Show(this, "최소 1개의 이벤트가 필요합니다.", "Delete blocked", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        var result = MessageBox.Show(this,
+        var result = ThemedMessageBox.Show(this,
             $"이벤트와 포함된 장면/선택지를 모두 삭제합니다.\n\n{evt.Id}  {evt.Memo}",
             "이벤트 삭제", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
         if (result != MessageBoxResult.OK)
@@ -2636,11 +4127,11 @@ public partial class MainWindow : Window
         var eventGroups = _workbook.Groups.Where(g => g.EventId == _selectedEvent.Id && g.Id != group.Id).ToList();
         if (eventGroups.Count == 0)
         {
-            MessageBox.Show(this, "이벤트에는 최소 1개의 장면이 필요합니다.", "Delete blocked", MessageBoxButton.OK, MessageBoxImage.Warning);
+            ThemedMessageBox.Show(this, "이벤트에는 최소 1개의 장면이 필요합니다.", "Delete blocked", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        var result = MessageBox.Show(this,
+        var result = ThemedMessageBox.Show(this,
             $"장면과 이 장면의 선택지를 삭제합니다.\n다른 선택지에서 이 장면으로 연결된 값은 비워집니다.\n\n{group.Id}",
             "장면 삭제", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
         if (result != MessageBoxResult.OK)
@@ -2685,7 +4176,7 @@ public partial class MainWindow : Window
     {
         if (_workbook is null)
             return;
-        var result = MessageBox.Show(this, $"선택지를 삭제합니다.\n\n{choice.Id}", "선택지 삭제", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+        var result = ThemedMessageBox.Show(this, $"선택지를 삭제합니다.\n\n{choice.Id}", "선택지 삭제", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
         if (result != MessageBoxResult.OK)
             return;
         PushUndo();
@@ -2715,8 +4206,7 @@ public partial class MainWindow : Window
         {
             PushUndo();
             if (_selectedObjectKey.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase)
-                || _selectedObjectKey.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase)
-                || _selectedObjectKey.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase))
+                || _selectedObjectKey.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase))
             {
                 _workbook.Layouts.Remove(_selectedObjectKey);
                 _selectedObjectKey = null;
@@ -2754,6 +4244,7 @@ public partial class MainWindow : Window
                 {
                     group.NextAction = "choice";
                     group.StageId = "";
+                    RemoveBattleResultChoice(group);
                 }
                 _workbook.Layouts.Remove(_selectedObjectKey);
                 _selectedObjectKey = null;
@@ -2809,11 +4300,11 @@ public partial class MainWindow : Window
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         if (groupIds.Count >= currentGroupIds.Count)
         {
-            MessageBox.Show(this, "이벤트에는 최소 1개의 장면 노드가 필요합니다.", "Delete blocked", MessageBoxButton.OK, MessageBoxImage.Warning);
+            ThemedMessageBox.Show(this, "이벤트에는 최소 1개의 장면 노드가 필요합니다.", "Delete blocked", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
-        var result = MessageBox.Show(this, $"선택한 노드 {selected.Count}개를 삭제합니다.", "노드 삭제", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+        var result = ThemedMessageBox.Show(this, $"선택한 노드 {selected.Count}개를 삭제합니다.", "노드 삭제", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
         if (result != MessageBoxResult.OK)
             return;
 
@@ -2841,8 +4332,7 @@ public partial class MainWindow : Window
 
         foreach (var key in selected.Where(k =>
                      k.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase)
-                     || k.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase)
-                     || k.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase)))
+                     || k.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase)))
             _workbook.Layouts.Remove(key);
 
         foreach (var key in selected.Where(k => k.StartsWith(ChoiceExitPrefix, StringComparison.OrdinalIgnoreCase)))
@@ -2852,13 +4342,14 @@ public partial class MainWindow : Window
         {
             var groupId = key.Split('|').ElementAtOrDefault(1) ?? "";
             var group = _workbook.Groups.FirstOrDefault(g => g.Id == groupId);
-            if (group is not null)
-            {
-                group.NextAction = "choice";
-                group.StageId = "";
+                if (group is not null)
+                {
+                    group.NextAction = "choice";
+                    group.StageId = "";
+                    RemoveBattleResultChoice(group);
+                }
+                _workbook.Layouts.Remove(key);
             }
-            _workbook.Layouts.Remove(key);
-        }
 
         foreach (var key in selected.Where(k => k.StartsWith(GroupRewardPrefix, StringComparison.OrdinalIgnoreCase)))
         {
@@ -2940,6 +4431,8 @@ public partial class MainWindow : Window
             issues.Add(FlowError($"{_selectedEvent.Id}: 시작 장면 first_group_id가 유효하지 않습니다. ({_selectedEvent.FirstGroupId})"));
             return issues;
         }
+        if (!groups.Any(IsExitGroup))
+            issues.Add(FlowError($"{_selectedEvent.Id}: 이벤트 종료용 next_action=exit 장면이 없습니다."));
 
         var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var queue = new Queue<string>();
@@ -2960,8 +4453,22 @@ public partial class MainWindow : Window
             {
                 if (string.IsNullOrWhiteSpace(group.StageId))
                     issues.Add(FlowError($"{group.Id}: next_action=battle인데 stage_id가 없습니다."));
-                if (choices.Count > 0)
-                    issues.Add(FlowWarning($"{group.Id}: battle 장면에 선택지가 남아 있습니다. export는 battle/stage_id를 우선 사용합니다."));
+                var result = GetBattleResultChoice(group, create: false);
+                if (result is null)
+                {
+                    issues.Add(FlowError($"{group.Id}: battle 결과용 row가 없습니다. 저장/로드 정규화를 다시 실행하세요."));
+                }
+                else
+                {
+                    if (string.Equals(result.SuccessRewardType, "none", StringComparison.OrdinalIgnoreCase))
+                        issues.Add(FlowWarning($"{group.Id}: Battle T 성공 보상이 없습니다."));
+                    EnqueueBattleBranch(result, "T", result.SuccessNextGroupId);
+                    EnqueueBattleBranch(result, "F", result.FailNextGroupId);
+                }
+
+                var visibleChoices = VisibleChoicesForGroup(group, choices);
+                if (visibleChoices.Count > 0)
+                    issues.Add(FlowWarning($"{group.Id}: battle 장면에 일반 선택지가 남아 있습니다. 결과 분기는 Battle T/F 핀을 사용하세요."));
                 continue;
             }
             else if (!string.IsNullOrWhiteSpace(group.StageId))
@@ -2970,8 +4477,12 @@ public partial class MainWindow : Window
             }
 
             var groupEndsWithExit = string.Equals(group.NextAction, "exit", StringComparison.OrdinalIgnoreCase);
-            if (groupEndsWithExit && choices.Count == 0)
+            if (groupEndsWithExit)
+            {
+                if (choices.Count > 0)
+                    issues.Add(FlowWarning($"{group.Id}: exit 장면에 선택지가 남아 있습니다."));
                 continue;
+            }
 
             if (string.Equals(group.NextAction, "choice", StringComparison.OrdinalIgnoreCase) && choices.Count == 0)
                 issues.Add(FlowWarning($"{group.Id}: choice 장면인데 선택지가 없습니다."));
@@ -2990,9 +4501,11 @@ public partial class MainWindow : Window
                 }
                 else if (choice.SuccessRewardType == "none")
                 {
-                    var hasChoiceExit = _workbook.Layouts.ContainsKey(ChoiceExitLayoutKey(choice.Id, "success"));
-                    if (!groupEndsWithExit && !hasChoiceExit)
-                        issues.Add(FlowWarning($"{choice.Id}: T 경로에 다음 장면도 보상도 없습니다."));
+                    issues.Add(FlowError($"{choice.Id}: T 경로가 exit 장면에 연결되지 않았습니다."));
+                }
+                else
+                {
+                    issues.Add(FlowError($"{choice.Id}: T 보상 뒤에 이어질 exit 장면이 없습니다."));
                 }
 
                 var hasFailConfig = !string.IsNullOrWhiteSpace(choice.FailNextGroupId)
@@ -3014,17 +4527,39 @@ public partial class MainWindow : Window
                 }
                 else if (choice.FailRewardType == "none")
                 {
-                    var hasChoiceExit = _workbook.Layouts.ContainsKey(ChoiceExitLayoutKey(choice.Id, "fail"));
-                    if (!groupEndsWithExit && !hasChoiceExit)
-                        issues.Add(FlowWarning($"{choice.Id}: success_rate가 있어 F 핀이 활성인데 F 결과가 비어 있습니다."));
+                    issues.Add(FlowError($"{choice.Id}: F 경로가 exit 장면에 연결되지 않았습니다."));
+                }
+                else
+                {
+                    issues.Add(FlowError($"{choice.Id}: F 보상 뒤에 이어질 exit 장면이 없습니다."));
                 }
             }
         }
+
+        if (!groups.Where(IsExitGroup).Any(g => visited.Contains(g.Id)))
+            issues.Add(FlowError($"{_selectedEvent.Id}: 시작 장면에서 도달 가능한 exit 장면이 없습니다."));
 
         foreach (var unreachable in groups.Where(g => !visited.Contains(g.Id)).OrderBy(g => g.Id))
             issues.Add(FlowWarning($"{unreachable.Id}: 시작 장면에서 도달할 수 없습니다."));
 
         return issues;
+
+        void EnqueueBattleBranch(EventChoiceRow result, string label, string nextGroupId)
+        {
+            if (string.IsNullOrWhiteSpace(nextGroupId))
+            {
+                issues.Add(FlowError($"{result.Id}: Battle {label} 경로가 exit 장면에 연결되지 않았습니다."));
+                return;
+            }
+
+            if (!groupSet.Contains(nextGroupId))
+            {
+                issues.Add(FlowError($"{result.Id}: Battle {label} 경로 대상 장면이 없습니다. ({nextGroupId})"));
+                return;
+            }
+
+            queue.Enqueue(nextGroupId);
+        }
     }
 
     private static ValidationIssue FlowError(string message) => new()
@@ -3076,9 +4611,9 @@ public partial class MainWindow : Window
             return;
 
         _copiedGroup = CloneGroupForClipboard(group);
-        _copiedChoices = _workbook.Choices
+        _copiedChoices = VisibleChoicesForGroup(group, _workbook.Choices
             .Where(c => c.GroupId == group.Id)
-            .OrderBy(c => c.Seq)
+            .OrderBy(c => c.Seq))
             .Select(CloneChoiceForClipboard)
             .ToList();
         Log($"COPY NODE: {group.Id}");
@@ -3096,6 +4631,8 @@ public partial class MainWindow : Window
         group.EventId = _selectedEvent.Id;
         group.SituationTextTid = $"{id}_situation_text";
         _workbook.Groups.Add(group);
+        if (IsBattleGroup(group) && string.IsNullOrWhiteSpace(group.StageId))
+            group.StageId = DefaultBattleStageId;
 
         foreach (var source in _copiedChoices.OrderBy(c => c.Seq))
         {
@@ -3108,6 +4645,9 @@ public partial class MainWindow : Window
             choice.FailNextGroupId = "";
             _workbook.Choices.Add(choice);
         }
+
+        if (IsBattleGroup(group))
+            GetBattleResultChoice(group, create: true);
 
         var basePoint = new Point(120, 120);
         if (_selectedGroup is not null && _workbook.Layouts.TryGetValue(_selectedGroup.Id, out var selectedLayout))
@@ -3240,7 +4780,6 @@ public partial class MainWindow : Window
         var line = $"INFO: {message}";
         _notiMessages.Add(line);
         RefreshConsoleLists();
-        ConsoleTabs.SelectedIndex = 0;
     }
 
     private void ConsoleSearchBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -3251,6 +4790,11 @@ public partial class MainWindow : Window
     private void ConsoleClearButton_Click(object sender, RoutedEventArgs e)
     {
         _notiMessages.Clear();
+        RefreshConsoleLists();
+    }
+
+    private void ConsoleFilterToggle_Click(object sender, RoutedEventArgs e)
+    {
         RefreshConsoleLists();
     }
 
@@ -3284,7 +4828,7 @@ public partial class MainWindow : Window
         {
             if (!NexusPathResolver.LooksLikeEventWorkbook(dialog.FileName))
             {
-                MessageBox.Show(this, "nexus_event 테이블 구조가 아닙니다.", "Invalid workbook", MessageBoxButton.OK, MessageBoxImage.Warning);
+                ThemedMessageBox.Show(this, "nexus_event 테이블 구조가 아닙니다.", "Invalid workbook", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
             LoadWorkbook(dialog.FileName);
@@ -3301,6 +4845,16 @@ public partial class MainWindow : Window
 
     private void AutoLayoutButton_Click(object sender, RoutedEventArgs e)
     {
+        RunAutoLayout();
+    }
+
+    private void AutoLayoutAllButton_Click(object sender, RoutedEventArgs e)
+    {
+        RunAutoLayoutAllEvents();
+    }
+
+    private void RunAutoLayout()
+    {
         if (_workbook is null || _selectedEvent is null)
             return;
         PushUndo();
@@ -3308,6 +4862,46 @@ public partial class MainWindow : Window
         _centerGraphOnNextDraw = true;
         DrawGraph();
         RefreshIssues();
+    }
+
+    private void RunAutoLayoutAllEvents()
+    {
+        if (_workbook is null)
+            return;
+
+        var confirm = ThemedMessageBox.Show(
+            this,
+            "모든 이벤트의 노드 배치를 다시 계산합니다.\n현재 저장된 레이아웃 위치가 전체 이벤트에 대해 변경됩니다.",
+            "모든 이벤트 Auto Layout",
+            MessageBoxButton.OKCancel,
+            MessageBoxImage.Warning);
+        if (confirm != MessageBoxResult.OK)
+            return;
+
+        PushUndo();
+        var eventId = _selectedEvent?.Id;
+        var busy = ShowBusy("Auto Layout all events...");
+        try
+        {
+            EventWorkbookService.NormalizeExitTerminals(_workbook);
+            foreach (var evt in _workbook.Events.OrderBy(e => e.Id).ToList())
+                AutoLayoutEvent(evt);
+        }
+        finally
+        {
+            busy.Close();
+        }
+
+        _selectedEvent = !string.IsNullOrWhiteSpace(eventId)
+            ? _workbook.Events.FirstOrDefault(e => string.Equals(e.Id, eventId, StringComparison.OrdinalIgnoreCase))
+            : _workbook.Events.OrderBy(e => e.Id).FirstOrDefault();
+        RestoreSelectionAfterModelChange();
+        RefreshEventList();
+        RefreshHierarchy();
+        _centerGraphOnNextDraw = true;
+        DrawGraph();
+        RefreshIssues();
+        Log("AUTO LAYOUT ALL EVENTS");
     }
 
     private void PlayButton_Click(object sender, RoutedEventArgs e)
@@ -3344,7 +4938,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, ex.Message, "Pause failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            ThemedMessageBox.Show(this, ex.Message, "Pause failed", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
     }
 
@@ -3356,6 +4950,13 @@ public partial class MainWindow : Window
             return;
 
         EnsureGeneratedTids(force: false);
+        if (EventWorkbookService.NormalizeExitTerminals(_workbook) > 0)
+        {
+            RestoreSelectionAfterModelChange();
+            RefreshEventList();
+            RefreshHierarchy();
+            DrawGraph();
+        }
         RefreshIssues();
         var errors = EventWorkbookService.Validate(_workbook)
             .Concat(CompileSelectedEventLogic())
@@ -3363,7 +4964,7 @@ public partial class MainWindow : Window
         if (errors > 0)
         {
             Log($"COMPILE FAILED: {_selectedEvent.Id} / 오류 {errors}건");
-            MessageBox.Show(this, $"로직 오류 {errors}건이 있습니다. Console / Validation을 확인하세요.", "Compile failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            ThemedMessageBox.Show(this, $"로직 오류 {errors}건이 있습니다. Console / Validation을 확인하세요.", "Compile failed", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -3411,15 +5012,15 @@ public partial class MainWindow : Window
         }
         catch (IOException)
         {
-            MessageBox.Show(this, "엑셀을 종료해주세요.", "Runtime workbook failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            ThemedMessageBox.Show(this, "엑셀을 종료해주세요.", "Runtime workbook failed", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (UnauthorizedAccessException)
         {
-            MessageBox.Show(this, "엑셀을 종료해주세요.", "Runtime workbook failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            ThemedMessageBox.Show(this, "엑셀을 종료해주세요.", "Runtime workbook failed", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, ex.Message, "Player launch failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            ThemedMessageBox.Show(this, ex.Message, "Player launch failed", MessageBoxButton.OK, MessageBoxImage.Error);
         }
     }
 
@@ -3442,7 +5043,7 @@ public partial class MainWindow : Window
 
         if (!NexusPathResolver.LooksLikePlayerExe(dialog.FileName))
         {
-            MessageBox.Show(this, "플레이어 경로가 잘못되었습니다. exe와 pck가 같은 폴더에 있어야 합니다.", "Invalid player", MessageBoxButton.OK, MessageBoxImage.Warning);
+            ThemedMessageBox.Show(this, "플레이어 경로가 잘못되었습니다. exe와 pck가 같은 폴더에 있어야 합니다.", "Invalid player", MessageBoxButton.OK, MessageBoxImage.Warning);
             return null;
         }
 
@@ -3546,7 +5147,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, ex.Message, "Stop failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            ThemedMessageBox.Show(this, ex.Message, "Stop failed", MessageBoxButton.OK, MessageBoxImage.Warning);
         }
         finally
         {
@@ -3635,34 +5236,47 @@ public partial class MainWindow : Window
         OpenButton.IsEnabled = !locked;
         ReloadButton.IsEnabled = !locked;
         AutoLayoutButton.IsEnabled = !locked;
+        AutoLayoutAllButton.IsEnabled = !locked;
         PreviewButton.IsEnabled = !locked;
         PlayButton.IsEnabled = true;
         PlayButton.Background = new SolidColorBrush(locked ? Color.FromRgb(42, 91, 148) : Color.FromRgb(58, 58, 58));
         PlayButton.BorderBrush = new SolidColorBrush(locked ? Color.FromRgb(72, 126, 184) : Color.FromRgb(86, 86, 86));
         PauseButton.IsEnabled = running;
-        PauseButton.Content = _playerPaused ? "▶" : "Ⅱ";
+        PauseButton.Content = _playerPaused ? "▶" : "❚❚";
         StopButton.IsEnabled = locked;
     }
 
     private void PreviewButton_Click(object sender, RoutedEventArgs e)
     {
+        ShowExportPreview();
+    }
+
+    private void ShowExportPreview()
+    {
         if (_workbook is null)
             return;
 
         EnsureGeneratedTids(force: false);
+        if (EventWorkbookService.NormalizeExitTerminals(_workbook) > 0)
+        {
+            RestoreSelectionAfterModelChange();
+            RefreshEventList();
+            RefreshHierarchy();
+            DrawGraph();
+        }
         RefreshIssues();
         var errors = EventWorkbookService.Validate(_workbook).Where(i => i.Severity == ValidationSeverity.Error).ToList();
         if (errors.Count > 0)
         {
-            MessageBox.Show(this, "오류가 있어 Export 할 수 없습니다.", "Validation failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            ThemedMessageBox.Show(this, "오류가 있어 Export 할 수 없습니다.", "Validation failed", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
         var preview = new PreviewWindow(
             () => EventWorkbookService.BuildDiff(_workbook),
-            entry =>
+            entries =>
             {
-                if (EventWorkbookService.RevertDiff(_workbook, entry))
+                if (EventWorkbookService.RevertDiffs(_workbook, entries) > 0)
                 {
                     RestoreSelectionAfterModelChange();
                     RefreshEventList();
@@ -3677,8 +5291,8 @@ public partial class MainWindow : Window
         {
             try
             {
-                foreach (var uncheckedEntry in preview.UncheckedEntries)
-                    EventWorkbookService.RevertDiff(_workbook, uncheckedEntry);
+                if (EventWorkbookService.RevertDiffs(_workbook, preview.UncheckedEntries) > 0)
+                    RestoreSelectionAfterModelChange();
                 var exportId = preview.ExportId;
                 if (!string.IsNullOrWhiteSpace(preview.ExportId))
                 {
@@ -3696,19 +5310,19 @@ public partial class MainWindow : Window
                     busy.Close();
                 }
                 LoadWorkbook(_workbook.SourcePath);
-                MessageBox.Show(this, "Export 완료", "Done", MessageBoxButton.OK, MessageBoxImage.Information);
+                ThemedMessageBox.Show(this, "Export 완료", "Done", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (IOException)
             {
-                MessageBox.Show(this, "엑셀을 종료해주세요.", "File locked", MessageBoxButton.OK, MessageBoxImage.Warning);
+                ThemedMessageBox.Show(this, "엑셀을 종료해주세요.", "File locked", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
             catch (UnauthorizedAccessException)
             {
-                MessageBox.Show(this, "엑셀을 종료해주세요.", "File locked", MessageBoxButton.OK, MessageBoxImage.Warning);
+                ThemedMessageBox.Show(this, "엑셀을 종료해주세요.", "File locked", MessageBoxButton.OK, MessageBoxImage.Warning);
             }
             catch (Exception ex)
             {
-                MessageBox.Show(this, ex.Message, "Export failed", MessageBoxButton.OK, MessageBoxImage.Error);
+                ThemedMessageBox.Show(this, ex.Message, "Export failed", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
     }
@@ -3719,8 +5333,10 @@ public partial class MainWindow : Window
             return null;
 
         var source = before && File.Exists(_workbook.SourcePath)
-            ? EventWorkbookService.Load(_workbook.SourcePath)
-            : _workbook;
+            ? EventWorkbookService.Load(_workbook.SourcePath, normalizeExitTerminals: false)
+            : CloneWorkbook(_workbook);
+        if (!before)
+            EventWorkbookService.NormalizeExitTerminals(source);
         var evt = source.Events.FirstOrDefault(e => string.Equals(e.Id, eventId, StringComparison.OrdinalIgnoreCase));
         if (evt is null)
             return null;
@@ -3735,6 +5351,7 @@ public partial class MainWindow : Window
             return graph;
 
         var groupSet = groups.Select(g => g.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var groupsById = groups.ToDictionary(g => g.Id, StringComparer.OrdinalIgnoreCase);
         var choicesByGroup = source.Choices
             .Where(c => groupSet.Contains(c.GroupId))
             .GroupBy(c => c.GroupId)
@@ -3745,46 +5362,19 @@ public partial class MainWindow : Window
         foreach (var group in groups)
         {
             var choices = choicesByGroup.TryGetValue(group.Id, out var list) ? list : [];
+            var visibleChoices = VisibleChoicesForGroup(group, choices);
             if (source.Layouts.TryGetValue(group.Id, out var layout))
-                rawLayouts[group.Id] = new Rect(layout.X, layout.Y, Math.Max(layout.Width, NodeWidth), Math.Max(layout.Height, CalculateNodeHeight(choices.Count)));
+                rawLayouts[group.Id] = new Rect(layout.X, layout.Y, Math.Max(layout.Width, NodeWidth), Math.Max(layout.Height, CalculateNodeHeight(visibleChoices.Count)));
             else
-                rawLayouts[group.Id] = new Rect(80 + (index % 3) * 420, 80 + (index / 3) * 260, NodeWidth, CalculateNodeHeight(choices.Count));
+                rawLayouts[group.Id] = new Rect(80 + (index % 3) * 420, 80 + (index / 3) * 260, NodeWidth, CalculateNodeHeight(visibleChoices.Count));
             index++;
         }
 
         foreach (var choice in choicesByGroup.Values.SelectMany(x => x))
         {
             AddPreviewRewardLayout(source, graph, rawLayouts, groups, choice, "success", choice.SuccessRewardType, choice.SuccessRewardAmount, choice.SuccessNextGroupId);
-            AddPreviewChoiceExitLayout(source, rawLayouts, choice, "success");
-            if (IsFailPinEnabled(choice))
-            {
+            if (PreviewFailBranchEnabled(choice, groupsById))
                 AddPreviewRewardLayout(source, graph, rawLayouts, groups, choice, "fail", choice.FailRewardType, choice.FailRewardAmount, choice.FailNextGroupId);
-                AddPreviewChoiceExitLayout(source, rawLayouts, choice, "fail");
-            }
-        }
-        foreach (var group in groups.Where(IsBattleGroup))
-        {
-            var key = BattleLayoutKey(group.Id);
-            var groupRect = rawLayouts[group.Id];
-            rawLayouts[key] = source.Layouts.TryGetValue(key, out var layout)
-                ? new Rect(layout.X, layout.Y, Math.Max(layout.Width, BattleNodeWidth), Math.Max(layout.Height, BattleNodeHeight))
-                : new Rect(groupRect.Right + 84, groupRect.Top + 18, BattleNodeWidth, BattleNodeHeight);
-        }
-        foreach (var group in groups.Where(g => IsExitGroup(g) && source.Layouts.ContainsKey(GroupRewardLayoutKey(g.Id))))
-        {
-            var key = GroupRewardLayoutKey(group.Id);
-            var groupRect = rawLayouts[group.Id];
-            rawLayouts[key] = source.Layouts.TryGetValue(key, out var layout)
-                ? new Rect(layout.X, layout.Y, Math.Max(layout.Width, RewardNodeWidth), Math.Max(layout.Height, RewardNodeHeight))
-                : new Rect(groupRect.Right + 84, groupRect.Top + Math.Max(0, groupRect.Height - RewardNodeHeight) / 2, RewardNodeWidth, RewardNodeHeight);
-        }
-        foreach (var group in groups.Where(g => IsExitGroup(g) && !source.Layouts.ContainsKey(GroupRewardLayoutKey(g.Id))))
-        {
-            var key = ExitLayoutKey(group.Id);
-            var groupRect = rawLayouts[group.Id];
-            rawLayouts[key] = source.Layouts.TryGetValue(key, out var layout)
-                ? new Rect(layout.X, layout.Y, Math.Max(layout.Width, ExitNodeWidth), Math.Max(layout.Height, ExitNodeHeight))
-                : new Rect(groupRect.Right + 84, groupRect.Top + Math.Max(0, groupRect.Height - ExitNodeHeight) / 2, ExitNodeWidth, ExitNodeHeight);
         }
 
         var bounds = rawLayouts.Values.First();
@@ -3800,7 +5390,11 @@ public partial class MainWindow : Window
             var node = new EventGraphPreviewNode
             {
                 Id = group.Id,
-                Kind = "scene",
+                Kind = IsExitGroup(group)
+                    ? "exit"
+                    : IsBattleGroup(group)
+                        ? "battle"
+                        : "scene",
                 Title = group.Id,
                 Body = group.Memo,
                 X = rect.X + dx,
@@ -3808,7 +5402,7 @@ public partial class MainWindow : Window
                 Width = rect.Width,
                 Height = rect.Height
             };
-            foreach (var choice in choices)
+            foreach (var choice in VisibleChoicesForGroup(group, choices))
             {
                 node.Rows.Add($"{choice.Seq}. {choice.Memo}");
                 node.RowIds.Add(choice.Id);
@@ -3819,72 +5413,14 @@ public partial class MainWindow : Window
         foreach (var choice in choicesByGroup.Values.SelectMany(x => x))
         {
             AddPreviewRewardNode(source, graph, rawLayouts, dx, dy, choice, "success", choice.SuccessRewardType, choice.SuccessRewardAmount);
-            AddPreviewChoiceExitNode(graph, rawLayouts, dx, dy, choice, "success");
-            if (IsFailPinEnabled(choice))
-            {
+            if (PreviewFailBranchEnabled(choice, groupsById))
                 AddPreviewRewardNode(source, graph, rawLayouts, dx, dy, choice, "fail", choice.FailRewardType, choice.FailRewardAmount);
-                AddPreviewChoiceExitNode(graph, rawLayouts, dx, dy, choice, "fail");
-            }
-        }
-        foreach (var group in groups.Where(IsBattleGroup))
-        {
-            var key = BattleLayoutKey(group.Id);
-            if (!rawLayouts.TryGetValue(key, out var rect))
-                continue;
-            graph.Nodes.Add(new EventGraphPreviewNode
-            {
-                Id = key,
-                Kind = "battle",
-                Title = "Battle",
-                Body = string.IsNullOrWhiteSpace(group.StageId) ? "stage_id: -" : group.StageId,
-                X = rect.X + dx,
-                Y = rect.Y + dy,
-                Width = rect.Width,
-                Height = rect.Height
-            });
-            graph.Links.Add(new EventGraphPreviewLink { FromId = group.Id, ToId = key, Label = "BATTLE" });
-        }
-        foreach (var group in groups.Where(g => IsExitGroup(g) && source.Layouts.ContainsKey(GroupRewardLayoutKey(g.Id))))
-        {
-            var key = GroupRewardLayoutKey(group.Id);
-            if (!rawLayouts.TryGetValue(key, out var rect))
-                continue;
-            graph.Nodes.Add(new EventGraphPreviewNode
-            {
-                Id = key,
-                Kind = "reward",
-                Title = "Reward",
-                Body = "event reward / exit",
-                X = rect.X + dx,
-                Y = rect.Y + dy,
-                Width = rect.Width,
-                Height = rect.Height
-            });
-            graph.Links.Add(new EventGraphPreviewLink { FromId = group.Id, ToId = key, Label = "REWARD" });
-        }
-        foreach (var group in groups.Where(g => IsExitGroup(g) && !source.Layouts.ContainsKey(GroupRewardLayoutKey(g.Id))))
-        {
-            var key = ExitLayoutKey(group.Id);
-            if (!rawLayouts.TryGetValue(key, out var rect))
-                continue;
-            graph.Nodes.Add(new EventGraphPreviewNode
-            {
-                Id = key,
-                Kind = "exit",
-                Title = "Exit",
-                Body = "event end",
-                X = rect.X + dx,
-                Y = rect.Y + dy,
-                Width = rect.Width,
-                Height = rect.Height
-            });
-            graph.Links.Add(new EventGraphPreviewLink { FromId = group.Id, ToId = key, Label = "EXIT" });
         }
 
         foreach (var choice in choicesByGroup.Values.SelectMany(x => x))
         {
             AddPreviewLinks(graph, choice.GroupId, choice, "success", choice.SuccessRewardType, choice.SuccessNextGroupId);
-            if (IsFailPinEnabled(choice))
+            if (PreviewFailBranchEnabled(choice, groupsById))
                 AddPreviewLinks(graph, choice.GroupId, choice, "fail", choice.FailRewardType, choice.FailNextGroupId);
         }
 
@@ -3956,25 +5492,19 @@ public partial class MainWindow : Window
     {
         var label = branch == "success" ? "T" : "F";
         var rewardKey = RewardLayoutKey(choice.Id, branch);
-        var choiceExitKey = ChoiceExitLayoutKey(choice.Id, branch);
-        var exitKey = graph.Nodes.Any(n => string.Equals(n.Id, choiceExitKey, StringComparison.OrdinalIgnoreCase))
-            ? choiceExitKey
-            : "";
-        var hasExit = !string.IsNullOrWhiteSpace(exitKey);
         if (rewardType != "none" && graph.Nodes.Any(n => string.Equals(n.Id, rewardKey, StringComparison.OrdinalIgnoreCase)))
         {
             graph.Links.Add(new EventGraphPreviewLink { FromId = groupId, ToId = rewardKey, Label = label });
             if (!string.IsNullOrWhiteSpace(nextGroupId))
                 graph.Links.Add(new EventGraphPreviewLink { FromId = rewardKey, ToId = nextGroupId, Label = "" });
-            else if (hasExit)
-                graph.Links.Add(new EventGraphPreviewLink { FromId = rewardKey, ToId = exitKey, Label = "" });
             return;
         }
         if (!string.IsNullOrWhiteSpace(nextGroupId))
             graph.Links.Add(new EventGraphPreviewLink { FromId = groupId, ToId = nextGroupId, Label = label });
-        else if (hasExit)
-            graph.Links.Add(new EventGraphPreviewLink { FromId = groupId, ToId = exitKey, Label = label });
     }
+
+    private static bool PreviewFailBranchEnabled(EventChoiceRow choice, Dictionary<string, ChoiceGroupRow> groupsById)
+        => IsFailPinEnabled(choice) || IsBattleResultChoice(choice, groupsById);
 
     private void SearchBox_TextChanged(object sender, TextChangedEventArgs e) => RefreshEventList();
 
@@ -4069,6 +5599,7 @@ public partial class MainWindow : Window
         _selectedObjectKey = null;
         RefreshHierarchy();
         DrawGraph();
+        RegisterInspectorAttentionClick($"group|{group.Id}");
         BeginLayoutDrag(groupId, e);
         e.Handled = true;
     }
@@ -4085,8 +5616,95 @@ public partial class MainWindow : Window
                 BuildChoiceInspector(choice);
                 RefreshHierarchy();
                 DrawGraph();
+                RegisterInspectorAttentionClick($"choice|{choice.Id}");
             }
         }
+    }
+
+    private void RegisterInspectorAttentionClick(string key)
+    {
+        var now = DateTime.UtcNow;
+        if (string.Equals(_lastInspectorAttentionKey, key, StringComparison.OrdinalIgnoreCase)
+            && (now - _lastInspectorAttentionClickUtc).TotalMilliseconds <= 1200)
+        {
+            _inspectorAttentionClickCount++;
+        }
+        else
+        {
+            _lastInspectorAttentionKey = key;
+            _inspectorAttentionClickCount = 1;
+        }
+
+        _lastInspectorAttentionClickUtc = now;
+        if (_inspectorAttentionClickCount < 3)
+            return;
+
+        _inspectorAttentionClickCount = 0;
+        PulseInspectorAttention();
+    }
+
+    private void PulseInspectorAttention()
+    {
+        if (!_showInspector)
+            return;
+
+        InspectorAttentionOverlay.Visibility = Visibility.Visible;
+        InspectorAttentionOverlay.BeginAnimation(UIElement.OpacityProperty, null);
+        InspectorAttentionOverlay.BeginAnimation(Border.BorderThicknessProperty, null);
+        InspectorAttentionOverlay.Opacity = 0;
+        InspectorAttentionOverlay.BorderThickness = new Thickness(2);
+
+        var opacity = new DoubleAnimationUsingKeyFrames
+        {
+            Duration = TimeSpan.FromSeconds(2)
+        };
+        opacity.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.Zero)));
+        opacity.KeyFrames.Add(new EasingDoubleKeyFrame(0.86, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(120)))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        });
+        opacity.KeyFrames.Add(new EasingDoubleKeyFrame(0.16, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(520)))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut }
+        });
+        opacity.KeyFrames.Add(new EasingDoubleKeyFrame(0.58, KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(880)))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        });
+        opacity.KeyFrames.Add(new EasingDoubleKeyFrame(0, KeyTime.FromTimeSpan(TimeSpan.FromSeconds(2)))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
+        });
+        opacity.Completed += (_, _) =>
+        {
+            InspectorAttentionOverlay.Opacity = 0;
+            InspectorAttentionOverlay.Visibility = Visibility.Collapsed;
+        };
+
+        var border = new ThicknessAnimationUsingKeyFrames
+        {
+            Duration = TimeSpan.FromSeconds(1.35)
+        };
+        border.KeyFrames.Add(new EasingThicknessKeyFrame(new Thickness(2), KeyTime.FromTimeSpan(TimeSpan.Zero)));
+        border.KeyFrames.Add(new EasingThicknessKeyFrame(new Thickness(5), KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(170)))
+        {
+            EasingFunction = new BackEase { Amplitude = 0.25, EasingMode = EasingMode.EaseOut }
+        });
+        border.KeyFrames.Add(new EasingThicknessKeyFrame(new Thickness(2), KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(540)))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        });
+        border.KeyFrames.Add(new EasingThicknessKeyFrame(new Thickness(4), KeyTime.FromTimeSpan(TimeSpan.FromMilliseconds(860)))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+        });
+        border.KeyFrames.Add(new EasingThicknessKeyFrame(new Thickness(2), KeyTime.FromTimeSpan(TimeSpan.FromSeconds(1.35)))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut }
+        });
+
+        InspectorAttentionOverlay.BeginAnimation(UIElement.OpacityProperty, opacity);
+        InspectorAttentionOverlay.BeginAnimation(Border.BorderThicknessProperty, border);
     }
 
     private void RewardNode_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -4131,8 +5749,7 @@ public partial class MainWindow : Window
         _selectedNodeKeys.Clear();
         _selectedObjectKey = key;
         if (key.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase)
-            || key.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase)
-            || key.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase))
+            || key.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase))
         {
             BuildPendingObjectInspector(key);
         }
@@ -4209,14 +5826,12 @@ public partial class MainWindow : Window
         ClearInspectorPreview();
         var isReward = key.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase);
         var isBattle = key.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase);
-        InspectorPanel.Children.Add(SectionTitle(isReward ? "보상 노드" : isBattle ? "전투 노드" : "Exit 노드"));
+        InspectorPanel.Children.Add(SectionTitle(isReward ? "보상 노드" : "전투 노드"));
         InspectorPanel.Children.Add(new TextBlock
         {
             Text = isReward
-                ? "장면 노드의 오른쪽 출력 핀에서 연결하면 해당 장면은 보상을 받고 종료됩니다. next_action은 exit로 저장됩니다."
-                : isBattle
-                    ? "장면 노드의 오른쪽 출력 핀에서 연결하면 해당 장면의 next_action이 battle로 저장됩니다. stage_id는 장면 인스펙터에서 입력합니다."
-                    : "장면 노드의 오른쪽 출력 핀에서 연결하면 해당 장면의 next_action이 exit로 저장됩니다.",
+                ? "선택지 T/F 핀에서 연결하면 해당 결과의 reward 컬럼으로 저장됩니다. 이후 같은 T/F 핀을 exit 장면에 연결하면 보상 후 종료 흐름이 됩니다."
+                : "선택지 T/F 핀에서 연결하면 전투 장면 row가 생성되고 해당 결과의 next_group으로 저장됩니다.",
             Foreground = new SolidColorBrush(Color.FromRgb(190, 190, 190)),
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 6, 0, 12)
@@ -4242,12 +5857,25 @@ public partial class MainWindow : Window
         _dragOffset = new Point(mouse.X - layout.X, mouse.Y - layout.Y);
         _dragUndoPushed = false;
         _isDraggingNodeSelection = _selectedNodeKeys.Count > 1 && _selectedNodeKeys.Contains(layoutKey);
+        _isDraggingSharedObject = false;
         _multiDragStartMouse = mouse;
         _multiDragStartPositions = _isDraggingNodeSelection
             ? _selectedNodeKeys
                 .Where(k => _workbook.Layouts.ContainsKey(k))
                 .ToDictionary(k => k, k => new Point(_workbook.Layouts[k].X, _workbook.Layouts[k].Y), StringComparer.OrdinalIgnoreCase)
             : [];
+        _sharedObjectDragStartPositions = [];
+        if (!_isDraggingNodeSelection && layoutKey.StartsWith("reward|", StringComparison.OrdinalIgnoreCase))
+        {
+            _sharedObjectDragStartPositions = RewardBranchesSharingLayout(layoutKey)
+                .Select(item => item.Key)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Where(k => _workbook.Layouts.ContainsKey(k))
+                .ToDictionary(k => k, k => new Point(_workbook.Layouts[k].X, _workbook.Layouts[k].Y), StringComparer.OrdinalIgnoreCase);
+            _isDraggingSharedObject = _sharedObjectDragStartPositions.Count > 1;
+            if (_isDraggingSharedObject)
+                _multiDragStartMouse = mouse;
+        }
         Mouse.Capture(GraphCanvas);
     }
 
@@ -4259,22 +5887,56 @@ public partial class MainWindow : Window
         if (parts.Length != 2)
             return;
         _linkGroupActionId = null;
+        _linkRewardChoiceId = null;
+        _linkRewardBranch = null;
+        _linkBattleGroupId = null;
+        _linkBattleBranch = null;
         _linkChoiceId = parts[0];
         _linkBranch = parts[1];
-        var start = element.TranslatePoint(
-            new Point(element.ActualWidth / 2, element.ActualHeight / 2),
-            GraphCanvas);
-        _linkPreviewLine = new Line
-        {
-            X1 = start.X,
-            Y1 = start.Y,
-            X2 = start.X,
-            Y2 = start.Y,
-            Stroke = _linkBranch == "success" ? Brushes.LightGreen : Brushes.IndianRed,
-            StrokeThickness = 3,
-            StrokeDashArray = new DoubleCollection { 4, 3 }
-        };
-        GraphCanvas.Children.Add(_linkPreviewLine);
+        var sourceRect = _workbook?.Choices.FirstOrDefault(c => string.Equals(c.Id, _linkChoiceId, StringComparison.OrdinalIgnoreCase)) is { } choice
+            ? GetGroupRect(choice.GroupId)
+            : null;
+        StartLinkPreview(element, _linkBranch == "success" ? Brushes.LightGreen : Brushes.IndianRed, sourceRect, ChoiceOutPinKey(_linkChoiceId, _linkBranch));
+        Mouse.Capture(GraphCanvas);
+        e.Handled = true;
+    }
+
+    private void RewardOutputConnector_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string tag } element)
+            return;
+        var parts = tag.Split('|');
+        if (parts.Length != 2)
+            return;
+        _linkGroupActionId = null;
+        _linkChoiceId = null;
+        _linkBranch = null;
+        _linkBattleGroupId = null;
+        _linkBattleBranch = null;
+        _linkRewardChoiceId = parts[0];
+        _linkRewardBranch = parts[1];
+        var sourceRect = GetLayoutRect(RewardLayoutKey(_linkRewardChoiceId, _linkRewardBranch));
+        StartLinkPreview(element, _linkRewardBranch == "success" ? Brushes.LightGreen : Brushes.IndianRed, sourceRect, RewardOutPinKey(_linkRewardChoiceId, _linkRewardBranch));
+        Mouse.Capture(GraphCanvas);
+        e.Handled = true;
+    }
+
+    private void BattleOutputConnector_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string tag } element)
+            return;
+        var parts = tag.Split('|');
+        if (parts.Length != 2)
+            return;
+        _linkGroupActionId = null;
+        _linkChoiceId = null;
+        _linkBranch = null;
+        _linkRewardChoiceId = null;
+        _linkRewardBranch = null;
+        _linkBattleGroupId = parts[0];
+        _linkBattleBranch = parts[1];
+        var sourceRect = GetGroupRect(_linkBattleGroupId);
+        StartLinkPreview(element, _linkBattleBranch == "success" ? Brushes.LightGreen : Brushes.IndianRed, sourceRect, BattleOutPinKey(_linkBattleGroupId, _linkBattleBranch));
         Mouse.Capture(GraphCanvas);
         e.Handled = true;
     }
@@ -4285,22 +5947,37 @@ public partial class MainWindow : Window
             return;
         _linkChoiceId = null;
         _linkBranch = null;
+        _linkRewardChoiceId = null;
+        _linkRewardBranch = null;
+        _linkBattleGroupId = null;
+        _linkBattleBranch = null;
         _linkGroupActionId = groupId;
-        var start = element.TranslatePoint(
-            new Point(element.ActualWidth / 2, element.ActualHeight / 2),
-            GraphCanvas);
-        _linkPreviewLine = new Line
-        {
-            X1 = start.X,
-            Y1 = start.Y,
-            X2 = start.X,
-            Y2 = start.Y,
-            Stroke = new SolidColorBrush(Color.FromRgb(214, 116, 86)),
-            StrokeThickness = 3,
-            StrokeDashArray = new DoubleCollection { 4, 3 }
-        };
-        GraphCanvas.Children.Add(_linkPreviewLine);
+        StartLinkPreview(element, new SolidColorBrush(Color.FromRgb(214, 116, 86)), GetGroupRect(groupId), GroupOutPinKey(groupId));
         Mouse.Capture(GraphCanvas);
+        e.Handled = true;
+    }
+
+    private void RewardOutputConnector_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string tag } || _workbook is null)
+            return;
+        var parts = tag.Split('|');
+        if (parts.Length != 2)
+            return;
+        SelectPin(RewardOutPinKey(parts[0], parts[1]));
+        ShowSelectedPinContextMenu();
+        e.Handled = true;
+    }
+
+    private void BattleOutputConnector_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string tag } || _workbook is null)
+            return;
+        var parts = tag.Split('|');
+        if (parts.Length != 2)
+            return;
+        SelectPin(BattleOutPinKey(parts[0], parts[1]));
+        ShowSelectedPinContextMenu();
         e.Handled = true;
     }
 
@@ -4308,29 +5985,8 @@ public partial class MainWindow : Window
     {
         if (sender is not FrameworkElement { Tag: string groupId } || _workbook is null)
             return;
-        var group = _workbook.Groups.FirstOrDefault(g => string.Equals(g.Id, groupId, StringComparison.OrdinalIgnoreCase));
-        if (group is null)
-            return;
-
-        var menu = new ContextMenu();
-        var clear = new MenuItem { Header = "next_action 연결 해제" };
-        clear.Click += (_, _) =>
-        {
-            PushUndo();
-            group.NextAction = "choice";
-            group.StageId = "";
-            _workbook.Layouts.Remove(BattleLayoutKey(group.Id));
-            _workbook.Layouts.Remove(ExitLayoutKey(group.Id));
-            _workbook.Layouts.Remove(GroupRewardLayoutKey(group.Id));
-            _selectedGroup = group;
-            BuildGroupInspector(group);
-            DrawGraph();
-            RefreshIssues();
-        };
-        menu.Items.Add(clear);
-        menu.PlacementTarget = (UIElement)sender;
-        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
-        menu.IsOpen = true;
+        SelectPin(GroupOutPinKey(groupId));
+        ShowSelectedPinContextMenu();
         e.Handled = true;
     }
 
@@ -4341,40 +5997,160 @@ public partial class MainWindow : Window
         var parts = tag.Split('|');
         if (parts.Length != 2)
             return;
-        var choice = _workbook.Choices.FirstOrDefault(c => c.Id == parts[0]);
-        if (choice is null)
+        SelectPin(ChoiceOutPinKey(parts[0], parts[1]));
+        ShowSelectedPinContextMenu();
+        e.Handled = true;
+    }
+
+    private void InputPin_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string pinKey })
+            return;
+        SelectPin(pinKey);
+        e.Handled = true;
+    }
+
+    private void InputPin_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string pinKey })
+            return;
+        SelectPin(pinKey);
+        ShowSelectedPinContextMenu();
+        e.Handled = true;
+    }
+
+    private void SelectPin(string pinKey)
+    {
+        _selectedPinKey = pinKey;
+        _selectedNodeKeys.Clear();
+        _selectedObjectKey = null;
+        DrawGraph();
+    }
+
+    private void ShowSelectedPinContextMenu()
+    {
+        var links = SelectedPinLinks().ToList();
+        var menu = new ContextMenu
+        {
+            PlacementTarget = GraphCanvas,
+            Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint
+        };
+        if (links.Count == 0)
+        {
+            menu.Items.Add(new MenuItem { Header = "연결 없음", IsEnabled = false });
+        }
+        else
+        {
+            var clear = new MenuItem { Header = links.Count == 1 ? "연결 해제" : $"연결 {links.Count}개 해제" };
+            clear.Click += (_, _) => DisconnectSelectedPinLinks();
+            menu.Items.Add(clear);
+        }
+        menu.IsOpen = true;
+    }
+
+    private IEnumerable<GraphLink> SelectedPinLinks()
+    {
+        if (string.IsNullOrWhiteSpace(_selectedPinKey))
+            yield break;
+        foreach (var link in _currentLinks)
+        {
+            if (IsLinkHighlighted(link))
+                yield return link;
+        }
+    }
+
+    private void DisconnectSelectedPinLinks()
+    {
+        if (_workbook is null)
+            return;
+        var links = SelectedPinLinks()
+            .GroupBy(link => link.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .ToList();
+        if (links.Count == 0)
             return;
 
-        var menu = new ContextMenu();
-        var clear = new MenuItem { Header = "연결 해제" };
-        clear.Click += (_, _) =>
+        PushUndo();
+        foreach (var link in links)
+            DisconnectGraphLink(link);
+        _selectedPinKey = null;
+        DrawGraph();
+        RefreshIssues();
+    }
+
+    private void DisconnectGraphLink(GraphLink link)
+    {
+        if (_workbook is null)
+            return;
+
+        switch (link.Kind)
         {
-            PushUndo();
-            if (parts[1] == "success")
-            {
-                choice.SuccessNextGroupId = "";
-                _workbook.Layouts.Remove(ChoiceExitLayoutKey(choice.Id, "success"));
-            }
-            else
-            {
-                choice.FailNextGroupId = "";
-                _workbook.Layouts.Remove(ChoiceExitLayoutKey(choice.Id, "fail"));
-            }
-            BuildChoiceInspector(choice);
-            DrawGraph();
-            RefreshIssues();
-        };
-        menu.Items.Add(clear);
-        menu.PlacementTarget = (UIElement)sender;
-        menu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
-        menu.IsOpen = true;
-        e.Handled = true;
+            case "choice_reward":
+            case "battle_reward":
+                if (_workbook.Choices.FirstOrDefault(c => string.Equals(c.Id, link.SourceId, StringComparison.OrdinalIgnoreCase)) is { } rewardChoice)
+                {
+                    if (link.Branch == "success")
+                    {
+                        rewardChoice.SuccessRewardType = "none";
+                        rewardChoice.SuccessRewardAmount = null;
+                        _workbook.Layouts.Remove(RewardLayoutKey(rewardChoice.Id, "success"));
+                    }
+                    else
+                    {
+                        rewardChoice.FailRewardType = "none";
+                        rewardChoice.FailRewardAmount = null;
+                        _workbook.Layouts.Remove(RewardLayoutKey(rewardChoice.Id, "fail"));
+                    }
+                }
+                break;
+            case "choice_next":
+            case "reward_next":
+            case "battle_next":
+                if (_workbook.Choices.FirstOrDefault(c => string.Equals(c.Id, link.SourceId, StringComparison.OrdinalIgnoreCase)) is { } nextChoice)
+                    ClearChoiceBranchNext(nextChoice, link.Branch);
+                break;
+            case "group_battle":
+            case "group_reward":
+            case "group_exit":
+                if (_workbook.Groups.FirstOrDefault(g => string.Equals(g.Id, link.SourceId, StringComparison.OrdinalIgnoreCase)) is { } group)
+                    ClearGroupActionLink(group);
+                break;
+        }
+    }
+
+    private void ClearChoiceBranchNext(EventChoiceRow choice, string branch)
+    {
+        if (_workbook is null)
+            return;
+        if (branch == "success")
+        {
+            choice.SuccessNextGroupId = "";
+            _workbook.Layouts.Remove(ChoiceExitLayoutKey(choice.Id, "success"));
+        }
+        else
+        {
+            choice.FailNextGroupId = "";
+            _workbook.Layouts.Remove(ChoiceExitLayoutKey(choice.Id, "fail"));
+        }
+    }
+
+    private void ClearGroupActionLink(ChoiceGroupRow group)
+    {
+        if (_workbook is null)
+            return;
+        group.NextAction = "choice";
+        group.StageId = "";
+        RemoveBattleResultChoice(group);
+        _workbook.Layouts.Remove(BattleLayoutKey(group.Id));
+        _workbook.Layouts.Remove(ExitLayoutKey(group.Id));
+        _workbook.Layouts.Remove(GroupRewardLayoutKey(group.Id));
     }
 
     private void GraphCanvas_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (e.Source == GraphCanvas)
         {
+            _selectedPinKey = null;
             _isBoxSelecting = true;
             _boxSelectStart = e.GetPosition(GraphCanvas);
             _boxSelectVisual = new Rectangle
@@ -4406,11 +6182,12 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (_linkPreviewLine is not null)
+        if (_linkPreviewPath is not null)
         {
             var linkMouse = e.GetPosition(GraphCanvas);
-            _linkPreviewLine.X2 = linkMouse.X;
-            _linkPreviewLine.Y2 = linkMouse.Y;
+            if ((linkMouse - _linkPreviewStart).Length > 8)
+                _linkDragMoved = true;
+            UpdateLinkPreview(linkMouse);
             return;
         }
 
@@ -4446,6 +6223,24 @@ public partial class MainWindow : Window
             }
             DrawGraph();
         }
+        else if (_isDraggingSharedObject)
+        {
+            var delta = mouse - _multiDragStartMouse;
+            if (!_dragUndoPushed && (Math.Abs(delta.X) > 0.1 || Math.Abs(delta.Y) > 0.1))
+            {
+                PushUndo();
+                _dragUndoPushed = true;
+            }
+            foreach (var (key, start) in _sharedObjectDragStartPositions)
+            {
+                if (_workbook.Layouts.TryGetValue(key, out var sharedLayout))
+                {
+                    sharedLayout.X = RoundCanvasCoord(start.X + delta.X);
+                    sharedLayout.Y = RoundCanvasCoord(start.Y + delta.Y);
+                }
+            }
+            DrawGraph();
+        }
         else if (_workbook.Layouts.TryGetValue(_dragLayoutKey, out var layout))
         {
             var newX = RoundCanvasCoord(mouse.X - _dragOffset.X);
@@ -4463,7 +6258,7 @@ public partial class MainWindow : Window
 
     private void GraphCanvas_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
-        if (_linkPreviewLine is not null)
+        if (_linkPreviewPath is not null)
         {
             FinishLinkDrag(e.GetPosition(GraphCanvas));
             return;
@@ -4477,6 +6272,8 @@ public partial class MainWindow : Window
 
         _dragLayoutKey = null;
         _isDraggingNodeSelection = false;
+        _isDraggingSharedObject = false;
+        _sharedObjectDragStartPositions = [];
         _dragUndoPushed = false;
         Mouse.Capture(null);
     }
@@ -4537,24 +6334,11 @@ public partial class MainWindow : Window
             yield return groupId;
         foreach (var key in _workbook.Layouts.Keys)
         {
-            if (key.StartsWith("battle|", StringComparison.OrdinalIgnoreCase)
-                && groupIds.Contains(key.Split('|').ElementAtOrDefault(1) ?? ""))
-                yield return key;
-            else if (key.StartsWith("exit|", StringComparison.OrdinalIgnoreCase)
-                     && groupIds.Contains(key.Split('|').ElementAtOrDefault(1) ?? ""))
-                yield return key;
-            else if (key.StartsWith(GroupRewardPrefix, StringComparison.OrdinalIgnoreCase)
-                     && groupIds.Contains(key.Split('|').ElementAtOrDefault(1) ?? ""))
-                yield return key;
-            else if (key.StartsWith("reward|", StringComparison.OrdinalIgnoreCase)
-                     && choiceIds.Contains(key.Split('|').ElementAtOrDefault(1) ?? ""))
-                yield return key;
-            else if (key.StartsWith(ChoiceExitPrefix, StringComparison.OrdinalIgnoreCase)
+            if (key.StartsWith("reward|", StringComparison.OrdinalIgnoreCase)
                      && choiceIds.Contains(key.Split('|').ElementAtOrDefault(1) ?? ""))
                 yield return key;
             else if ((key.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase)
-                      || key.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase)
-                      || key.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase))
+                      || key.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase))
                      && string.Equals(_workbook.Layouts[key].EventId, _selectedEvent.Id, StringComparison.OrdinalIgnoreCase))
                 yield return key;
         }
@@ -4587,6 +6371,8 @@ public partial class MainWindow : Window
 
     private void ShowGraphContextMenu(Point canvasPoint)
     {
+        _selectedPinKey = null;
+        DrawGraph();
         var menu = new ContextMenu
         {
             PlacementTarget = GraphCanvas,
@@ -4600,13 +6386,6 @@ public partial class MainWindow : Window
         var addReward = new MenuItem { Header = "보상 노드 추가" };
         addReward.Click += (_, _) => AddRewardNodeFromMenu(canvasPoint);
         menu.Items.Add(addReward);
-
-        var addBattle = new MenuItem { Header = "전투 노드 추가" };
-        addBattle.Click += (_, _) => AddBattleNodeFromMenu(canvasPoint);
-        menu.Items.Add(addBattle);
-        var addExit = new MenuItem { Header = "Exit node add" };
-        addExit.Click += (_, _) => AddExitNodeFromMenu(canvasPoint);
-        menu.Items.Add(addExit);
         menu.IsOpen = true;
     }
 
@@ -4625,27 +6404,6 @@ public partial class MainWindow : Window
             Y = RoundCanvasCoord(canvasPoint.Y),
             Width = RewardNodeWidth,
             Height = RewardNodeHeight
-        };
-        _selectedObjectKey = key;
-        DrawGraph();
-        RefreshIssues();
-    }
-
-    private void AddBattleNodeFromMenu(Point canvasPoint)
-    {
-        if (_workbook is null || _selectedEvent is null)
-            return;
-
-        PushUndo();
-        var key = PendingBattleLayoutKey(_selectedEvent.Id);
-        _workbook.Layouts[key] = new NodeLayout
-        {
-            EventId = _selectedEvent.Id,
-            GroupId = key,
-            X = RoundCanvasCoord(canvasPoint.X),
-            Y = RoundCanvasCoord(canvasPoint.Y),
-            Width = BattleNodeWidth,
-            Height = BattleNodeHeight
         };
         _selectedObjectKey = key;
         DrawGraph();
@@ -4693,62 +6451,179 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
+    private string? CurrentLinkSourceGroupId()
+    {
+        if (_workbook is null)
+            return null;
+
+        if (!string.IsNullOrWhiteSpace(_linkChoiceId))
+            return _workbook.Choices.FirstOrDefault(c => string.Equals(c.Id, _linkChoiceId, StringComparison.OrdinalIgnoreCase))?.GroupId;
+        if (!string.IsNullOrWhiteSpace(_linkRewardChoiceId))
+            return _workbook.Choices.FirstOrDefault(c => string.Equals(c.Id, _linkRewardChoiceId, StringComparison.OrdinalIgnoreCase))?.GroupId;
+        if (!string.IsNullOrWhiteSpace(_linkBattleGroupId))
+            return _linkBattleGroupId;
+        if (!string.IsNullOrWhiteSpace(_linkGroupActionId))
+            return _linkGroupActionId;
+        return null;
+    }
+
+    private bool IsSameGroupLinkTarget(string? targetGroupId)
+        => !string.IsNullOrWhiteSpace(targetGroupId)
+           && CurrentLinkSourceGroupId() is { } sourceGroupId
+           && string.Equals(sourceGroupId, targetGroupId, StringComparison.OrdinalIgnoreCase);
+
+    private void LogSameGroupLinkRejected()
+        => Log("연결 취소: 같은 장면의 입력 핀에는 연결할 수 없습니다.");
+
     private void FinishLinkDrag(Point point)
     {
+        if (!_linkDragMoved)
+        {
+            CancelLinkDrag(redraw: true);
+            return;
+        }
+
         if (_workbook is not null && _linkGroupActionId is not null)
         {
             FinishGroupActionLink(point);
+        }
+        else if (_workbook is not null && _linkRewardChoiceId is not null && _linkRewardBranch is not null)
+        {
+            var choice = _workbook.Choices.FirstOrDefault(c => c.Id == _linkRewardChoiceId);
+            var existingBattleKey = FindExistingBattleAt(point);
+            var targetGroupId = FindGroupAt(point) ?? existingBattleKey?.Split('|').ElementAtOrDefault(1);
+            if (IsSameGroupLinkTarget(targetGroupId))
+            {
+                LogSameGroupLinkRejected();
+            }
+            else if (targetGroupId is not null && choice is not null)
+            {
+                PushUndo();
+                SetRewardClusterNextGroup(choice, _linkRewardBranch, targetGroupId);
+                BuildChoiceInspector(choice);
+            }
+            else if (choice is not null)
+            {
+                ThemedMessageBox.Show(this, "Reward OUT은 다음 장면이나 Exit 장면에 연결해야 합니다.", "연결 불가한 노드입니다", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+        }
+        else if (_workbook is not null && _linkBattleGroupId is not null && _linkBattleBranch is not null)
+        {
+            var group = _workbook.Groups.FirstOrDefault(g => string.Equals(g.Id, _linkBattleGroupId, StringComparison.OrdinalIgnoreCase));
+            var existingBattleKey = FindExistingBattleAt(point);
+            var targetGroupId = FindGroupAt(point) ?? existingBattleKey?.Split('|').ElementAtOrDefault(1);
+            if (IsSameGroupLinkTarget(targetGroupId))
+            {
+                LogSameGroupLinkRejected();
+            }
+            else if (targetGroupId is not null && group is not null && IsBattleGroup(group))
+            {
+                PushUndo();
+                var result = GetBattleResultChoice(group, create: true);
+                if (result is not null)
+                    SetChoiceBranchNextGroup(result, _linkBattleBranch, targetGroupId);
+                BuildGroupInspector(group);
+            }
+            else if (group is not null)
+            {
+                ThemedMessageBox.Show(this, "Battle T/F 핀은 다음 장면이나 Exit 장면에 연결해야 합니다.", "연결 불가한 노드입니다", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
         }
         else if (_workbook is not null && _linkChoiceId is not null && _linkBranch is not null)
         {
             var choice = _workbook.Choices.FirstOrDefault(c => c.Id == _linkChoiceId);
             var pendingRewardKey = FindPendingRewardAt(point);
             var pendingBattleKey = FindPendingBattleAt(point);
-            var pendingExitKey = FindPendingExitAt(point);
+            var existingRewardKey = FindExistingRewardAt(point);
             var existingBattleKey = FindExistingBattleAt(point);
-            var existingExitKey = FindExistingExitAt(point);
-            var existingRewardKey = FindExistingGroupRewardAt(point);
             var targetGroupId = FindGroupAt(point);
-            if (targetGroupId is not null && choice is not null)
+            var existingBattleGroupId = existingBattleKey?.Split('|').ElementAtOrDefault(1);
+            if (IsSameGroupLinkTarget(targetGroupId) || IsSameGroupLinkTarget(existingBattleGroupId))
+            {
+                LogSameGroupLinkRejected();
+            }
+            else if (targetGroupId is not null && choice is not null)
             {
                 PushUndo();
-                if (_linkBranch == "success")
-                {
-                    choice.SuccessNextGroupId = targetGroupId;
-                    _workbook.Layouts.Remove(ChoiceExitLayoutKey(choice.Id, "success"));
-                }
-                else
-                {
-                    choice.FailNextGroupId = targetGroupId;
-                    _workbook.Layouts.Remove(ChoiceExitLayoutKey(choice.Id, "fail"));
-                }
+                SetChoiceBranchNextGroup(choice, _linkBranch, targetGroupId);
                 BuildChoiceInspector(choice);
+            }
+            else if (choice is not null && pendingRewardKey is not null)
+            {
+                PushUndo();
+                AttachPendingReward(choice, _linkBranch, pendingRewardKey);
+                BuildChoiceInspector(choice);
+            }
+            else if (choice is not null && existingRewardKey is not null)
+            {
+                PushUndo();
+                AttachChoiceToExistingReward(choice, _linkBranch, existingRewardKey);
+                BuildChoiceInspector(choice);
+            }
+            else if (choice is not null && pendingBattleKey is not null)
+            {
+                PushUndo();
+                AttachPendingChoiceBattle(choice, _linkBranch, pendingBattleKey);
+                if (_selectedGroup is not null)
+                    BuildGroupInspector(_selectedGroup);
+            }
+            else if (choice is not null && existingBattleKey is not null)
+            {
+                PushUndo();
+                AttachChoiceToExistingBattle(choice, _linkBranch, existingBattleKey);
+                if (_selectedGroup is not null)
+                    BuildGroupInspector(_selectedGroup);
             }
             else if (choice is not null
                      && (pendingRewardKey is not null
-                         || pendingBattleKey is not null
-                         || pendingExitKey is not null
                          || existingRewardKey is not null
-                         || existingBattleKey is not null
-                         || existingExitKey is not null))
+                         || pendingBattleKey is not null
+                         || existingBattleKey is not null))
             {
-                MessageBox.Show(this, "선택지 T/F 핀은 장면 노드에만 연결합니다. Battle, Exit, Reward는 장면 노드의 출력 핀에서 연결하세요.", "연결 불가한 노드입니다", MessageBoxButton.OK, MessageBoxImage.Information);
+                ThemedMessageBox.Show(this, "선택지 T/F 핀은 장면, Reward, Battle 노드에 연결할 수 있습니다.", "연결 불가한 노드입니다", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             else if (choice is not null)
             {
-                MessageBox.Show(this, "장면 노드의 입력 핀에 연결해야 합니다.", "연결 불가한 노드입니다", MessageBoxButton.OK, MessageBoxImage.Information);
+                ThemedMessageBox.Show(this, "장면 입력 핀이나 Reward/Battle 노드에 연결해야 합니다.", "연결 불가한 노드입니다", MessageBoxButton.OK, MessageBoxImage.Information);
             }
         }
 
-        if (_linkPreviewLine is not null)
-            GraphCanvas.Children.Remove(_linkPreviewLine);
-        _linkPreviewLine = null;
+        if (_linkPreviewPath is not null)
+            GraphCanvas.Children.Remove(_linkPreviewPath);
+        _linkPreviewPath = null;
+        _linkPreviewSourceRect = null;
+        _linkPreviewSourcePinKey = null;
+        _linkDragMoved = false;
         _linkGroupActionId = null;
         _linkChoiceId = null;
         _linkBranch = null;
+        _linkRewardChoiceId = null;
+        _linkRewardBranch = null;
+        _linkBattleGroupId = null;
+        _linkBattleBranch = null;
         Mouse.Capture(null);
         DrawGraph();
         RefreshIssues();
+    }
+
+    private void CancelLinkDrag(bool redraw)
+    {
+        if (_linkPreviewPath is not null)
+            GraphCanvas.Children.Remove(_linkPreviewPath);
+        _linkPreviewPath = null;
+        _linkPreviewSourceRect = null;
+        _linkPreviewSourcePinKey = null;
+        _linkDragMoved = false;
+        _linkGroupActionId = null;
+        _linkChoiceId = null;
+        _linkBranch = null;
+        _linkRewardChoiceId = null;
+        _linkRewardBranch = null;
+        _linkBattleGroupId = null;
+        _linkBattleBranch = null;
+        Mouse.Capture(null);
+        if (redraw)
+            DrawGraph();
     }
 
     private void FinishGroupActionLink(Point point)
@@ -4762,7 +6637,7 @@ public partial class MainWindow : Window
         var pendingRewardKey = FindPendingRewardAt(point);
         var pendingBattleKey = FindPendingBattleAt(point);
         var pendingExitKey = FindPendingExitAt(point);
-        var existingRewardKey = FindExistingGroupRewardAt(point);
+        var existingRewardKey = FindExistingRewardAt(point);
         var existingBattleKey = FindExistingBattleAt(point);
         var existingExitKey = FindExistingExitAt(point);
 
@@ -4786,7 +6661,7 @@ public partial class MainWindow : Window
         }
         else
         {
-            MessageBox.Show(this, "장면 노드의 출력 핀은 Battle, Exit, Reward 노드에 연결할 수 있습니다.", "연결 불가한 노드입니다", MessageBoxButton.OK, MessageBoxImage.Information);
+            ThemedMessageBox.Show(this, "장면 노드의 출력 핀은 Battle, Exit, Reward 노드에 연결할 수 있습니다.", "연결 불가한 노드입니다", MessageBoxButton.OK, MessageBoxImage.Information);
         }
     }
 
@@ -4818,6 +6693,40 @@ public partial class MainWindow : Window
             Height = RewardNodeHeight
         };
         _selectedObjectKey = key;
+    }
+
+    private void AttachChoiceToExistingReward(EventChoiceRow choice, string branch, string rewardKey)
+    {
+        if (_workbook is null || !_workbook.Layouts.TryGetValue(rewardKey, out var sourceLayout))
+            return;
+
+        var rewardType = "gold";
+        int? rewardAmount = 1;
+        var nextGroupId = "";
+        if (TryGetRewardBranchPayload(rewardKey, out var sourceChoice, out var sourceBranch))
+        {
+            (rewardType, rewardAmount) = GetChoiceReward(sourceChoice, sourceBranch);
+            nextGroupId = GetChoiceNextGroup(sourceChoice, sourceBranch);
+        }
+
+        SetChoiceReward(choice, branch, rewardType, rewardAmount);
+        if (!string.IsNullOrWhiteSpace(nextGroupId)
+            && !string.Equals(choice.GroupId, nextGroupId, StringComparison.OrdinalIgnoreCase))
+            SetChoiceBranchNextGroup(choice, branch, nextGroupId);
+
+        var key = RewardLayoutKey(choice.Id, branch);
+        _workbook.Layouts[key] = new NodeLayout
+        {
+            EventId = sourceLayout.EventId,
+            GroupId = key,
+            X = RoundCanvasCoord(sourceLayout.X),
+            Y = RoundCanvasCoord(sourceLayout.Y),
+            Width = RewardNodeWidth,
+            Height = RewardNodeHeight
+        };
+        _selectedObjectKey = key;
+        _selectedChoice = choice;
+        _selectedGroup = _workbook.Groups.FirstOrDefault(g => string.Equals(g.Id, choice.GroupId, StringComparison.OrdinalIgnoreCase));
     }
 
     private void AttachPendingChoiceExit(EventChoiceRow choice, string branch, string pendingKey)
@@ -4890,6 +6799,7 @@ public partial class MainWindow : Window
             StageId = DefaultBattleStageId
         };
         _workbook.Groups.Add(battleGroup);
+        GetBattleResultChoice(battleGroup, create: true);
         SetChoiceBranchNextGroup(choice, branch, battleGroup.Id);
 
         _workbook.Layouts.Remove(pendingKey);
@@ -4902,17 +6812,7 @@ public partial class MainWindow : Window
             Width = NodeWidth,
             Height = NodeMinHeight
         };
-        var battleKey = BattleLayoutKey(battleGroup.Id);
-        _workbook.Layouts[battleKey] = new NodeLayout
-        {
-            EventId = battleGroup.EventId,
-            GroupId = battleKey,
-            X = RoundCanvasCoord(pending.X),
-            Y = RoundCanvasCoord(pending.Y),
-            Width = BattleNodeWidth,
-            Height = BattleNodeHeight
-        };
-        _selectedObjectKey = battleKey;
+        _selectedObjectKey = null;
         _selectedGroup = battleGroup;
         _selectedChoice = null;
     }
@@ -4933,10 +6833,13 @@ public partial class MainWindow : Window
         _selectedChoice = null;
     }
 
-    private void SetChoiceBranchNextGroup(EventChoiceRow choice, string branch, string nextGroupId)
+    private bool SetChoiceBranchNextGroup(EventChoiceRow choice, string branch, string nextGroupId)
     {
         if (_workbook is null)
-            return;
+            return false;
+
+        if (string.Equals(choice.GroupId, nextGroupId, StringComparison.OrdinalIgnoreCase))
+            return false;
 
         if (branch == "success")
         {
@@ -4948,6 +6851,133 @@ public partial class MainWindow : Window
             choice.FailNextGroupId = nextGroupId;
             _workbook.Layouts.Remove(ChoiceExitLayoutKey(choice.Id, "fail"));
         }
+
+        var targetGroup = _workbook.Groups.FirstOrDefault(g => string.Equals(g.Id, nextGroupId, StringComparison.OrdinalIgnoreCase));
+        if (targetGroup is not null && IsBattleGroup(targetGroup))
+            EventWorkbookService.NormalizeExitTerminals(_workbook);
+        return true;
+    }
+
+    private bool TryGetRewardBranchPayload(string rewardKey, out EventChoiceRow choice, out string branch)
+    {
+        choice = null!;
+        branch = "";
+        if (_workbook is null || !rewardKey.StartsWith("reward|", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var parts = rewardKey.Split('|');
+        if (parts.Length < 3)
+            return false;
+
+        choice = _workbook.Choices.FirstOrDefault(c => string.Equals(c.Id, parts[1], StringComparison.OrdinalIgnoreCase))!;
+        branch = parts[2];
+        return choice is not null && (branch == "success" || branch == "fail");
+    }
+
+    private static (string Type, int? Amount) GetChoiceReward(EventChoiceRow choice, string branch)
+        => branch == "success"
+            ? (string.IsNullOrWhiteSpace(choice.SuccessRewardType) ? "none" : choice.SuccessRewardType, choice.SuccessRewardAmount)
+            : (string.IsNullOrWhiteSpace(choice.FailRewardType) ? "none" : choice.FailRewardType, choice.FailRewardAmount);
+
+    private static string GetChoiceNextGroup(EventChoiceRow choice, string branch)
+        => branch == "success" ? choice.SuccessNextGroupId : choice.FailNextGroupId;
+
+    private static void SetChoiceReward(EventChoiceRow choice, string branch, string rewardType, int? rewardAmount)
+    {
+        if (branch == "success")
+        {
+            choice.SuccessRewardType = string.IsNullOrWhiteSpace(rewardType) || rewardType == "none" ? "gold" : rewardType;
+            choice.SuccessRewardAmount = rewardAmount ?? 1;
+        }
+        else
+        {
+            choice.FailRewardType = string.IsNullOrWhiteSpace(rewardType) || rewardType == "none" ? "gold" : rewardType;
+            choice.FailRewardAmount = rewardAmount ?? 1;
+        }
+    }
+
+    private void SetRewardClusterNextGroup(EventChoiceRow choice, string branch, string nextGroupId)
+    {
+        if (_workbook is null)
+            return;
+
+        var rewardKey = RewardLayoutKey(choice.Id, branch);
+        var cluster = RewardBranchesSharingLayout(rewardKey);
+        if (cluster.Count == 0)
+        {
+            SetChoiceBranchNextGroup(choice, branch, nextGroupId);
+            return;
+        }
+
+        foreach (var item in cluster)
+            SetChoiceBranchNextGroup(item.Choice, item.Branch, nextGroupId);
+    }
+
+    private void ApplyRewardClusterField(EventChoiceRow choice, string branch, string field, string raw)
+    {
+        if (_workbook is null)
+            return;
+
+        var rewardKey = RewardLayoutKey(choice.Id, branch);
+        var cluster = RewardBranchesSharingLayout(rewardKey);
+        if (cluster.Count == 0)
+            cluster.Add((choice, branch, rewardKey));
+
+        foreach (var item in cluster)
+        {
+            if (field == "amount")
+                SetChoiceRewardAmount(item.Choice, item.Branch, ParseUtil.NullableInt(raw));
+            else
+                SetChoiceRewardType(item.Choice, item.Branch, string.IsNullOrWhiteSpace(raw) ? "none" : raw.Trim());
+        }
+    }
+
+    private List<(EventChoiceRow Choice, string Branch, string Key)> RewardBranchesSharingLayout(string rewardKey)
+    {
+        var result = new List<(EventChoiceRow Choice, string Branch, string Key)>();
+        if (_workbook is null || !_workbook.Layouts.TryGetValue(rewardKey, out var sourceLayout))
+            return result;
+
+        var sourceRect = RectFromLayout(sourceLayout);
+        foreach (var pair in _workbook.Layouts.Where(p =>
+                     p.Key.StartsWith("reward|", StringComparison.OrdinalIgnoreCase)
+                     && string.Equals(p.Value.EventId, sourceLayout.EventId, StringComparison.OrdinalIgnoreCase)
+                     && RectsNearlyEqual(RectFromLayout(p.Value), sourceRect)))
+        {
+            if (!TryGetRewardBranchPayload(pair.Key, out var choice, out var branch))
+                continue;
+            result.Add((choice, branch, pair.Key));
+        }
+
+        return result;
+    }
+
+    private static void SetChoiceRewardType(EventChoiceRow choice, string branch, string rewardType)
+    {
+        if (branch == "success")
+        {
+            choice.SuccessRewardType = rewardType;
+            if (string.Equals(rewardType, "none", StringComparison.OrdinalIgnoreCase))
+                choice.SuccessRewardAmount = null;
+            else
+                choice.SuccessRewardAmount ??= 1;
+        }
+        else
+        {
+            choice.FailRewardType = rewardType;
+            if (string.Equals(rewardType, "none", StringComparison.OrdinalIgnoreCase))
+                choice.FailRewardAmount = null;
+            else
+                choice.FailRewardAmount ??= 1;
+        }
+    }
+
+    private static void SetChoiceRewardAmount(EventChoiceRow choice, string branch, int? amount)
+    {
+        if (branch == "success")
+            choice.SuccessRewardAmount = amount;
+        else
+            choice.FailRewardAmount = amount;
     }
 
     private void AttachBattleToGroup(ChoiceGroupRow group, string sourceKey)
@@ -4958,20 +6988,13 @@ public partial class MainWindow : Window
         group.NextAction = "battle";
         if (string.IsNullOrWhiteSpace(group.StageId))
             group.StageId = DefaultBattleStageId;
-        _workbook.Layouts.Remove(sourceKey);
+        GetBattleResultChoice(group, create: true);
+        if (IsPendingObjectLayoutKey(sourceKey))
+            _workbook.Layouts.Remove(sourceKey);
         _workbook.Layouts.Remove(ExitLayoutKey(group.Id));
         _workbook.Layouts.Remove(GroupRewardLayoutKey(group.Id));
-        var key = BattleLayoutKey(group.Id);
-        _workbook.Layouts[key] = new NodeLayout
-        {
-            EventId = group.EventId,
-            GroupId = key,
-            X = RoundCanvasCoord(sourceLayout.X),
-            Y = RoundCanvasCoord(sourceLayout.Y),
-            Width = BattleNodeWidth,
-            Height = BattleNodeHeight
-        };
-        _selectedObjectKey = key;
+        _workbook.Layouts.Remove(BattleLayoutKey(group.Id));
+        _selectedObjectKey = null;
         _selectedGroup = group;
         _selectedChoice = null;
     }
@@ -4983,7 +7006,9 @@ public partial class MainWindow : Window
 
         group.NextAction = "exit";
         group.StageId = "";
-        _workbook.Layouts.Remove(sourceKey);
+        RemoveBattleResultChoice(group);
+        if (IsPendingObjectLayoutKey(sourceKey))
+            _workbook.Layouts.Remove(sourceKey);
         _workbook.Layouts.Remove(BattleLayoutKey(group.Id));
         _workbook.Layouts.Remove(ExitLayoutKey(group.Id));
         var key = GroupRewardLayoutKey(group.Id);
@@ -5008,7 +7033,9 @@ public partial class MainWindow : Window
 
         group.NextAction = "exit";
         group.StageId = "";
-        _workbook.Layouts.Remove(sourceKey);
+        RemoveBattleResultChoice(group);
+        if (IsPendingObjectLayoutKey(sourceKey))
+            _workbook.Layouts.Remove(sourceKey);
         _workbook.Layouts.Remove(BattleLayoutKey(group.Id));
         _workbook.Layouts.Remove(GroupRewardLayoutKey(group.Id));
         var key = ExitLayoutKey(group.Id);
@@ -5033,6 +7060,8 @@ public partial class MainWindow : Window
         var groups = _workbook.Groups.Where(g => g.EventId == _selectedEvent.Id).ToList();
         foreach (var group in groups)
         {
+            if (string.Equals(group.Id, _selectedEvent.FirstGroupId, StringComparison.OrdinalIgnoreCase))
+                continue;
             var pin = GetInputPinPoint(group.Id);
             if ((pin - point).Length <= 34)
                 return group.Id;
@@ -5040,6 +7069,8 @@ public partial class MainWindow : Window
 
         foreach (var group in groups)
         {
+            if (string.Equals(group.Id, _selectedEvent.FirstGroupId, StringComparison.OrdinalIgnoreCase))
+                continue;
             if (!_workbook.Layouts.TryGetValue(group.Id, out var layout))
                 continue;
             var rect = new Rect(layout.X, layout.Y, layout.Width, Math.Max(layout.Height, 160));
@@ -5094,6 +7125,25 @@ public partial class MainWindow : Window
             if ((pin - point).Length <= 34 || rect.Contains(point))
                 return pair.Key;
         }
+        return null;
+    }
+
+    private string? FindExistingRewardAt(Point point)
+    {
+        if (_workbook is null || _selectedEvent is null)
+            return null;
+
+        foreach (var pair in _workbook.Layouts.Where(p =>
+                     (p.Key.StartsWith("reward|", StringComparison.OrdinalIgnoreCase)
+                      || p.Key.StartsWith(GroupRewardPrefix, StringComparison.OrdinalIgnoreCase))
+                     && string.Equals(p.Value.EventId, _selectedEvent.Id, StringComparison.OrdinalIgnoreCase)))
+        {
+            var rect = new Rect(pair.Value.X, pair.Value.Y, pair.Value.Width, pair.Value.Height);
+            var pin = new Point(rect.Left, rect.Top + rect.Height / 2);
+            if ((pin - point).Length <= 34 || rect.Contains(point))
+                return pair.Key;
+        }
+
         return null;
     }
 
@@ -5180,11 +7230,34 @@ public partial class MainWindow : Window
             return;
         }
 
+        if (Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
+        {
+            if (e.Key == Key.L)
+            {
+                RunAutoLayout();
+                e.Handled = true;
+                return;
+            }
+
+            if (e.Key == Key.E)
+            {
+                ShowExportPreview();
+                e.Handled = true;
+                return;
+            }
+        }
+
         if (Keyboard.FocusedElement is TextBox)
             return;
 
         if (e.Key == Key.Delete)
         {
+            if (!string.IsNullOrWhiteSpace(_selectedPinKey))
+            {
+                DisconnectSelectedPinLinks();
+                e.Handled = true;
+                return;
+            }
             DeleteSelected();
             e.Handled = true;
             return;
@@ -5222,3 +7295,4 @@ public partial class MainWindow : Window
         SaveLayoutCache();
     }
 }
+

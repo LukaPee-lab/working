@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Text;
 using System.Windows;
 
@@ -44,7 +44,7 @@ public partial class App : Application
             {
                 // Ignore diagnostic logging failures.
             }
-            MessageBox.Show(ex.ToString(), "Startup failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            ThemedMessageBox.Show(ex.ToString(), "Startup failed", MessageBoxButton.OK, MessageBoxImage.Error);
             Shutdown(-1);
         }
     }
@@ -99,3 +99,4 @@ public partial class App : Application
         Environment.ExitCode = reloadErrorCount == 0 ? 0 : 4;
     }
 }
+
