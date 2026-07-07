@@ -68,7 +68,7 @@ public static class EventWorkbookService
         var choiceIds = workbook.Choices.Select(c => c.Id).Where(NotBlank).ToList();
         var eventSet = eventIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
         var groupSet = groupIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var groupById = workbook.Groups.ToDictionary(g => g.Id, StringComparer.OrdinalIgnoreCase);
+        var groupById = UniqueById(workbook.Groups, g => g.Id);
 
         AddDuplicates(issues, "event", eventIds);
         AddDuplicates(issues, "group", groupIds);
@@ -98,7 +98,7 @@ public static class EventWorkbookService
                 issues.Add(Error($"{group.Id}: 상황 메모가 비어 있습니다."));
             if (Blank(group.SituationTextTid))
                 issues.Add(Error($"{group.Id}: situation_text TID가 비어 있습니다."));
-            if (group.NextAction == "choice" && workbook.Choices.All(c => !Same(c.GroupId, group.Id)))
+            if (Same(group.NextAction, "choice") && workbook.Choices.All(c => !Same(c.GroupId, group.Id)))
                 issues.Add(Warning($"{group.Id}: next_action=choice지만 선택지가 없습니다."));
             if (Same(group.NextAction, "exit") && workbook.Choices.Any(c => Same(c.GroupId, group.Id)))
                 issues.Add(Warning($"{group.Id}: next_action=exit 장면에 선택지가 남아 있습니다."));
@@ -144,6 +144,8 @@ public static class EventWorkbookService
 
         foreach (var choice in workbook.Choices)
         {
+            if (Blank(choice.Id))
+                issues.Add(Error("choice id가 비어 있습니다."));
             if (!groupSet.Contains(choice.GroupId))
                 issues.Add(Error($"{choice.Id}: group_id가 존재하지 않습니다. ({choice.GroupId})"));
             if (Blank(choice.Memo))
@@ -154,11 +156,11 @@ public static class EventWorkbookService
                 issues.Add(Error($"{choice.Id}: success_next_group_id가 존재하지 않습니다. ({choice.SuccessNextGroupId})"));
             if (!Blank(choice.FailNextGroupId) && !groupSet.Contains(choice.FailNextGroupId))
                 issues.Add(Error($"{choice.Id}: fail_next_group_id가 존재하지 않습니다. ({choice.FailNextGroupId})"));
-            if (choice.CostType != "none" && choice.CostAmount is null)
+            if (!Same(choice.CostType, "none") && choice.CostAmount is null)
                 issues.Add(Error($"{choice.Id}: cost_type이 {choice.CostType}인데 cost_amount가 없습니다."));
-            if (choice.SuccessRewardType != "none" && choice.SuccessRewardAmount is null)
+            if (!Same(choice.SuccessRewardType, "none") && choice.SuccessRewardAmount is null)
                 issues.Add(Error($"{choice.Id}: success_reward_type이 {choice.SuccessRewardType}인데 amount가 없습니다."));
-            if (choice.FailRewardType != "none" && choice.FailRewardAmount is null)
+            if (!Same(choice.FailRewardType, "none") && choice.FailRewardAmount is null)
                 issues.Add(Error($"{choice.Id}: fail_reward_type이 {choice.FailRewardType}인데 amount가 없습니다."));
             var groupEndsWithExit = groupById.TryGetValue(choice.GroupId, out var group)
                 && Same(group.NextAction, "exit");
@@ -298,6 +300,9 @@ public static class EventWorkbookService
 
     public static int NormalizeExitTerminals(EventWorkbook workbook)
     {
+        if (HasInvalidIdentityKeys(workbook))
+            return 0;
+
         var changed = 0;
         changed += RemoveDeprecatedTerminalLayouts(workbook);
         changed += NormalizeExitActionGroups(workbook);
@@ -926,7 +931,7 @@ public static class EventWorkbookService
         for (var row = 4; row <= LastRow(ws); row++)
         {
             var id = Cell(ws, row, 1);
-            if (Blank(id))
+            if (Blank(id) && !HasDataInColumns(ws, row, 2, 9))
                 continue;
             model.Events.Add(new EventBaseRow
             {
@@ -948,7 +953,7 @@ public static class EventWorkbookService
         for (var row = 4; row <= LastRow(ws); row++)
         {
             var id = Cell(ws, row, 1);
-            if (Blank(id))
+            if (Blank(id) && !HasDataInColumns(ws, row, 2, 9))
                 continue;
             model.Groups.Add(new ChoiceGroupRow
             {
@@ -970,7 +975,7 @@ public static class EventWorkbookService
         for (var row = 4; row <= LastRow(ws); row++)
         {
             var id = Cell(ws, row, 1);
-            if (Blank(id))
+            if (Blank(id) && !HasDataInColumns(ws, row, 2, 15))
                 continue;
             model.Choices.Add(new EventChoiceRow
             {
@@ -1241,20 +1246,44 @@ public static class EventWorkbookService
     }
 
     private static Dictionary<string, string> SnapshotBase(EventWorkbook workbook) =>
-        workbook.Events.ToDictionary(e => e.Id, e => string.Join("|", e.Memo, e.EventNameTid, e.Rarity, e.FloorRestriction, e.DiffRestriction, e.Weight, e.FirstGroupId), StringComparer.OrdinalIgnoreCase);
+        workbook.Events.Where(e => NotBlank(e.Id))
+            .GroupBy(e => e.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g =>
+            {
+                var e = g.Last();
+                return string.Join("|", e.Memo, e.EventNameTid, e.Rarity, e.FloorRestriction, e.DiffRestriction, e.Weight, e.FirstGroupId);
+            }, StringComparer.OrdinalIgnoreCase);
 
     private static Dictionary<string, string> SnapshotGroups(EventWorkbook workbook) =>
-        workbook.Groups.ToDictionary(g => g.Id, g => string.Join("|", g.Memo, g.EventId, g.Background, g.NpcId, g.SituationTextTid, g.NextAction, g.StageId), StringComparer.OrdinalIgnoreCase);
+        workbook.Groups.Where(g => NotBlank(g.Id))
+            .GroupBy(g => g.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g =>
+            {
+                var row = g.Last();
+                return string.Join("|", row.Memo, row.EventId, row.Background, row.NpcId, row.SituationTextTid, row.NextAction, row.StageId);
+            }, StringComparer.OrdinalIgnoreCase);
 
     private static Dictionary<string, string> SnapshotChoices(EventWorkbook workbook) =>
-        workbook.Choices.ToDictionary(c => c.Id, c => string.Join("|", c.Memo, c.GroupId, c.Seq, c.ChoiceTextTid, c.CostType, c.CostAmount, c.SuccessRate, c.SuccessRewardType, c.SuccessRewardAmount, c.SuccessNextGroupId, c.FailRewardType, c.FailRewardAmount, c.FailNextGroupId), StringComparer.OrdinalIgnoreCase);
+        workbook.Choices.Where(c => NotBlank(c.Id))
+            .GroupBy(c => c.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g =>
+            {
+                var c = g.Last();
+                return string.Join("|", c.Memo, c.GroupId, c.Seq, c.ChoiceTextTid, c.CostType, c.CostAmount, c.SuccessRate, c.SuccessRewardType, c.SuccessRewardAmount, c.SuccessNextGroupId, c.FailRewardType, c.FailRewardAmount, c.FailNextGroupId);
+            }, StringComparer.OrdinalIgnoreCase);
 
     private static Dictionary<string, string> SnapshotText(IEnumerable<TextEntry> entries) =>
         entries.Where(e => NotBlank(e.Tid)).GroupBy(e => e.Tid, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => string.Join("|", g.Last().ExportId, g.Last().Text, g.Last().Comment), StringComparer.OrdinalIgnoreCase);
 
     private static Dictionary<string, string> SnapshotLayout(EventWorkbook workbook) =>
-        workbook.Layouts.Values.ToDictionary(l => l.GroupId, l => string.Join("|", l.EventId, RoundLayout(l.X), RoundLayout(l.Y), RoundLayout(l.Width), RoundLayout(l.Height)), StringComparer.OrdinalIgnoreCase);
+        workbook.Layouts.Values.Where(l => NotBlank(l.GroupId))
+            .GroupBy(l => l.GroupId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g =>
+            {
+                var layout = g.Last();
+                return string.Join("|", layout.EventId, RoundLayout(layout.X), RoundLayout(layout.Y), RoundLayout(layout.Width), RoundLayout(layout.Height));
+            }, StringComparer.OrdinalIgnoreCase);
 
     private static double RoundLayout(double value) => Math.Round(value, 1, MidpointRounding.AwayFromZero);
 
@@ -1436,6 +1465,26 @@ public static class EventWorkbookService
             issues.Add(Error($"{label} id가 중복됩니다: {duplicate.Key}"));
     }
 
+    private static Dictionary<string, T> UniqueById<T>(IEnumerable<T> rows, Func<T, string?> keySelector) =>
+        rows.Select(row => (Row: row, Key: keySelector(row)))
+            .Where(pair => NotBlank(pair.Key))
+            .GroupBy(pair => pair.Key!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().Row, StringComparer.OrdinalIgnoreCase);
+
+    private static bool HasInvalidIdentityKeys(EventWorkbook workbook) =>
+        HasBlankOrDuplicateKeys(workbook.Events.Select(e => e.Id))
+        || HasBlankOrDuplicateKeys(workbook.Groups.Select(g => g.Id))
+        || HasBlankOrDuplicateKeys(workbook.Choices.Select(c => c.Id));
+
+    private static bool HasBlankOrDuplicateKeys(IEnumerable<string?> keys)
+    {
+        var materialized = keys.ToList();
+        return materialized.Any(Blank)
+               || materialized.Where(NotBlank)
+                   .GroupBy(k => k!, StringComparer.OrdinalIgnoreCase)
+                   .Any(g => g.Count() > 1);
+    }
+
     private static IXLWorksheet EnsureSheet(XLWorkbook workbook, string name) =>
         workbook.Worksheets.TryGetWorksheet(name, out var ws) ? ws : workbook.AddWorksheet(name);
 
@@ -1532,6 +1581,18 @@ public static class EventWorkbookService
     }
 
     private static int LastRow(IXLWorksheet ws) => ws.LastRowUsed()?.RowNumber() ?? 1;
+
+    private static bool HasDataInColumns(IXLWorksheet ws, int row, int startColumn, int endColumn)
+    {
+        for (var col = startColumn; col <= endColumn; col++)
+        {
+            if (NotBlank(Cell(ws, row, col)))
+                return true;
+        }
+
+        return false;
+    }
+
     private static string Cell(IXLWorksheet ws, int row, int col) => ws.Cell(row, col).GetString().Trim();
     private static bool Blank(string? value) => string.IsNullOrWhiteSpace(value);
     private static bool NotBlank(string? value) => !Blank(value);

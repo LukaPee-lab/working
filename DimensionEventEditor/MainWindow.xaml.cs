@@ -744,7 +744,7 @@ public partial class MainWindow : Window
         var choicesByGroup = choices
             .GroupBy(c => c.GroupId)
             .ToDictionary(g => g.Key, g => g.OrderBy(c => c.Seq).ToList(), StringComparer.OrdinalIgnoreCase);
-        var groupsById = groups.ToDictionary(g => g.Id, StringComparer.OrdinalIgnoreCase);
+        var groupsById = UniqueGroupsById(groups);
 
         foreach (var group in groups)
             _workbook.Layouts.Remove(BattleLayoutKey(group.Id));
@@ -864,11 +864,11 @@ public partial class MainWindow : Window
     }
 
     private static string DescribeCost(EventChoiceRow choice)
-        => choice.CostType == "none" ? "none" : $"{choice.CostType}:{choice.CostAmount?.ToString() ?? "-"}";
+        => IsNone(choice.CostType) ? "none" : $"{choice.CostType}:{choice.CostAmount?.ToString() ?? "-"}";
 
     private static string DescribeBranch(string rewardType, int? amount, string nextGroupId)
     {
-        var reward = rewardType == "none" ? "none" : $"{rewardType}:{amount?.ToString() ?? "-"}";
+        var reward = IsNone(rewardType) ? "none" : $"{rewardType}:{amount?.ToString() ?? "-"}";
         var next = string.IsNullOrWhiteSpace(nextGroupId) ? "-" : nextGroupId;
         return $"{reward}-> {next}";
     }
@@ -936,13 +936,14 @@ public partial class MainWindow : Window
             return;
 
         var groupSet = groups.Select(g => g.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var groupById = groups.ToDictionary(g => g.Id, StringComparer.OrdinalIgnoreCase);
+        var groupById = UniqueGroupsById(groups);
         var choicesByGroup = _workbook.Choices
             .Where(c => groupSet.Contains(c.GroupId))
             .GroupBy(c => c.GroupId)
             .ToDictionary(g => g.Key, g => g.OrderBy(c => c.Seq).ToList(), StringComparer.OrdinalIgnoreCase);
         var order = groups.Select((g, i) => new { g.Id, Index = i })
-            .ToDictionary(x => x.Id, x => x.Index, StringComparer.OrdinalIgnoreCase);
+            .GroupBy(x => x.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.First().Index, StringComparer.OrdinalIgnoreCase);
 
         var depth = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var first = groupSet.Contains(evt.FirstGroupId) ? evt.FirstGroupId : groups[0].Id;
@@ -1040,7 +1041,7 @@ public partial class MainWindow : Window
         Dictionary<string, List<EventChoiceRow>> choicesByGroup,
         List<Rect> occupied)
     {
-        if (_workbook is null || rewardType == "none" || !_workbook.Layouts.TryGetValue(choice.GroupId, out var groupLayout))
+        if (_workbook is null || IsNone(rewardType) || !_workbook.Layouts.TryGetValue(choice.GroupId, out var groupLayout))
             return;
         var from = GetChoicePinPoint(choice, branch, choicesByGroup);
         var x = groupLayout.X + groupLayout.Width + 120;
@@ -1885,6 +1886,9 @@ public partial class MainWindow : Window
 
     private static bool IsFailPinEnabled(EventChoiceRow choice) => choice.SuccessRate is not null;
 
+    private static bool IsNone(string? value) =>
+        string.Equals(value, "none", StringComparison.OrdinalIgnoreCase);
+
     private static string BattleResultChoiceId(string groupId) => EventWorkbookService.BattleResultChoiceId(groupId);
 
     private static bool IsBattleResultChoice(EventChoiceRow choice, Dictionary<string, ChoiceGroupRow> groupsById)
@@ -1894,6 +1898,11 @@ public partial class MainWindow : Window
         => IsBattleGroup(group)
            && string.Equals(choice.GroupId, group.Id, StringComparison.OrdinalIgnoreCase)
            && string.Equals(choice.Id, BattleResultChoiceId(group.Id), StringComparison.OrdinalIgnoreCase);
+
+    private static Dictionary<string, ChoiceGroupRow> UniqueGroupsById(IEnumerable<ChoiceGroupRow> groups) =>
+        groups.Where(group => !string.IsNullOrWhiteSpace(group.Id))
+            .GroupBy(group => group.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
 
     private static List<EventChoiceRow> VisibleChoicesForGroup(ChoiceGroupRow group, IEnumerable<EventChoiceRow> choices)
         => choices
@@ -2151,7 +2160,7 @@ public partial class MainWindow : Window
             return;
 
         var from = GetChoicePinPoint(choice, branch, choicesByGroup);
-        var hasReward = rewardType != "none";
+        var hasReward = !IsNone(rewardType);
         var hasNext = !string.IsNullOrWhiteSpace(nextGroupId) && groupSet.Contains(nextGroupId);
         if (!hasReward && !hasNext)
             return;
@@ -4499,7 +4508,7 @@ public partial class MainWindow : Window
                     else
                         queue.Enqueue(choice.SuccessNextGroupId);
                 }
-                else if (choice.SuccessRewardType == "none")
+                else if (IsNone(choice.SuccessRewardType))
                 {
                     issues.Add(FlowError($"{choice.Id}: T 경로가 exit 장면에 연결되지 않았습니다."));
                 }
@@ -4509,7 +4518,7 @@ public partial class MainWindow : Window
                 }
 
                 var hasFailConfig = !string.IsNullOrWhiteSpace(choice.FailNextGroupId)
-                    || choice.FailRewardType != "none"
+                    || !IsNone(choice.FailRewardType)
                     || choice.FailRewardAmount is not null;
                 if (!IsFailPinEnabled(choice))
                 {
@@ -4525,7 +4534,7 @@ public partial class MainWindow : Window
                     else
                         queue.Enqueue(choice.FailNextGroupId);
                 }
-                else if (choice.FailRewardType == "none")
+                else if (IsNone(choice.FailRewardType))
                 {
                     issues.Add(FlowError($"{choice.Id}: F 경로가 exit 장면에 연결되지 않았습니다."));
                 }
@@ -5351,7 +5360,7 @@ public partial class MainWindow : Window
             return graph;
 
         var groupSet = groups.Select(g => g.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var groupsById = groups.ToDictionary(g => g.Id, StringComparer.OrdinalIgnoreCase);
+        var groupsById = UniqueGroupsById(groups);
         var choicesByGroup = source.Choices
             .Where(c => groupSet.Contains(c.GroupId))
             .GroupBy(c => c.GroupId)
@@ -5429,7 +5438,7 @@ public partial class MainWindow : Window
 
     private static void AddPreviewRewardLayout(EventWorkbook source, EventGraphPreview graph, Dictionary<string, Rect> layouts, List<ChoiceGroupRow> groups, EventChoiceRow choice, string branch, string rewardType, int? rewardAmount, string nextGroupId)
     {
-        if (rewardType == "none")
+        if (IsNone(rewardType))
             return;
         var key = RewardLayoutKey(choice.Id, branch);
         if (source.Layouts.TryGetValue(key, out var layout))
@@ -5452,7 +5461,7 @@ public partial class MainWindow : Window
 
     private static void AddPreviewRewardNode(EventWorkbook source, EventGraphPreview graph, Dictionary<string, Rect> layouts, double dx, double dy, EventChoiceRow choice, string branch, string rewardType, int? rewardAmount)
     {
-        if (rewardType == "none")
+        if (IsNone(rewardType))
             return;
         var key = RewardLayoutKey(choice.Id, branch);
         if (!layouts.TryGetValue(key, out var rect))
@@ -5492,7 +5501,7 @@ public partial class MainWindow : Window
     {
         var label = branch == "success" ? "T" : "F";
         var rewardKey = RewardLayoutKey(choice.Id, branch);
-        if (rewardType != "none" && graph.Nodes.Any(n => string.Equals(n.Id, rewardKey, StringComparison.OrdinalIgnoreCase)))
+        if (!IsNone(rewardType) && graph.Nodes.Any(n => string.Equals(n.Id, rewardKey, StringComparison.OrdinalIgnoreCase)))
         {
             graph.Links.Add(new EventGraphPreviewLink { FromId = groupId, ToId = rewardKey, Label = label });
             if (!string.IsNullOrWhiteSpace(nextGroupId))
@@ -6672,12 +6681,12 @@ public partial class MainWindow : Window
 
         if (branch == "success")
         {
-            choice.SuccessRewardType = choice.SuccessRewardType == "none" ? "gold" : choice.SuccessRewardType;
+            choice.SuccessRewardType = IsNone(choice.SuccessRewardType) ? "gold" : choice.SuccessRewardType;
             choice.SuccessRewardAmount ??= 1;
         }
         else
         {
-            choice.FailRewardType = choice.FailRewardType == "none" ? "gold" : choice.FailRewardType;
+            choice.FailRewardType = IsNone(choice.FailRewardType) ? "gold" : choice.FailRewardType;
             choice.FailRewardAmount ??= 1;
         }
 
@@ -6886,12 +6895,12 @@ public partial class MainWindow : Window
     {
         if (branch == "success")
         {
-            choice.SuccessRewardType = string.IsNullOrWhiteSpace(rewardType) || rewardType == "none" ? "gold" : rewardType;
+            choice.SuccessRewardType = string.IsNullOrWhiteSpace(rewardType) || IsNone(rewardType) ? "gold" : rewardType;
             choice.SuccessRewardAmount = rewardAmount ?? 1;
         }
         else
         {
-            choice.FailRewardType = string.IsNullOrWhiteSpace(rewardType) || rewardType == "none" ? "gold" : rewardType;
+            choice.FailRewardType = string.IsNullOrWhiteSpace(rewardType) || IsNone(rewardType) ? "gold" : rewardType;
             choice.FailRewardAmount = rewardAmount ?? 1;
         }
     }

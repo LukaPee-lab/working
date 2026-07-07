@@ -49,8 +49,9 @@ Start-Process .\bin\Release\net10.0-windows\DimensionEventEditor.exe
 1. `%APPDATA%\SuperCreative\DimensionEventEditor\settings.json`에 저장된 `EventWorkbookPath`
 2. 앱 실행 폴더의 `Data\nexus_event 차원 탐사 이벤트.xlsx`
 3. 설정된 repos root 아래 `design\DB\alpha`
-4. `D:\repos\design\DB\alpha`
-5. `%USERPROFILE%\repos\design\DB\alpha`
+4. 원드라이브 배포 폴더의 `dimension_event_editor_windows_release\Data`
+5. `D:\repos\design\DB\alpha`
+6. `%USERPROFILE%\repos\design\DB\alpha`
 
 직접 파일을 열려면 상단 `Open DB`를 사용합니다.
 

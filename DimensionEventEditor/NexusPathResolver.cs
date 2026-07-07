@@ -54,6 +54,12 @@ public static class NexusPathResolver
                 return fromSettingsRoot;
         }
 
+        foreach (var candidate in OneDriveEventWorkbookCandidates())
+        {
+            if (File.Exists(candidate))
+                return candidate;
+        }
+
         var dRepos = Path.Combine("D:\\repos", RelativeEventPath);
         if (File.Exists(dRepos))
             return dRepos;
@@ -64,6 +70,22 @@ public static class NexusPathResolver
             return possibleRepos;
 
         return null;
+    }
+
+    private static IEnumerable<string> OneDriveEventWorkbookCandidates()
+    {
+        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        yield return Path.Combine(profile,
+            "OneDrive - Super Creative",
+            "EpicSeven - 문서",
+            "기획실",
+            "2_코어시스템팀",
+            "1. 이병연",
+            "1_작업중",
+            "175126 260917 신규 PVE 전투",
+            "dimension_event_editor_windows_release",
+            "Data",
+            BundledEventWorkbookName);
     }
 
     public static string? ResolveDefaultPlayerExe()
