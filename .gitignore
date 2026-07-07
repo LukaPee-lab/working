@@ -1,0 +1,9 @@
+bin/
+obj/
+**/bin/
+**/obj/
+*.user
+*.suo
+DimensionEventEditor_QA_*.xlsx
+DimensionEventEditor/Data/*.xlsx
+DimensionEventEditor/Data/*.xlsm
