@@ -308,6 +308,7 @@ public static class EventWorkbookService
         changed += NormalizeExitActionGroups(workbook);
         changed += EnsureReferencedGroups(workbook);
         changed += EnsureBattleResultChoices(workbook);
+        changed += NormalizeExitGroupIds(workbook);
 
         var groupsByEvent = workbook.Groups
             .Where(g => NotBlank(g.EventId))
@@ -331,17 +332,11 @@ public static class EventWorkbookService
                 if (Same(ownerGroup.NextAction, "exit"))
                     continue;
                 var isBattleResult = IsBattleResultChoice(choice, ownerGroup);
-                var canonicalExitId = CanonicalExitGroupId(evt.Id);
-
                 if (NotBlank(choice.SuccessNextGroupId)
                     && groupsById.TryGetValue(choice.SuccessNextGroupId, out var successTarget)
-                    && Same(successTarget.NextAction, "exit")
-                    && !Same(successTarget.Id, canonicalExitId))
+                    && Same(successTarget.NextAction, "exit"))
                 {
-                    exitGroup ??= EnsureExitGroup(workbook, evt, eventGroups);
-                    groupsById[exitGroup.Id] = exitGroup;
-                    choice.SuccessNextGroupId = exitGroup.Id;
-                    changed++;
+                    exitGroup ??= successTarget;
                 }
                 else if (Blank(choice.SuccessNextGroupId))
                 {
@@ -353,13 +348,9 @@ public static class EventWorkbookService
 
                 if (NotBlank(choice.FailNextGroupId)
                     && groupsById.TryGetValue(choice.FailNextGroupId, out var failTarget)
-                    && Same(failTarget.NextAction, "exit")
-                    && !Same(failTarget.Id, canonicalExitId))
+                    && Same(failTarget.NextAction, "exit"))
                 {
-                    exitGroup ??= EnsureExitGroup(workbook, evt, eventGroups);
-                    groupsById[exitGroup.Id] = exitGroup;
-                    choice.FailNextGroupId = exitGroup.Id;
-                    changed++;
+                    exitGroup ??= failTarget;
                 }
                 else if ((choice.SuccessRate is not null || isBattleResult) && Blank(choice.FailNextGroupId))
                 {
@@ -370,7 +361,7 @@ public static class EventWorkbookService
                 }
             }
 
-            if (!eventGroups.Any(g => Same(g.Id, CanonicalExitGroupId(evt.Id)) && Same(g.NextAction, "exit")))
+            if (!eventGroups.Any(g => Same(g.NextAction, "exit")))
             {
                 EnsureExitGroup(workbook, evt, eventGroups);
                 changed++;
@@ -716,12 +707,7 @@ public static class EventWorkbookService
 
     private static ChoiceGroupRow EnsureExitGroup(EventWorkbook workbook, EventBaseRow evt, List<ChoiceGroupRow> eventGroups)
     {
-        var canonicalId = CanonicalExitGroupId(evt.Id);
-        var existing = eventGroups
-            .Where(g => Same(g.Id, canonicalId)
-                        && Same(g.NextAction, "exit")
-                        && !workbook.Choices.Any(c => Same(c.GroupId, g.Id)))
-            .FirstOrDefault();
+        var existing = ExistingExitGroup(workbook, evt.Id, eventGroups);
         if (existing is not null)
             return existing;
 
@@ -812,11 +798,97 @@ public static class EventWorkbookService
         }
     }
 
-    private static string NextExitGroupId(EventWorkbook workbook, string eventId)
+    private static int NormalizeExitGroupIds(EventWorkbook workbook)
+    {
+        var changed = 0;
+        var usedIds = workbook.Groups
+            .Select(g => g.Id)
+            .Where(NotBlank)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var evt in workbook.Events.OrderBy(e => e.Id))
+        {
+            var exitGroups = workbook.Groups
+                .Where(g => Same(g.EventId, evt.Id) && Same(g.NextAction, "exit"))
+                .OrderBy(g => g.Id)
+                .ToList();
+
+            foreach (var group in exitGroups)
+            {
+                if (IsCanonicalExitGroupId(group.Id, evt.Id))
+                    continue;
+
+                var oldId = group.Id;
+                usedIds.Remove(oldId);
+                var newId = NextExitGroupId(usedIds, evt.Id);
+                RenameGroupId(workbook, oldId, newId);
+                usedIds.Add(newId);
+                changed++;
+            }
+        }
+
+        return changed;
+    }
+
+    private static bool IsCanonicalExitGroupId(string groupId, string eventId)
+        => Regex.IsMatch(groupId, $"^{Regex.Escape(eventId)}_G999_EXIT(?:_\\d+)?$", RegexOptions.IgnoreCase);
+
+    private static void RenameGroupId(EventWorkbook workbook, string oldId, string newId)
+    {
+        if (Blank(oldId) || Blank(newId) || Same(oldId, newId))
+            return;
+
+        foreach (var group in workbook.Groups.Where(g => Same(g.Id, oldId)))
+        {
+            group.Id = newId;
+            if (Blank(group.SituationTextTid) || Same(group.SituationTextTid, $"{oldId}_situation_text"))
+                group.SituationTextTid = $"{newId}_situation_text";
+        }
+
+        foreach (var evt in workbook.Events.Where(e => Same(e.FirstGroupId, oldId)))
+            evt.FirstGroupId = newId;
+
+        foreach (var choice in workbook.Choices)
+        {
+            if (Same(choice.GroupId, oldId))
+                choice.GroupId = newId;
+            if (Same(choice.SuccessNextGroupId, oldId))
+                choice.SuccessNextGroupId = newId;
+            if (Same(choice.FailNextGroupId, oldId))
+                choice.FailNextGroupId = newId;
+        }
+
+        foreach (var text in workbook.TextEntries.Where(t => Same(t.Tid, $"{oldId}_situation_text")))
+            text.Tid = $"{newId}_situation_text";
+
+        RenameLayoutKey(workbook, oldId, newId);
+        RenameLayoutKey(workbook, $"battle|{oldId}", $"battle|{newId}");
+        RenameLayoutKey(workbook, $"exit|{oldId}", $"exit|{newId}");
+        RenameLayoutKey(workbook, $"group_reward|{oldId}", $"group_reward|{newId}");
+        foreach (var layout in workbook.Layouts.Values.Where(l => Same(l.GroupId, oldId)))
+            layout.GroupId = newId;
+    }
+
+    private static void RenameLayoutKey(EventWorkbook workbook, string oldKey, string newKey)
+    {
+        if (!workbook.Layouts.TryGetValue(oldKey, out var layout) || workbook.Layouts.ContainsKey(newKey))
+            return;
+
+        workbook.Layouts.Remove(oldKey);
+        layout.GroupId = newKey;
+        workbook.Layouts[newKey] = layout;
+    }
+
+    public static string NextExitGroupId(EventWorkbook workbook, string eventId)
     {
         var existing = workbook.Groups
             .Select(g => g.Id)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return NextExitGroupId(existing, eventId);
+    }
+
+    private static string NextExitGroupId(HashSet<string> existing, string eventId)
+    {
         var candidate = CanonicalExitGroupId(eventId);
         if (!existing.Contains(candidate))
             return candidate;
@@ -829,7 +901,23 @@ public static class EventWorkbookService
         }
     }
 
-    private static string CanonicalExitGroupId(string eventId) => $"{eventId}_G999_EXIT";
+    public static string CanonicalExitGroupId(string eventId) => $"{eventId}_G999_EXIT";
+
+    private static ChoiceGroupRow? ExistingExitGroup(EventWorkbook workbook, string eventId, List<ChoiceGroupRow> eventGroups)
+    {
+        var canonicalId = CanonicalExitGroupId(eventId);
+        return eventGroups
+                   .Where(g => Same(g.NextAction, "exit")
+                               && !workbook.Choices.Any(c => Same(c.GroupId, g.Id)))
+                   .OrderByDescending(g => Same(g.Id, canonicalId))
+                   .ThenBy(g => g.Id)
+                   .FirstOrDefault()
+               ?? eventGroups
+                   .Where(g => Same(g.NextAction, "exit"))
+                   .OrderByDescending(g => Same(g.Id, canonicalId))
+                   .ThenBy(g => g.Id)
+                   .FirstOrDefault();
+    }
 
     private static void FixWorksheetDimensions(string outputPath, EventWorkbook model)
     {

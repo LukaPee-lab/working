@@ -2700,6 +2700,10 @@ public partial class MainWindow : Window
             {
                 DrawPendingObjectNode(pair.Key, "Battle", "T/F 핀으로 연결", pair.Value, "battle");
             }
+            else if (pair.Key.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                DrawPendingObjectNode(pair.Key, "Exit", "T/F 핀으로 연결", pair.Value, "exit");
+            }
         }
     }
 
@@ -2720,7 +2724,9 @@ public partial class MainWindow : Window
             Height = layout.Height,
             Background = new SolidColorBrush(kind == "battle"
                 ? Color.FromRgb(52, 34, 31)
-                : Color.FromRgb(48, 43, 30)),
+                : kind == "exit"
+                    ? Color.FromRgb(50, 31, 34)
+                    : Color.FromRgb(48, 43, 30)),
             BorderBrush = new SolidColorBrush(selected ? Color.FromRgb(222, 202, 116) : Color.FromRgb(120, 120, 120)),
             BorderThickness = new Thickness(selected ? 2.0 : 1.2),
             CornerRadius = new CornerRadius(5),
@@ -2738,7 +2744,9 @@ public partial class MainWindow : Window
                     Text = title,
                     Foreground = new SolidColorBrush(kind == "battle"
                         ? Color.FromRgb(255, 172, 144)
-                        : Color.FromRgb(255, 221, 141)),
+                        : kind == "exit"
+                            ? Color.FromRgb(255, 142, 150)
+                            : Color.FromRgb(255, 221, 141)),
                     FontWeight = FontWeights.Bold,
                     FontSize = 13
                 },
@@ -3590,6 +3598,8 @@ public partial class MainWindow : Window
             {
                 GetBattleResultChoice(group, create: true);
             }
+            if (string.Equals(value, "exit", StringComparison.OrdinalIgnoreCase) && _workbook is not null)
+                EventWorkbookService.NormalizeExitTerminals(_workbook);
             DrawGraph();
             RefreshIssues();
         };
@@ -4696,6 +4706,32 @@ public partial class MainWindow : Window
             .DefaultIfEmpty(0)
             .Max() + 1;
         return $"{eventId}_G{next}";
+    }
+
+    private ChoiceGroupRow CreateEditableExitGroup(string eventId)
+    {
+        if (_workbook is null)
+            throw new InvalidOperationException("Workbook is not loaded.");
+
+        var template = _workbook.Groups
+            .Where(g => string.Equals(g.EventId, eventId, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(g => g.Id)
+            .FirstOrDefault();
+        var id = EventWorkbookService.NextExitGroupId(_workbook, eventId);
+        var group = new ChoiceGroupRow
+        {
+            Id = id,
+            EventId = eventId,
+            Memo = "event end",
+            ExportId = EventWorkbookService.DefaultEventExportId,
+            Background = template?.Background ?? "dimension_spiral",
+            NpcId = template?.NpcId ?? "",
+            SituationTextTid = $"{id}_situation_text",
+            NextAction = "exit",
+            StageId = ""
+        };
+        _workbook.Groups.Add(group);
+        return group;
     }
 
     private static ChoiceGroupRow CloneGroupForClipboard(ChoiceGroupRow source) => new()
@@ -6395,6 +6431,12 @@ public partial class MainWindow : Window
         var addReward = new MenuItem { Header = "보상 노드 추가" };
         addReward.Click += (_, _) => AddRewardNodeFromMenu(canvasPoint);
         menu.Items.Add(addReward);
+        var addBattle = new MenuItem { Header = "전투 노드 추가" };
+        addBattle.Click += (_, _) => AddBattleNodeFromMenu(canvasPoint);
+        menu.Items.Add(addBattle);
+        var addExit = new MenuItem { Header = "종료 노드 추가" };
+        addExit.Click += (_, _) => AddExitNodeFromMenu(canvasPoint);
+        menu.Items.Add(addExit);
         menu.IsOpen = true;
     }
 
@@ -6419,25 +6461,51 @@ public partial class MainWindow : Window
         RefreshIssues();
     }
 
-    private void AddExitNodeFromMenu(Point canvasPoint)
+    private void AddBattleNodeFromMenu(Point canvasPoint)
     {
         if (_workbook is null || _selectedEvent is null)
             return;
 
         PushUndo();
-        var key = PendingExitLayoutKey(_selectedEvent.Id);
+        var key = PendingBattleLayoutKey(_selectedEvent.Id);
         _workbook.Layouts[key] = new NodeLayout
         {
             EventId = _selectedEvent.Id,
             GroupId = key,
             X = RoundCanvasCoord(canvasPoint.X),
             Y = RoundCanvasCoord(canvasPoint.Y),
-            Width = ExitNodeWidth,
-            Height = ExitNodeHeight
+            Width = BattleNodeWidth,
+            Height = BattleNodeHeight
         };
         _selectedObjectKey = key;
+        _selectedGroup = null;
+        _selectedChoice = null;
+        DrawGraph();
+        RefreshIssues();
+    }
+
+    private void AddExitNodeFromMenu(Point canvasPoint)
+    {
+        if (_workbook is null || _selectedEvent is null)
+            return;
+
+        PushUndo();
+        var group = CreateEditableExitGroup(_selectedEvent.Id);
+        _workbook.Layouts[group.Id] = new NodeLayout
+        {
+            EventId = _selectedEvent.Id,
+            GroupId = group.Id,
+            X = RoundCanvasCoord(canvasPoint.X),
+            Y = RoundCanvasCoord(canvasPoint.Y),
+            Width = NodeWidth,
+            Height = NodeMinHeight
+        };
+        _selectedObjectKey = null;
+        _selectedGroup = group;
+        _selectedChoice = null;
 
         DrawGraph();
+        BuildGroupInspector(group);
         RefreshIssues();
     }
 
@@ -6500,7 +6568,10 @@ public partial class MainWindow : Window
         {
             var choice = _workbook.Choices.FirstOrDefault(c => c.Id == _linkRewardChoiceId);
             var existingBattleKey = FindExistingBattleAt(point);
-            var targetGroupId = FindGroupAt(point) ?? existingBattleKey?.Split('|').ElementAtOrDefault(1);
+            var existingExitKey = FindExistingExitAt(point);
+            var targetGroupId = FindGroupAt(point)
+                                ?? existingBattleKey?.Split('|').ElementAtOrDefault(1)
+                                ?? existingExitKey?.Split('|').ElementAtOrDefault(1);
             if (IsSameGroupLinkTarget(targetGroupId))
             {
                 LogSameGroupLinkRejected();
@@ -6520,7 +6591,10 @@ public partial class MainWindow : Window
         {
             var group = _workbook.Groups.FirstOrDefault(g => string.Equals(g.Id, _linkBattleGroupId, StringComparison.OrdinalIgnoreCase));
             var existingBattleKey = FindExistingBattleAt(point);
-            var targetGroupId = FindGroupAt(point) ?? existingBattleKey?.Split('|').ElementAtOrDefault(1);
+            var existingExitKey = FindExistingExitAt(point);
+            var targetGroupId = FindGroupAt(point)
+                                ?? existingBattleKey?.Split('|').ElementAtOrDefault(1)
+                                ?? existingExitKey?.Split('|').ElementAtOrDefault(1);
             if (IsSameGroupLinkTarget(targetGroupId))
             {
                 LogSameGroupLinkRejected();
@@ -6543,11 +6617,16 @@ public partial class MainWindow : Window
             var choice = _workbook.Choices.FirstOrDefault(c => c.Id == _linkChoiceId);
             var pendingRewardKey = FindPendingRewardAt(point);
             var pendingBattleKey = FindPendingBattleAt(point);
+            var pendingExitKey = FindPendingExitAt(point);
             var existingRewardKey = FindExistingRewardAt(point);
             var existingBattleKey = FindExistingBattleAt(point);
+            var existingExitKey = FindExistingExitAt(point);
             var targetGroupId = FindGroupAt(point);
             var existingBattleGroupId = existingBattleKey?.Split('|').ElementAtOrDefault(1);
-            if (IsSameGroupLinkTarget(targetGroupId) || IsSameGroupLinkTarget(existingBattleGroupId))
+            var existingExitGroupId = existingExitKey?.Split('|').ElementAtOrDefault(1);
+            if (IsSameGroupLinkTarget(targetGroupId)
+                || IsSameGroupLinkTarget(existingBattleGroupId)
+                || IsSameGroupLinkTarget(existingExitGroupId))
             {
                 LogSameGroupLinkRejected();
             }
@@ -6583,17 +6662,31 @@ public partial class MainWindow : Window
                 if (_selectedGroup is not null)
                     BuildGroupInspector(_selectedGroup);
             }
+            else if (choice is not null && pendingExitKey is not null)
+            {
+                PushUndo();
+                AttachPendingChoiceExit(choice, _linkBranch, pendingExitKey);
+                BuildChoiceInspector(choice);
+            }
+            else if (choice is not null && existingExitKey is not null)
+            {
+                PushUndo();
+                AttachChoiceToExistingExit(choice, _linkBranch, existingExitKey);
+                BuildChoiceInspector(choice);
+            }
             else if (choice is not null
                      && (pendingRewardKey is not null
                          || existingRewardKey is not null
                          || pendingBattleKey is not null
-                         || existingBattleKey is not null))
+                         || existingBattleKey is not null
+                         || pendingExitKey is not null
+                         || existingExitKey is not null))
             {
-                ThemedMessageBox.Show(this, "선택지 T/F 핀은 장면, Reward, Battle 노드에 연결할 수 있습니다.", "연결 불가한 노드입니다", MessageBoxButton.OK, MessageBoxImage.Information);
+                ThemedMessageBox.Show(this, "선택지 T/F 핀은 장면, Reward, Battle, Exit 노드에 연결할 수 있습니다.", "연결 불가한 노드입니다", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             else if (choice is not null)
             {
-                ThemedMessageBox.Show(this, "장면 입력 핀이나 Reward/Battle 노드에 연결해야 합니다.", "연결 불가한 노드입니다", MessageBoxButton.OK, MessageBoxImage.Information);
+                ThemedMessageBox.Show(this, "장면 입력 핀이나 Reward/Battle/Exit 노드에 연결해야 합니다.", "연결 불가한 노드입니다", MessageBoxButton.OK, MessageBoxImage.Information);
             }
         }
 
@@ -6743,46 +6836,37 @@ public partial class MainWindow : Window
         if (_workbook is null || !_workbook.Layouts.TryGetValue(pendingKey, out var pending))
             return;
 
-        if (branch == "success")
-            choice.SuccessNextGroupId = "";
-        else
-            choice.FailNextGroupId = "";
-
-        var key = ChoiceExitLayoutKey(choice.Id, branch);
+        var exitGroup = CreateEditableExitGroup(pending.EventId);
+        SetChoiceBranchNextGroup(choice, branch, exitGroup.Id);
         _workbook.Layouts.Remove(pendingKey);
-        _workbook.Layouts[key] = new NodeLayout
+        _workbook.Layouts[exitGroup.Id] = new NodeLayout
         {
             EventId = pending.EventId,
-            GroupId = key,
+            GroupId = exitGroup.Id,
             X = RoundCanvasCoord(pending.X),
             Y = RoundCanvasCoord(pending.Y),
-            Width = ExitNodeWidth,
-            Height = ExitNodeHeight
+            Width = NodeWidth,
+            Height = NodeMinHeight
         };
-        _selectedObjectKey = key;
+        _selectedObjectKey = null;
+        _selectedGroup = exitGroup;
+        _selectedChoice = null;
     }
 
     private void AttachChoiceToExistingExit(EventChoiceRow choice, string branch, string exitKey)
     {
-        if (_workbook is null || !_workbook.Layouts.TryGetValue(exitKey, out var exitLayout))
+        if (_workbook is null)
             return;
 
-        if (branch == "success")
-            choice.SuccessNextGroupId = "";
-        else
-            choice.FailNextGroupId = "";
+        var groupId = exitKey.Split('|').ElementAtOrDefault(1) ?? "";
+        var exitGroup = _workbook.Groups.FirstOrDefault(g => string.Equals(g.Id, groupId, StringComparison.OrdinalIgnoreCase));
+        if (exitGroup is null || !IsExitGroup(exitGroup))
+            return;
 
-        var key = ChoiceExitLayoutKey(choice.Id, branch);
-        _workbook.Layouts[key] = new NodeLayout
-        {
-            EventId = exitLayout.EventId,
-            GroupId = key,
-            X = RoundCanvasCoord(exitLayout.X),
-            Y = RoundCanvasCoord(exitLayout.Y),
-            Width = ExitNodeWidth,
-            Height = ExitNodeHeight
-        };
-        _selectedObjectKey = key;
+        SetChoiceBranchNextGroup(choice, branch, exitGroup.Id);
+        _selectedObjectKey = null;
+        _selectedGroup = exitGroup;
+        _selectedChoice = null;
     }
 
     private void AttachPendingChoiceBattle(EventChoiceRow choice, string branch, string pendingKey)
@@ -7093,6 +7177,19 @@ public partial class MainWindow : Window
     {
         if (_workbook is null || _selectedEvent is null)
             return null;
+
+        foreach (var group in _workbook.Groups.Where(g =>
+                     string.Equals(g.EventId, _selectedEvent.Id, StringComparison.OrdinalIgnoreCase)
+                     && IsExitGroup(g)))
+        {
+            if (!_workbook.Layouts.TryGetValue(group.Id, out var layout))
+                continue;
+            var rect = new Rect(layout.X, layout.Y, Math.Max(layout.Width, NodeWidth), Math.Max(layout.Height, NodeMinHeight));
+            var pin = GetInputPinPoint(group.Id);
+            if ((pin - point).Length <= 34 || rect.Contains(point))
+                return ExitLayoutKey(group.Id);
+        }
+
         foreach (var pair in _workbook.Layouts.Where(p =>
                      p.Key.StartsWith("exit|", StringComparison.OrdinalIgnoreCase)
                      && string.Equals(p.Value.EventId, _selectedEvent.Id, StringComparison.OrdinalIgnoreCase)))
