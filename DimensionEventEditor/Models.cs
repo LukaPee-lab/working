@@ -109,6 +109,35 @@ public sealed class EventGraphPreviewLink
     public bool Changed { get; set; }
 }
 
+public sealed class EventInfoReport
+{
+    public List<EventInfoTable> Tables { get; } = [];
+    public List<EventInfoLocation> Locations { get; } = [];
+}
+
+public sealed class EventInfoTable
+{
+    public string Name { get; set; } = "";
+    public string Description { get; set; } = "";
+    public List<string> Columns { get; } = [];
+    public List<List<object?>> Rows { get; } = [];
+}
+
+public sealed class EventInfoLocation
+{
+    public string TableName { get; set; } = "";
+    public string Key { get; set; } = "";
+    public string EventId { get; set; } = "";
+    public string EventName { get; set; } = "";
+    public string GroupId { get; set; } = "";
+    public string ChoiceId { get; set; } = "";
+    public string Branch { get; set; } = "";
+    public string NodeKey { get; set; } = "";
+    public string Kind { get; set; } = "";
+    public string Label { get; set; } = "";
+    public string Detail { get; set; } = "";
+}
+
 public sealed class ColumnHelp
 {
     public string Table { get; set; } = "";

@@ -348,6 +348,134 @@ public partial class MainWindow : Window
         SaveLayoutCache();
     }
 
+    private void EventInfoMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (_workbook is null)
+        {
+            ThemedMessageBox.Show(this, "DB를 먼저 열어주세요.", "Event info", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        EnsureGeneratedTids(force: false);
+        EventWorkbookService.NormalizeExitTerminals(_workbook);
+        var window = new EventInfoWindow(EventWorkbookService.BuildEventInfoReport(_workbook), NavigateToEventInfoLocation)
+        {
+            Owner = this
+        };
+        window.Show();
+    }
+
+    private void NavigateToEventInfoLocation(EventInfoLocation location)
+    {
+        if (_workbook is null)
+            return;
+
+        var evt = _workbook.Events.FirstOrDefault(e => string.Equals(e.Id, location.EventId, StringComparison.OrdinalIgnoreCase));
+        if (evt is null)
+        {
+            ThemedMessageBox.Show(this, $"이벤트를 찾을 수 없습니다.\n{location.EventId}", "Event info", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        SelectEventForNavigation(evt);
+        _selectedNodeKeys.Clear();
+        _selectedPinKey = null;
+        _selectedObjectKey = null;
+        _selectedChoice = null;
+        _selectedGroup = null;
+
+        var group = _workbook.Groups.FirstOrDefault(g => string.Equals(g.Id, location.GroupId, StringComparison.OrdinalIgnoreCase));
+        if (group is not null)
+            _selectedGroup = group;
+        if (!string.IsNullOrWhiteSpace(location.ChoiceId))
+            _selectedChoice = _workbook.Choices.FirstOrDefault(c => string.Equals(c.Id, location.ChoiceId, StringComparison.OrdinalIgnoreCase));
+
+        var layoutKey = ResolveEventInfoLayoutKey(location);
+        if (!string.IsNullOrWhiteSpace(layoutKey))
+        {
+            _selectedObjectKey = layoutKey.Contains('|', StringComparison.Ordinal) ? layoutKey : null;
+            if (!layoutKey.Contains('|', StringComparison.Ordinal))
+                _selectedNodeKeys.Add(layoutKey);
+        }
+
+        DrawGraph();
+        if (!string.IsNullOrWhiteSpace(layoutKey))
+            CenterGraphOnNode(layoutKey);
+    }
+
+    private string ResolveEventInfoLayoutKey(EventInfoLocation location)
+    {
+        if (_workbook is null)
+            return "";
+
+        if (!string.IsNullOrWhiteSpace(location.NodeKey))
+        {
+            if (_workbook.Layouts.ContainsKey(location.NodeKey))
+                return location.NodeKey;
+
+            if (location.NodeKey.StartsWith("reward|", StringComparison.OrdinalIgnoreCase)
+                && TryEnsureRewardLayout(location.NodeKey))
+            {
+                return location.NodeKey;
+            }
+
+            if (location.NodeKey.StartsWith("battle|", StringComparison.OrdinalIgnoreCase)
+                && TryEnsureBattleLayout(location.NodeKey))
+            {
+                return location.NodeKey;
+            }
+        }
+
+        return _workbook.Layouts.ContainsKey(location.GroupId) ? location.GroupId : "";
+    }
+
+    private bool TryEnsureRewardLayout(string rewardKey)
+    {
+        if (_workbook is null)
+            return false;
+        var parts = rewardKey.Split('|');
+        if (parts.Length < 3)
+            return false;
+        var choiceId = parts[1];
+        var branch = parts[2];
+        var choice = _workbook.Choices.FirstOrDefault(c => string.Equals(c.Id, choiceId, StringComparison.OrdinalIgnoreCase));
+        if (choice is null || _workbook.Layouts.ContainsKey(rewardKey))
+            return choice is not null;
+        if (!_workbook.Layouts.TryGetValue(choice.GroupId, out var source))
+            return false;
+        _workbook.Layouts[rewardKey] = new NodeLayout
+        {
+            EventId = _selectedEvent?.Id ?? "",
+            GroupId = rewardKey,
+            X = source.X + NodeWidth + 80,
+            Y = source.Y + (string.Equals(branch, "fail", StringComparison.OrdinalIgnoreCase) ? 86 : 18),
+            Width = RewardNodeWidth,
+            Height = RewardNodeHeight
+        };
+        return true;
+    }
+
+    private bool TryEnsureBattleLayout(string battleKey)
+    {
+        if (_workbook is null)
+            return false;
+        var groupId = battleKey.Split('|').ElementAtOrDefault(1) ?? "";
+        if (string.IsNullOrWhiteSpace(groupId) || _workbook.Layouts.ContainsKey(battleKey))
+            return !string.IsNullOrWhiteSpace(groupId);
+        if (!_workbook.Layouts.TryGetValue(groupId, out var source))
+            return false;
+        _workbook.Layouts[battleKey] = new NodeLayout
+        {
+            EventId = _selectedEvent?.Id ?? "",
+            GroupId = battleKey,
+            X = source.X + NodeWidth + 80,
+            Y = source.Y,
+            Width = BattleNodeWidth,
+            Height = BattleNodeHeight
+        };
+        return true;
+    }
+
     private void SetPaneVisible(string key, bool visible)
     {
         if (!visible)

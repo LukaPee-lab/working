@@ -11,6 +11,7 @@
 - `EventWorkbookService.cs`: 엑셀 로드/저장, diff, validation, 자동 보정
 - `Models.cs`: 이벤트, 장면, 선택지, 레이아웃 모델
 - `PreviewWindow.cs`: Export Preview
+- `EventInfoWindow.cs`: Tools > Event info 분석 창
 - `ThemedMessageBox.cs`: Unity 스타일 확인 팝업
 - `BackgroundImagePickerWindow.cs`: background 이미지 선택
 - `NexusPathResolver.cs`: DB, 플레이어, 설정 경로 탐색
@@ -161,6 +162,7 @@ Battle은 장면 노드 하나로 표현됩니다.
 - 첫 로드 시 첫 이벤트가 선택되고 그래프가 즉시 렌더링됩니다.
 - 상단 리모콘은 중앙에 위치하며 `▶`, `❚❚`, `■` 버튼을 사용합니다.
 - 상단 Window 메뉴에서 `Event List`, `Scene`, `Hierarchy`, `Inspector`, `Console` 패널을 열고 닫을 수 있습니다.
+- 상단 Tools 메뉴의 `Event info`에서 현재 DB의 보상, 비용, 난이도, 전투, 흐름 정보를 표로 볼 수 있습니다.
 - 닫은 패널과 크기는 로컬 설정에 저장됩니다.
 - Console은 Unity 스타일 카운터 토글로 Noti/Warning/Error를 필터링합니다.
 - 스크롤바와 팝업은 어두운 Unity 스타일 테마를 사용합니다.
@@ -223,6 +225,22 @@ Battle은 장면 노드 하나로 표현됩니다.
 - `Shift+Click`으로 범위 선택, `Ctrl+Click`으로 개별 추가/해제할 수 있습니다.
 - Revert Checked는 선택된 diff만 되돌립니다.
 - `Esc`로 Export Preview를 닫을 수 있습니다.
+
+## Event info
+
+`Tools > Event info`는 현재 열려 있는 이벤트 DB를 읽어서 밸런스 확인용 표를 만듭니다.
+
+- `이벤트별 요약`: 이벤트별 장면 수, 선택지 수, 보상 수, 비용, 전투 여부를 봅니다.
+- `보상 정보`: reward type별 횟수와 총량, 어느 이벤트에서 나오는지 봅니다.
+- `비용 정보`: cost type별 횟수와 총량, 어느 이벤트에서 쓰이는지 봅니다.
+- `이벤트 난이도`: 장면 수, 선택지 수, 확률 분기, 비용, 전투를 합쳐 복잡도를 봅니다.
+- `전투 정보`: stage_id별 전투 연결 위치를 봅니다.
+- `흐름 정보`: next_action과 다음 장면 연결이 어디에 몰려 있는지 봅니다.
+- `밸런스 체크`: 보상 없는 이벤트, 보상 과다 이벤트, 전투 포함 이벤트처럼 빠르게 확인할 항목을 봅니다.
+
+표에서 행을 선택하면 아래에 관련 이벤트와 노드 위치가 표시됩니다. 세부 위치를 더블클릭하면 해당 이벤트를 열고 Scene에서 그 노드를 하이라이트합니다.
+
+별도 저장 버튼은 없습니다. 기존 `Export Preview`에서 적용하면 정보 표가 엑셀에 한글 시트로 함께 저장됩니다. 저장 후 시트 순서는 핵심 테이블, 정보 시트, `이벤트툴_레이아웃` 순서이며 레이아웃 시트는 항상 맨 끝에 둡니다.
 
 ## Runtime Player
 

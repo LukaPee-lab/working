@@ -494,6 +494,9 @@
                             <Separator/>
                             <MenuItem Header="Reset Layout" Style="{StaticResource DarkSubMenuItem}" Click="ResetLayoutMenuItem_Click"/>
                         </MenuItem>
+                        <MenuItem Header="Tools" Style="{StaticResource TopMenuItem}">
+                            <MenuItem Header="Event info" Style="{StaticResource DarkSubMenuItem}" Click="EventInfoMenuItem_Click"/>
+                        </MenuItem>
                     </Menu>
                 </Border>
                 <Grid Margin="8,3">

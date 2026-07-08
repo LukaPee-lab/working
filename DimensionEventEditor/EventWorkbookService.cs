@@ -19,6 +19,17 @@ public static class EventWorkbookService
     public const string DefaultTextExportId = "251023.lbh9517_142227";
     public const string BattleResultChoiceSuffix = "_battle_result";
 
+    private static readonly string[] EventInfoSheetNames =
+    [
+        "이벤트별 요약",
+        "보상 정보",
+        "비용 정보",
+        "이벤트 난이도",
+        "전투 정보",
+        "흐름 정보",
+        "밸런스 체크"
+    ];
+
     private static readonly string[] ExitMemoVariants =
     [
         "{0}의 여운이 잦아들고 차원 탐사가 마무리된다.",
@@ -293,8 +304,10 @@ public static class EventWorkbookService
         WriteGroups(EnsureSheet(workbook, GroupSheetName), model);
         WriteChoices(EnsureSheet(workbook, ChoiceSheetName), model);
         WriteText(EnsureSheet(workbook, TextSheetName), model, textExportId);
+        WriteEventInfoSheets(workbook, model);
         WriteLayout(NormalizeLayoutSheet(workbook), model);
         NormalizeManualSheetIdentityExamples(workbook);
+        ArrangeWorksheetsForExport(workbook);
         workbook.SaveAs(outputPath);
         FixWorksheetDimensions(outputPath, model);
     }
@@ -431,6 +444,470 @@ public static class EventWorkbookService
         }));
         return entries.Where(e => NotBlank(e.Tid)).ToList();
     }
+
+    public static EventInfoReport BuildEventInfoReport(EventWorkbook workbook)
+    {
+        var report = new EventInfoReport();
+        var events = workbook.Events.Where(e => NotBlank(e.Id)).OrderBy(e => e.Id).ToList();
+        var groupsById = UniqueById(workbook.Groups, g => g.Id);
+        var eventById = UniqueById(workbook.Events, e => e.Id);
+        var groupsByEvent = workbook.Groups
+            .Where(g => NotBlank(g.EventId))
+            .GroupBy(g => g.EventId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.OrderBy(x => x.Id).ToList(), StringComparer.OrdinalIgnoreCase);
+        var choicesByEvent = workbook.Choices
+            .Where(c => groupsById.ContainsKey(c.GroupId))
+            .GroupBy(c => groupsById[c.GroupId].EventId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key, g => g.OrderBy(c => c.GroupId).ThenBy(c => c.Seq).ThenBy(c => c.Id).ToList(), StringComparer.OrdinalIgnoreCase);
+
+        var rewardBranches = BuildRewardBranches(workbook, eventById, groupsById);
+        var costBranches = BuildCostBranches(workbook, eventById, groupsById);
+        var visibleChoicesByEvent = choicesByEvent.ToDictionary(
+            p => p.Key,
+            p => p.Value.Where(c => !IsBattleResultChoice(c, groupsById[c.GroupId])).ToList(),
+            StringComparer.OrdinalIgnoreCase);
+        AddReportLocations(report, workbook, eventById, groupsById, rewardBranches, costBranches);
+
+        BuildEventSummaryTable(report, events, groupsByEvent, choicesByEvent, visibleChoicesByEvent, rewardBranches, costBranches);
+        BuildRewardInfoTable(report, rewardBranches);
+        BuildCostInfoTable(report, costBranches);
+        BuildDifficultyInfoTable(report, events, groupsByEvent, choicesByEvent, visibleChoicesByEvent, rewardBranches, costBranches);
+        BuildBattleInfoTable(report, workbook, eventById);
+        BuildFlowInfoTable(report, workbook, eventById, groupsById);
+        BuildBalanceCheckTable(report, events, groupsByEvent, choicesByEvent, rewardBranches, costBranches);
+        return report;
+    }
+
+    private static void BuildEventSummaryTable(
+        EventInfoReport report,
+        List<EventBaseRow> events,
+        Dictionary<string, List<ChoiceGroupRow>> groupsByEvent,
+        Dictionary<string, List<EventChoiceRow>> choicesByEvent,
+        Dictionary<string, List<EventChoiceRow>> visibleChoicesByEvent,
+        List<RewardBranchInfo> rewardBranches,
+        List<CostBranchInfo> costBranches)
+    {
+        var table = CreateInfoTable(report, "이벤트별 요약", "이벤트 단위로 보상, 비용, 전투, 분기 밀도를 한 번에 보는 표입니다.",
+            "event_id", "event_name", "rarity", "weight", "scene_cnt", "choice_cnt", "reward_branch_cnt",
+            "reward_summary", "cost_summary", "battle_cnt", "chance_choice_cnt", "exit_scene_cnt");
+
+        foreach (var evt in events)
+        {
+            var groups = GetList(groupsByEvent, evt.Id);
+            var choices = GetList(choicesByEvent, evt.Id);
+            var visibleChoices = GetList(visibleChoicesByEvent, evt.Id);
+            var eventRewards = rewardBranches.Where(r => Same(r.EventId, evt.Id)).ToList();
+            var eventCosts = costBranches.Where(c => Same(c.EventId, evt.Id)).ToList();
+            table.Rows.Add(
+            [
+                evt.Id,
+                evt.Memo,
+                evt.Rarity,
+                evt.Weight,
+                groups.Count,
+                visibleChoices.Count,
+                eventRewards.Count,
+                SummarizeTypedAmounts(eventRewards.Select(r => (r.Type, r.Amount))),
+                SummarizeTypedAmounts(eventCosts.Select(c => (c.Type, c.Amount))),
+                groups.Count(g => Same(g.NextAction, "battle")),
+                visibleChoices.Count(c => c.SuccessRate.HasValue),
+                groups.Count(g => Same(g.NextAction, "exit"))
+            ]);
+        }
+    }
+
+    private static void BuildRewardInfoTable(EventInfoReport report, List<RewardBranchInfo> rewardBranches)
+    {
+        var table = CreateInfoTable(report, "보상 정보", "보상 타입별 지급 횟수와 총량입니다. T/F 및 battle 결과 보상도 모두 포함합니다.",
+            "reward_id(type)", "cnt", "amount_total", "amount_avg", "event_cnt", "choice_cnt", "events");
+
+        foreach (var group in rewardBranches
+                     .GroupBy(r => r.Type, StringComparer.OrdinalIgnoreCase)
+                     .OrderByDescending(g => g.Count())
+                     .ThenBy(g => g.Key))
+        {
+            var total = group.Sum(r => r.Amount);
+            table.Rows.Add(
+            [
+                group.Key,
+                group.Count(),
+                total,
+                group.Any() ? Math.Round(total / (double)group.Count(), 2) : 0,
+                group.Select(r => r.EventId).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+                group.Select(r => r.ChoiceId).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+                JoinLimited(group.Select(r => $"{r.EventId} {r.EventName}").Distinct(StringComparer.OrdinalIgnoreCase), 12)
+            ]);
+        }
+    }
+
+    private static void BuildCostInfoTable(EventInfoReport report, List<CostBranchInfo> costBranches)
+    {
+        var table = CreateInfoTable(report, "비용 정보", "선택지 비용 타입별 사용 횟수와 총량입니다.",
+            "cost_type", "cnt", "amount_total", "amount_avg", "event_cnt", "choice_cnt", "events");
+
+        foreach (var group in costBranches
+                     .GroupBy(c => c.Type, StringComparer.OrdinalIgnoreCase)
+                     .OrderByDescending(g => g.Count())
+                     .ThenBy(g => g.Key))
+        {
+            var total = group.Sum(c => c.Amount);
+            table.Rows.Add(
+            [
+                group.Key,
+                group.Count(),
+                total,
+                group.Any() ? Math.Round(total / (double)group.Count(), 2) : 0,
+                group.Select(c => c.EventId).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+                group.Select(c => c.ChoiceId).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+                JoinLimited(group.Select(c => $"{c.EventId} {c.EventName}").Distinct(StringComparer.OrdinalIgnoreCase), 12)
+            ]);
+        }
+    }
+
+    private static void BuildDifficultyInfoTable(
+        EventInfoReport report,
+        List<EventBaseRow> events,
+        Dictionary<string, List<ChoiceGroupRow>> groupsByEvent,
+        Dictionary<string, List<EventChoiceRow>> choicesByEvent,
+        Dictionary<string, List<EventChoiceRow>> visibleChoicesByEvent,
+        List<RewardBranchInfo> rewardBranches,
+        List<CostBranchInfo> costBranches)
+    {
+        var table = CreateInfoTable(report, "이벤트 난이도", "이벤트 구조 복잡도와 플레이 부담을 보기 위한 지표입니다. 실제 전투 난이도와는 별도입니다.",
+            "event_id", "event_name", "rarity", "floor_restriction", "diff_restriction", "weight",
+            "scene_cnt", "choice_cnt", "branch_cnt", "battle_cnt", "chance_choice_cnt", "cost_choice_cnt",
+            "reward_branch_cnt", "complexity_score", "complexity_rank");
+
+        foreach (var evt in events)
+        {
+            var groups = GetList(groupsByEvent, evt.Id);
+            var choices = GetList(choicesByEvent, evt.Id);
+            var visibleChoices = GetList(visibleChoicesByEvent, evt.Id);
+            var rewardCount = rewardBranches.Count(r => Same(r.EventId, evt.Id));
+            var costChoiceCount = costBranches.Where(c => Same(c.EventId, evt.Id)).Select(c => c.ChoiceId).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+            var battleCount = groups.Count(g => Same(g.NextAction, "battle"));
+            var chanceCount = visibleChoices.Count(c => c.SuccessRate.HasValue);
+            var branchCount = visibleChoices.Sum(c => 1 + (c.SuccessRate.HasValue || NotBlank(c.FailNextGroupId) ? 1 : 0));
+            var score = groups.Count
+                        + visibleChoices.Count * 0.8
+                        + branchCount * 0.25
+                        + battleCount * 2.0
+                        + chanceCount * 1.5
+                        + costChoiceCount * 0.7
+                        + rewardCount * 0.35;
+            table.Rows.Add(
+            [
+                evt.Id,
+                evt.Memo,
+                evt.Rarity,
+                evt.FloorRestriction,
+                evt.DiffRestriction,
+                evt.Weight,
+                groups.Count,
+                visibleChoices.Count,
+                branchCount,
+                battleCount,
+                chanceCount,
+                costChoiceCount,
+                rewardCount,
+                Math.Round(score, 2),
+                score >= 16 ? "높음" : score >= 9 ? "보통" : "낮음"
+            ]);
+        }
+    }
+
+    private static void BuildBattleInfoTable(EventInfoReport report, EventWorkbook workbook, Dictionary<string, EventBaseRow> eventById)
+    {
+        var table = CreateInfoTable(report, "전투 정보", "전투 진입 장면과 stage_id 사용량입니다.",
+            "stage_id", "battle_scene_cnt", "event_cnt", "events", "battle_groups");
+
+        var battleGroups = workbook.Groups.Where(g => Same(g.NextAction, "battle")).ToList();
+        foreach (var group in battleGroups
+                     .GroupBy(g => Default(g.StageId, "(stage_id 없음)"), StringComparer.OrdinalIgnoreCase)
+                     .OrderByDescending(g => g.Count())
+                     .ThenBy(g => g.Key))
+        {
+            table.Rows.Add(
+            [
+                group.Key,
+                group.Count(),
+                group.Select(g => g.EventId).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+                JoinLimited(group.Select(g => EventLabel(g.EventId, eventById)).Distinct(StringComparer.OrdinalIgnoreCase), 12),
+                JoinLimited(group.Select(g => g.Id), 16)
+            ]);
+        }
+    }
+
+    private static void BuildFlowInfoTable(EventInfoReport report, EventWorkbook workbook, Dictionary<string, EventBaseRow> eventById, Dictionary<string, ChoiceGroupRow> groupsById)
+    {
+        var table = CreateInfoTable(report, "흐름 정보", "장면의 next_action과 선택지 연결 상태를 요약합니다.",
+            "category", "key", "cnt", "event_cnt", "events");
+
+        foreach (var group in workbook.Groups
+                     .GroupBy(g => Default(g.NextAction, "(비어 있음)"), StringComparer.OrdinalIgnoreCase)
+                     .OrderByDescending(g => g.Count())
+                     .ThenBy(g => g.Key))
+        {
+            table.Rows.Add(
+            [
+                "next_action",
+                group.Key,
+                group.Count(),
+                group.Select(g => g.EventId).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+                JoinLimited(group.Select(g => EventLabel(g.EventId, eventById)).Distinct(StringComparer.OrdinalIgnoreCase), 12)
+            ]);
+        }
+
+        var linkedTargets = workbook.Choices
+            .SelectMany(c => new[] { c.SuccessNextGroupId, c.FailNextGroupId })
+            .Where(NotBlank)
+            .GroupBy(x => x!, StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(g => g.Count())
+            .ThenBy(g => g.Key);
+        foreach (var target in linkedTargets)
+        {
+            var eventId = groupsById.TryGetValue(target.Key, out var group) ? group.EventId : "";
+            table.Rows.Add(
+            [
+                "target_group",
+                target.Key,
+                target.Count(),
+                NotBlank(eventId) ? 1 : 0,
+                NotBlank(eventId) ? EventLabel(eventId, eventById) : "(대상 없음)"
+            ]);
+        }
+    }
+
+    private static void AddReportLocations(
+        EventInfoReport report,
+        EventWorkbook workbook,
+        Dictionary<string, EventBaseRow> eventById,
+        Dictionary<string, ChoiceGroupRow> groupsById,
+        List<RewardBranchInfo> rewardBranches,
+        List<CostBranchInfo> costBranches)
+    {
+        foreach (var reward in rewardBranches)
+        {
+            report.Locations.Add(new EventInfoLocation
+            {
+                TableName = "보상 정보",
+                Key = reward.Type,
+                EventId = reward.EventId,
+                EventName = reward.EventName,
+                GroupId = reward.GroupId,
+                ChoiceId = reward.ChoiceId,
+                Branch = reward.Branch,
+                NodeKey = RewardLayoutKeyForReport(reward.ChoiceId, reward.Branch),
+                Kind = "reward",
+                Label = $"{reward.EventId} {reward.EventName}",
+                Detail = $"{reward.Type} {reward.Amount} / {reward.GroupId} / {reward.ChoiceId} / {reward.Branch}"
+            });
+        }
+
+        foreach (var cost in costBranches)
+        {
+            report.Locations.Add(new EventInfoLocation
+            {
+                TableName = "비용 정보",
+                Key = cost.Type,
+                EventId = cost.EventId,
+                EventName = cost.EventName,
+                GroupId = cost.GroupId,
+                ChoiceId = cost.ChoiceId,
+                Branch = "choice",
+                NodeKey = cost.GroupId,
+                Kind = "choice",
+                Label = $"{cost.EventId} {cost.EventName}",
+                Detail = $"{cost.Type} {cost.Amount} / {cost.GroupId} / {cost.ChoiceId}"
+            });
+        }
+
+        foreach (var group in workbook.Groups.Where(g => Same(g.NextAction, "battle")))
+        {
+            var evt = eventById.GetValueOrDefault(group.EventId);
+            var eventName = evt?.Memo ?? "";
+            report.Locations.Add(new EventInfoLocation
+            {
+                TableName = "전투 정보",
+                Key = Default(group.StageId, "(stage_id 없음)"),
+                EventId = group.EventId,
+                EventName = eventName,
+                GroupId = group.Id,
+                NodeKey = BattleLayoutKeyForReport(group.Id),
+                Kind = "battle",
+                Label = $"{group.EventId} {eventName}",
+                Detail = $"{group.Id} / stage={Default(group.StageId, "-")}"
+            });
+        }
+
+        foreach (var group in workbook.Groups)
+        {
+            var evt = eventById.GetValueOrDefault(group.EventId);
+            var eventName = evt?.Memo ?? "";
+            report.Locations.Add(new EventInfoLocation
+            {
+                TableName = "흐름 정보",
+                Key = Default(group.NextAction, "(비어 있음)"),
+                EventId = group.EventId,
+                EventName = eventName,
+                GroupId = group.Id,
+                NodeKey = group.Id,
+                Kind = "scene",
+                Label = $"{group.EventId} {eventName}",
+                Detail = $"{group.Id} / action={Default(group.NextAction, "-")}"
+            });
+        }
+
+        foreach (var target in workbook.Choices
+                     .SelectMany(c => new[] { c.SuccessNextGroupId, c.FailNextGroupId })
+                     .Where(NotBlank)
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (!groupsById.TryGetValue(target!, out var group))
+                continue;
+            var evt = eventById.GetValueOrDefault(group.EventId);
+            var eventName = evt?.Memo ?? "";
+            report.Locations.Add(new EventInfoLocation
+            {
+                TableName = "흐름 정보",
+                Key = target!,
+                EventId = group.EventId,
+                EventName = eventName,
+                GroupId = group.Id,
+                NodeKey = group.Id,
+                Kind = "scene",
+                Label = $"{group.EventId} {eventName}",
+                Detail = $"{group.Id} / linked target"
+            });
+        }
+    }
+
+    private static void BuildBalanceCheckTable(
+        EventInfoReport report,
+        List<EventBaseRow> events,
+        Dictionary<string, List<ChoiceGroupRow>> groupsByEvent,
+        Dictionary<string, List<EventChoiceRow>> choicesByEvent,
+        List<RewardBranchInfo> rewardBranches,
+        List<CostBranchInfo> costBranches)
+    {
+        var table = CreateInfoTable(report, "밸런스 체크", "보상/비용/전투/확률 분기가 어느 이벤트에 몰려 있는지 빠르게 보는 체크 표입니다.",
+            "check", "event_cnt", "events");
+
+        void AddCheck(string label, IEnumerable<EventBaseRow> matched)
+        {
+            var list = matched.OrderBy(e => e.Id).ToList();
+            table.Rows.Add([label, list.Count, JoinLimited(list.Select(e => $"{e.Id} {e.Memo}"), 20)]);
+            foreach (var evt in list)
+            {
+                var groupId = evt.FirstGroupId;
+                report.Locations.Add(new EventInfoLocation
+                {
+                    TableName = table.Name,
+                    Key = label,
+                    EventId = evt.Id,
+                    EventName = evt.Memo,
+                    GroupId = groupId,
+                    NodeKey = groupId,
+                    Kind = "event",
+                    Label = $"{evt.Id} {evt.Memo}",
+                    Detail = label
+                });
+            }
+        }
+
+        AddCheck("보상 없는 이벤트", events.Where(e => rewardBranches.All(r => !Same(r.EventId, e.Id))));
+        AddCheck("보상 5회 이상 이벤트", events.Where(e => rewardBranches.Count(r => Same(r.EventId, e.Id)) >= 5));
+        AddCheck("유물 보상 포함 이벤트", events.Where(e => rewardBranches.Any(r => Same(r.EventId, e.Id) && ContainsAny(r.Type, "relic", "유물"))));
+        AddCheck("골드 보상 포함 이벤트", events.Where(e => rewardBranches.Any(r => Same(r.EventId, e.Id) && ContainsAny(r.Type, "gold", "골드"))));
+        AddCheck("횃불/소모품 보상 포함 이벤트", events.Where(e => rewardBranches.Any(r => Same(r.EventId, e.Id) && ContainsAny(r.Type, "torch", "item", "횃불"))));
+        AddCheck("비용 선택지 포함 이벤트", events.Where(e => costBranches.Any(c => Same(c.EventId, e.Id))));
+        AddCheck("확률 분기 포함 이벤트", events.Where(e => GetList(choicesByEvent, e.Id).Any(c => c.SuccessRate.HasValue)));
+        AddCheck("전투 포함 이벤트", events.Where(e => GetList(groupsByEvent, e.Id).Any(g => Same(g.NextAction, "battle"))));
+        AddCheck("장면 8개 이상 이벤트", events.Where(e => GetList(groupsByEvent, e.Id).Count >= 8));
+    }
+
+    private static List<RewardBranchInfo> BuildRewardBranches(EventWorkbook workbook, Dictionary<string, EventBaseRow> eventById, Dictionary<string, ChoiceGroupRow> groupsById)
+    {
+        var result = new List<RewardBranchInfo>();
+        foreach (var choice in workbook.Choices)
+        {
+            if (!groupsById.TryGetValue(choice.GroupId, out var group) || !eventById.TryGetValue(group.EventId, out var evt))
+                continue;
+            AddReward(result, evt, group, choice, "success", choice.SuccessRewardType, choice.SuccessRewardAmount);
+            AddReward(result, evt, group, choice, "fail", choice.FailRewardType, choice.FailRewardAmount);
+        }
+
+        return result;
+    }
+
+    private static void AddReward(List<RewardBranchInfo> result, EventBaseRow evt, ChoiceGroupRow group, EventChoiceRow choice, string branch, string type, int? amount)
+    {
+        if (Blank(type) || Same(type, "none"))
+            return;
+        result.Add(new RewardBranchInfo(evt.Id, evt.Memo, group.Id, choice.Id, branch, type, amount ?? 0));
+    }
+
+    private static List<CostBranchInfo> BuildCostBranches(EventWorkbook workbook, Dictionary<string, EventBaseRow> eventById, Dictionary<string, ChoiceGroupRow> groupsById)
+    {
+        var result = new List<CostBranchInfo>();
+        foreach (var choice in workbook.Choices)
+        {
+            if (Blank(choice.CostType) || Same(choice.CostType, "none"))
+                continue;
+            if (!groupsById.TryGetValue(choice.GroupId, out var group) || !eventById.TryGetValue(group.EventId, out var evt))
+                continue;
+            result.Add(new CostBranchInfo(evt.Id, evt.Memo, group.Id, choice.Id, choice.CostType, choice.CostAmount ?? 0));
+        }
+
+        return result;
+    }
+
+    private static EventInfoTable CreateInfoTable(EventInfoReport report, string name, string description, params string[] columns)
+    {
+        var table = new EventInfoTable { Name = name, Description = description };
+        table.Columns.AddRange(columns);
+        report.Tables.Add(table);
+        return table;
+    }
+
+    private static List<T> GetList<T>(Dictionary<string, List<T>> source, string key)
+        => source.TryGetValue(key, out var value) ? value : [];
+
+    private static string SummarizeTypedAmounts(IEnumerable<(string Type, int Amount)> values)
+    {
+        var items = values
+            .Where(v => NotBlank(v.Type))
+            .GroupBy(v => v.Type, StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(g => g.Count())
+            .ThenBy(g => g.Key)
+            .Select(g => $"{g.Key} x{g.Count()} / {g.Sum(v => v.Amount)}")
+            .ToList();
+        return items.Count == 0 ? "-" : string.Join(", ", items);
+    }
+
+    private static string EventLabel(string eventId, Dictionary<string, EventBaseRow> eventById)
+        => eventById.TryGetValue(eventId, out var evt) ? $"{evt.Id} {evt.Memo}" : eventId;
+
+    private static string JoinLimited(IEnumerable<string> values, int limit)
+    {
+        var list = values.Where(NotBlank).Distinct(StringComparer.OrdinalIgnoreCase).Take(limit + 1).ToList();
+        if (list.Count == 0)
+            return "-";
+        if (list.Count > limit)
+            return string.Join(", ", list.Take(limit)) + " ...";
+        return string.Join(", ", list);
+    }
+
+    private static bool ContainsAny(string value, params string[] needles)
+        => needles.Any(needle => value.Contains(needle, StringComparison.OrdinalIgnoreCase));
+
+    private static string RewardLayoutKeyForReport(string choiceId, string branch) => $"reward|{choiceId}|{branch}";
+
+    private static string BattleLayoutKeyForReport(string groupId) => $"battle|{groupId}";
+
+    private sealed record RewardBranchInfo(string EventId, string EventName, string GroupId, string ChoiceId, string Branch, string Type, int Amount);
+
+    private sealed record CostBranchInfo(string EventId, string EventName, string GroupId, string ChoiceId, string Type, int Amount);
 
     private static int NormalizeIdentityCasing(EventWorkbook workbook)
     {
@@ -1017,6 +1494,8 @@ public static class EventWorkbookService
             [TextSheetName] = (Math.Max(1, GenerateTextEntries(model).Count + 1), 4),
             [LayoutSheetName] = (Math.Max(1, model.Layouts.Count + 1), 7)
         };
+        foreach (var table in BuildEventInfoReport(model).Tables)
+            dimensions[table.Name] = (Math.Max(4, table.Rows.Count + 4), Math.Max(1, table.Columns.Count));
 
         foreach (var (sheetName, size) in dimensions)
         {
@@ -1381,6 +1860,87 @@ public static class EventWorkbookService
         }
     }
 
+    private static void WriteEventInfoSheets(XLWorkbook workbook, EventWorkbook model)
+    {
+        var report = BuildEventInfoReport(model);
+        foreach (var table in report.Tables)
+            WriteEventInfoSheet(EnsureSheet(workbook, table.Name), table);
+    }
+
+    private static void WriteEventInfoSheet(IXLWorksheet ws, EventInfoTable table)
+    {
+        ws.Clear();
+        ws.Cell(1, 1).Value = table.Name;
+        ws.Cell(2, 1).Value = table.Description;
+        ws.Cell(1, 1).Style.Font.Bold = true;
+        ws.Cell(1, 1).Style.Font.FontSize = 14;
+        ws.Cell(2, 1).Style.Font.FontColor = XLColor.FromHtml("#666666");
+
+        for (var col = 0; col < table.Columns.Count; col++)
+        {
+            var cell = ws.Cell(4, col + 1);
+            cell.Value = table.Columns[col];
+            cell.Style.Font.Bold = true;
+            cell.Style.Font.FontColor = XLColor.White;
+            cell.Style.Fill.BackgroundColor = XLColor.FromHtml("#2f5597");
+            cell.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Center;
+        }
+
+        var row = 5;
+        foreach (var dataRow in table.Rows)
+        {
+            for (var col = 0; col < table.Columns.Count; col++)
+            {
+                var value = col < dataRow.Count ? dataRow[col] : null;
+                SetInfoCell(ws.Cell(row, col + 1), value);
+            }
+            row++;
+        }
+
+        var lastRow = Math.Max(4, row - 1);
+        if (table.Columns.Count > 0)
+        {
+            var range = ws.Range(4, 1, lastRow, table.Columns.Count);
+            range.Style.Border.OutsideBorder = XLBorderStyleValues.Thin;
+            range.Style.Border.InsideBorder = XLBorderStyleValues.Thin;
+            range.Style.Border.OutsideBorderColor = XLColor.FromHtml("#d9e2f3");
+            range.Style.Border.InsideBorderColor = XLColor.FromHtml("#d9e2f3");
+            range.SetAutoFilter();
+            ws.SheetView.FreezeRows(4);
+            ws.Columns(1, table.Columns.Count).AdjustToContents();
+            foreach (var column in ws.Columns(1, table.Columns.Count))
+            {
+                if (column.Width > 55)
+                    column.Width = 55;
+            }
+        }
+    }
+
+    private static void SetInfoCell(IXLCell cell, object? value)
+    {
+        switch (value)
+        {
+            case null:
+                cell.Clear(XLClearOptions.Contents);
+                break;
+            case int intValue:
+                cell.Value = intValue;
+                break;
+            case long longValue:
+                cell.Value = longValue;
+                break;
+            case double doubleValue:
+                cell.Value = doubleValue;
+                break;
+            case decimal decimalValue:
+                cell.Value = decimalValue;
+                break;
+            default:
+                cell.Value = value.ToString() ?? "";
+                break;
+        }
+    }
+
     private static void WriteLayout(IXLWorksheet ws, EventWorkbook model)
     {
         ws.Cell(1, 1).Value = "schema_version";
@@ -1406,6 +1966,28 @@ public static class EventWorkbookService
             row++;
         }
         ws.Visibility = XLWorksheetVisibility.Visible;
+    }
+
+    private static void ArrangeWorksheetsForExport(XLWorkbook workbook)
+    {
+        var position = 1;
+        MoveWorksheet(workbook, BaseSheetName, ref position);
+        MoveWorksheet(workbook, GroupSheetName, ref position);
+        MoveWorksheet(workbook, ChoiceSheetName, ref position);
+        MoveWorksheet(workbook, TextSheetName, ref position);
+        MoveWorksheet(workbook, "매뉴얼", ref position);
+        foreach (var sheetName in EventInfoSheetNames)
+            MoveWorksheet(workbook, sheetName, ref position);
+        if (workbook.Worksheets.TryGetWorksheet(LayoutSheetName, out var layout))
+            layout.Position = workbook.Worksheets.Count;
+    }
+
+    private static void MoveWorksheet(XLWorkbook workbook, string sheetName, ref int position)
+    {
+        if (!workbook.Worksheets.TryGetWorksheet(sheetName, out var ws))
+            return;
+        ws.Position = position;
+        position++;
     }
 
     private static void CompareRows(List<DiffEntry> diff, string sheet, Dictionary<string, string> before, Dictionary<string, string> after)
