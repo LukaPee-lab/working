@@ -385,37 +385,44 @@ public static class EventWorkbookService
     public static List<TextEntry> GenerateTextEntries(EventWorkbook workbook, string? textExportId = null)
     {
         var overrideTextExportId = textExportId?.Trim();
-        var existingTextExportIds = workbook.TextEntries
-            .Where(e => NotBlank(e.Tid) && NotBlank(e.ExportId))
+        var existingTexts = workbook.TextEntries
+            .Where(e => NotBlank(e.Tid))
             .GroupBy(e => e.Tid, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key!, g => g.Last().ExportId, StringComparer.OrdinalIgnoreCase);
-        string ExportIdFor(string tid)
+            .ToDictionary(g => g.Key!, g => g.Last(), StringComparer.OrdinalIgnoreCase);
+        string ExportIdFor(string tid, string text)
         {
+            existingTexts.TryGetValue(tid, out var existing);
+            if (!string.IsNullOrWhiteSpace(existing?.ExportId)
+                && string.Equals(existing.Text, text, StringComparison.Ordinal))
+            {
+                return existing.ExportId;
+            }
+
             if (!string.IsNullOrWhiteSpace(overrideTextExportId))
                 return overrideTextExportId;
-            return existingTextExportIds.TryGetValue(tid, out var existing) && NotBlank(existing)
-                ? existing
+            return !string.IsNullOrWhiteSpace(existing?.ExportId)
+                ? existing.ExportId
                 : DefaultTextExportId;
         }
 
         var entries = new List<TextEntry>();
         entries.AddRange(workbook.Events.Select(e => new TextEntry
         {
-            ExportId = ExportIdFor(e.EventNameTid),
+            ExportId = ExportIdFor(e.EventNameTid, e.Memo),
             Tid = e.EventNameTid,
             Text = e.Memo,
             Comment = $"이벤트명: {e.Id}"
         }));
         entries.AddRange(workbook.Groups.Select(g => new TextEntry
         {
-            ExportId = ExportIdFor(g.SituationTextTid),
+            ExportId = ExportIdFor(g.SituationTextTid, g.Memo),
             Tid = g.SituationTextTid,
             Text = g.Memo,
             Comment = $"상황 설명: {g.Id}"
         }));
         entries.AddRange(workbook.Choices.Select(c => new TextEntry
         {
-            ExportId = ExportIdFor(c.ChoiceTextTid),
+            ExportId = ExportIdFor(c.ChoiceTextTid, c.Memo),
             Tid = c.ChoiceTextTid,
             Text = c.Memo,
             Comment = $"선택지: {c.Id}"
