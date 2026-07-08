@@ -10,6 +10,7 @@ namespace DimensionEventEditor;
 
 public static class EventWorkbookService
 {
+    private const string SpreadsheetMainNamespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
     public const string BaseSheetName = "nexus_event_base";
     public const string GroupSheetName = "nexus_event_choice_group";
     public const string ChoiceSheetName = "nexus_event_choice";
@@ -1424,6 +1425,8 @@ public static class EventWorkbookService
                 continue;
             SetWorksheetDimension(archive, entryName, $"A1:{ColumnName(size.LastColumn)}{size.LastRow}");
         }
+
+        NormalizeLegacyExcelReaderNamespaces(archive);
     }
 
     private static Dictionary<string, string> GetWorksheetPaths(ZipArchive archive)
@@ -1486,6 +1489,65 @@ public static class EventWorkbookService
         var replacement = archive.CreateEntry(entryName, CompressionLevel.Optimal);
         using var writer = new StreamWriter(replacement.Open(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: xml.StartsWith('\ufeff')));
         writer.Write(xml.TrimStart('\ufeff'));
+    }
+
+    private static void NormalizeLegacyExcelReaderNamespaces(ZipArchive archive)
+    {
+        RewriteZipTextEntry(archive, "xl/workbook.xml", NormalizeSpreadsheetMainNamespacePrefix);
+        foreach (var entryName in archive.Entries
+                     .Select(e => e.FullName)
+                     .Where(name => name.StartsWith("xl/worksheets/", StringComparison.OrdinalIgnoreCase)
+                                    && name.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
+                     .ToList())
+        {
+            RewriteZipTextEntry(archive, entryName, NormalizeSpreadsheetMainNamespacePrefix);
+        }
+    }
+
+    private static string NormalizeSpreadsheetMainNamespacePrefix(string xml)
+    {
+        if (!xml.Contains($"xmlns:x=\"{SpreadsheetMainNamespace}\"", StringComparison.Ordinal)
+            || !xml.Contains("<x:", StringComparison.Ordinal))
+        {
+            return xml;
+        }
+
+        var hasDefaultNamespace = xml.Contains($"xmlns=\"{SpreadsheetMainNamespace}\"", StringComparison.Ordinal);
+        var normalized = Regex.Replace(
+            xml,
+            $@"\sxmlns:x=""{Regex.Escape(SpreadsheetMainNamespace)}""",
+            hasDefaultNamespace ? "" : $" xmlns=\"{SpreadsheetMainNamespace}\"",
+            RegexOptions.None,
+            TimeSpan.FromSeconds(1));
+
+        normalized = Regex.Replace(
+            normalized,
+            @"(<\/?)x:([A-Za-z_][\w.\-]*)",
+            "$1$2",
+            RegexOptions.None,
+            TimeSpan.FromSeconds(1));
+
+        return normalized;
+    }
+
+    private static void RewriteZipTextEntry(ZipArchive archive, string entryName, Func<string, string> transform)
+    {
+        var entry = archive.GetEntry(entryName);
+        if (entry is null)
+            return;
+
+        string xml;
+        using (var reader = new StreamReader(entry.Open(), Encoding.UTF8, detectEncodingFromByteOrderMarks: true))
+            xml = reader.ReadToEnd();
+
+        var transformed = transform(xml);
+        if (string.Equals(xml, transformed, StringComparison.Ordinal))
+            return;
+
+        entry.Delete();
+        var replacement = archive.CreateEntry(entryName, CompressionLevel.Optimal);
+        using var writer = new StreamWriter(replacement.Open(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: xml.StartsWith('\ufeff')));
+        writer.Write(transformed.TrimStart('\ufeff'));
     }
 
     private static string ColumnName(int column)
