@@ -66,7 +66,7 @@ Start-Process .\bin\Release\net10.0-windows\DimensionEventEditor.exe
 
 이벤트 1개당 1행입니다.
 
-- `id`: 이벤트 ID. 예: `s1_EVT_001`
+- `id`: 이벤트 ID. 예: `s1_evt_001`
 - `memo`: 에디터에서 보이는 이벤트명
 - `export_id`: 기본값 `manmo2429_175126`
 - `event_name`: 이벤트명 TID
@@ -142,7 +142,7 @@ Battle은 장면 노드 하나로 표현됩니다.
 - Inspector에서 `next_action = Battle`을 선택합니다.
 - `stage_id`가 필요합니다.
 - Battle 장면에는 T/F 출력 핀이 항상 표시됩니다.
-- Battle 결과는 `{battle_group_id}_BATTLE_RESULT` hidden choice row에 저장됩니다.
+- Battle 결과는 `{battle_group_id}_battle_result` hidden choice row에 저장됩니다.
 - Battle 진입 전에는 반드시 도망/회피 선택지가 있어야 합니다.
 - 우클릭 메뉴에는 Battle 노드 추가가 없습니다.
 
@@ -151,7 +151,7 @@ Battle은 장면 노드 하나로 표현됩니다.
 모든 이벤트는 Exit 장면으로 끝나야 합니다.
 
 - `next_action = Exit`
-- 보통 `{event_id}_G999_EXIT` ID를 사용합니다.
+- 보통 `{event_id}_g999_exit` ID를 사용합니다.
 - Auto Layout에서 Exit 장면은 마지막 칼럼으로 밀립니다.
 - Exit 장면에는 표시 선택지를 두지 않는 것이 원칙입니다.
 

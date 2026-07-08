@@ -4003,7 +4003,7 @@ public partial class MainWindow : Window
             return;
         PushUndo();
         var nextSeq = _workbook.Choices.Where(c => c.GroupId == group.Id).Select(c => c.Seq).DefaultIfEmpty(0).Max() + 1;
-        var id = $"{group.Id}_C{nextSeq}";
+        var id = $"{group.Id}_c{nextSeq}";
         var choice = new EventChoiceRow
         {
             Id = id,
@@ -4655,7 +4655,7 @@ public partial class MainWindow : Window
 
         foreach (var source in _copiedChoices.OrderBy(c => c.Seq))
         {
-            var choiceId = $"{id}_C{source.Seq}";
+            var choiceId = $"{id}_c{source.Seq}";
             var choice = CloneChoiceForClipboard(source);
             choice.Id = choiceId;
             choice.GroupId = id;
@@ -4695,17 +4695,17 @@ public partial class MainWindow : Window
     private string NextGroupId(string eventId)
     {
         if (_workbook is null)
-            return $"{eventId}_G1";
+            return $"{eventId}_g1";
         var next = _workbook.Groups
-            .Where(g => g.EventId == eventId && g.Id.Contains("_G", StringComparison.OrdinalIgnoreCase))
+            .Where(g => g.EventId == eventId)
             .Select(g =>
             {
-                var last = g.Id.Split("_G").LastOrDefault();
-                return int.TryParse(last, out var n) ? n : 0;
+                var match = Regex.Match(g.Id, "_g(\\d+)$", RegexOptions.IgnoreCase);
+                return match.Success && int.TryParse(match.Groups[1].Value, out var n) ? n : 0;
             })
             .DefaultIfEmpty(0)
             .Max() + 1;
-        return $"{eventId}_G{next}";
+        return $"{eventId}_g{next}";
     }
 
     private ChoiceGroupRow CreateEditableExitGroup(string eventId)
@@ -5608,7 +5608,7 @@ public partial class MainWindow : Window
         if (_workbook is null)
             return;
         var id = EventWorkbookService.NextEventId(_workbook);
-        var firstGroupId = $"{id}_G1";
+        var firstGroupId = $"{id}_g1";
         var evt = new EventBaseRow
         {
             Id = id,

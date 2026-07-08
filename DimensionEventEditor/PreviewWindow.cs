@@ -305,7 +305,7 @@ public sealed class PreviewWindow : Window
     private static string EventGroupKey(DiffEntry entry)
     {
         var text = $"{entry.Key} {entry.Detail} {entry.BeforeValue} {entry.AfterValue}";
-        var match = Regex.Match(text, @"s1_EVT_\d{3}", RegexOptions.IgnoreCase);
+        var match = Regex.Match(text, @"s1_evt_\d{3}", RegexOptions.IgnoreCase);
         if (match.Success)
             return match.Value;
         if (entry.Sheet == EventWorkbookService.LayoutSheetName)

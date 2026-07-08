@@ -17,7 +17,7 @@ public static class EventWorkbookService
     public const string LayoutSheetName = "이벤트툴_레이아웃";
     public const string DefaultEventExportId = "manmo2429_175126";
     public const string DefaultTextExportId = "251023.lbh9517_142227";
-    public const string BattleResultChoiceSuffix = "_BATTLE_RESULT";
+    public const string BattleResultChoiceSuffix = "_battle_result";
 
     private static readonly string[] ExitMemoVariants =
     [
@@ -294,6 +294,7 @@ public static class EventWorkbookService
         WriteChoices(EnsureSheet(workbook, ChoiceSheetName), model);
         WriteText(EnsureSheet(workbook, TextSheetName), model, textExportId);
         WriteLayout(NormalizeLayoutSheet(workbook), model);
+        NormalizeManualSheetIdentityExamples(workbook);
         workbook.SaveAs(outputPath);
         FixWorksheetDimensions(outputPath, model);
     }
@@ -304,6 +305,7 @@ public static class EventWorkbookService
             return 0;
 
         var changed = 0;
+        changed += NormalizeIdentityCasing(workbook);
         changed += RemoveDeprecatedTerminalLayouts(workbook);
         changed += NormalizeExitActionGroups(workbook);
         changed += EnsureReferencedGroups(workbook);
@@ -376,10 +378,10 @@ public static class EventWorkbookService
     {
         var max = workbook.Events
             .Select(e => e.Id)
-            .Select(id => id.StartsWith("s1_EVT_", StringComparison.OrdinalIgnoreCase) && int.TryParse(id[7..], out var n) ? n : 0)
+            .Select(id => id.StartsWith("s1_evt_", StringComparison.OrdinalIgnoreCase) && int.TryParse(id[7..], out var n) ? n : 0)
             .DefaultIfEmpty(0)
             .Max();
-        return $"s1_EVT_{max + 1:000}";
+        return $"s1_evt_{max + 1:000}";
     }
 
     public static List<TextEntry> GenerateTextEntries(EventWorkbook workbook, string? textExportId = null)
@@ -428,6 +430,69 @@ public static class EventWorkbookService
             Comment = $"선택지: {c.Id}"
         }));
         return entries.Where(e => NotBlank(e.Tid)).ToList();
+    }
+
+    private static int NormalizeIdentityCasing(EventWorkbook workbook)
+    {
+        var changed = 0;
+
+        void Lower(string value, Action<string> set)
+        {
+            if (Blank(value))
+                return;
+            var lowered = value.ToLowerInvariant();
+            if (string.Equals(value, lowered, StringComparison.Ordinal))
+                return;
+            set(lowered);
+            changed++;
+        }
+
+        foreach (var evt in workbook.Events)
+        {
+            Lower(evt.Id, v => evt.Id = v);
+            Lower(evt.EventNameTid, v => evt.EventNameTid = v);
+            Lower(evt.FirstGroupId, v => evt.FirstGroupId = v);
+        }
+
+        foreach (var group in workbook.Groups)
+        {
+            Lower(group.Id, v => group.Id = v);
+            Lower(group.EventId, v => group.EventId = v);
+            Lower(group.SituationTextTid, v => group.SituationTextTid = v);
+        }
+
+        foreach (var choice in workbook.Choices)
+        {
+            Lower(choice.Id, v => choice.Id = v);
+            Lower(choice.GroupId, v => choice.GroupId = v);
+            Lower(choice.ChoiceTextTid, v => choice.ChoiceTextTid = v);
+            Lower(choice.SuccessNextGroupId, v => choice.SuccessNextGroupId = v);
+            Lower(choice.FailNextGroupId, v => choice.FailNextGroupId = v);
+        }
+
+        foreach (var text in workbook.TextEntries)
+            Lower(text.Tid, v => text.Tid = v);
+
+        if (workbook.Layouts.Count == 0)
+            return changed;
+
+        var loweredLayouts = new Dictionary<string, NodeLayout>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, layout) in workbook.Layouts.ToList())
+        {
+            Lower(layout.EventId, v => layout.EventId = v);
+            Lower(layout.GroupId, v => layout.GroupId = v);
+
+            var loweredKey = key.ToLowerInvariant();
+            if (!string.Equals(key, loweredKey, StringComparison.Ordinal))
+                changed++;
+            loweredLayouts[loweredKey] = layout;
+        }
+
+        workbook.Layouts.Clear();
+        foreach (var (key, layout) in loweredLayouts)
+            workbook.Layouts[key] = layout;
+
+        return changed;
     }
 
     private static int RemoveDeprecatedTerminalLayouts(EventWorkbook workbook)
@@ -659,7 +724,7 @@ public static class EventWorkbookService
                      .Max() + 1;
              ; seq++)
         {
-            var id = $"{groupId}_C{seq}";
+            var id = $"{groupId}_c{seq}";
             if (workbook.Choices.All(c => !Same(c.Id, id)))
                 return id;
         }
@@ -698,7 +763,7 @@ public static class EventWorkbookService
                 .OrderBy(g => g.Id)
                 .FirstOrDefault();
             var hasChoices = workbook.Choices.Any(c => Same(c.GroupId, groupId));
-            var isExit = groupId.Contains("_EXIT", StringComparison.OrdinalIgnoreCase) || !hasChoices;
+            var isExit = groupId.Contains("_exit", StringComparison.OrdinalIgnoreCase) || !hasChoices;
             var evt = workbook.Events.FirstOrDefault(e => Same(e.Id, eventId));
             var group = new ChoiceGroupRow
             {
@@ -722,8 +787,8 @@ public static class EventWorkbookService
 
     private static string InferEventIdFromGroupId(string groupId)
     {
-        var match = Regex.Match(groupId, @"^s\d+_EVT_\d{3}", RegexOptions.IgnoreCase);
-        return match.Success ? match.Value : "";
+        var match = Regex.Match(groupId, @"^s\d+_evt_\d{3}", RegexOptions.IgnoreCase);
+        return match.Success ? match.Value.ToLowerInvariant() : "";
     }
 
     private static ChoiceGroupRow EnsureExitGroup(EventWorkbook workbook, EventBaseRow evt, List<ChoiceGroupRow> eventGroups)
@@ -852,7 +917,7 @@ public static class EventWorkbookService
     }
 
     private static bool IsCanonicalExitGroupId(string groupId, string eventId)
-        => Regex.IsMatch(groupId, $"^{Regex.Escape(eventId)}_G999_EXIT(?:_\\d+)?$", RegexOptions.IgnoreCase);
+        => Regex.IsMatch(groupId, $"^{Regex.Escape(eventId)}_g999_exit(?:_\\d+)?$", RegexOptions.IgnoreCase);
 
     private static void RenameGroupId(EventWorkbook workbook, string oldId, string newId)
     {
@@ -916,13 +981,13 @@ public static class EventWorkbookService
 
         for (var i = 2; ; i++)
         {
-            candidate = $"{eventId}_G999_EXIT_{i}";
+            candidate = $"{eventId}_g999_exit_{i}";
             if (!existing.Contains(candidate))
                 return candidate;
         }
     }
 
-    public static string CanonicalExitGroupId(string eventId) => $"{eventId}_G999_EXIT";
+    public static string CanonicalExitGroupId(string eventId) => $"{eventId}_g999_exit";
 
     private static ChoiceGroupRow? ExistingExitGroup(EventWorkbook workbook, string eventId, List<ChoiceGroupRow> eventGroups)
     {
@@ -1155,11 +1220,46 @@ public static class EventWorkbookService
                 Column = column,
                 Type = Cell(ws, row, 3),
                 Required = Cell(ws, row, 4),
-                Description = Cell(ws, row, 5),
-                Example = Cell(ws, row, 6)
+                Description = NormalizeIdentityExampleText(Cell(ws, row, 5)),
+                Example = NormalizeIdentityExampleText(Cell(ws, row, 6))
             };
             model.ColumnHelps[$"{table}.{column}"] = help;
         }
+    }
+
+    private static void NormalizeManualSheetIdentityExamples(XLWorkbook workbook)
+    {
+        if (!workbook.Worksheets.TryGetWorksheet("매뉴얼", out var ws))
+            return;
+
+        foreach (var cell in ws.CellsUsed())
+        {
+            var text = cell.GetString();
+            if (Blank(text))
+                continue;
+            var normalized = NormalizeIdentityExampleText(text);
+            if (!string.Equals(text, normalized, StringComparison.Ordinal))
+                cell.Value = normalized;
+        }
+    }
+
+    private static string NormalizeIdentityExampleText(string text)
+    {
+        if (Blank(text))
+            return text;
+
+        var normalized = text
+            .Replace("s1_EVT_", "s1_evt_", StringComparison.OrdinalIgnoreCase)
+            .Replace("_BATTLE_RESULT", "_battle_result", StringComparison.OrdinalIgnoreCase)
+            .Replace("_G999_EXIT", "_g999_exit", StringComparison.OrdinalIgnoreCase)
+            .Replace("_EXIT", "_exit", StringComparison.OrdinalIgnoreCase);
+
+        normalized = Regex.Replace(normalized, @"\bEVT_(\d{3})", "evt_$1", RegexOptions.IgnoreCase);
+        normalized = Regex.Replace(normalized, @"_G(\d+)", "_g$1", RegexOptions.IgnoreCase);
+        normalized = Regex.Replace(normalized, @"_C(\d+)", "_c$1", RegexOptions.IgnoreCase);
+        normalized = Regex.Replace(normalized, @"_S(\d+)", "_s$1", RegexOptions.IgnoreCase);
+        normalized = Regex.Replace(normalized, @"_B(\d+)", "_b$1", RegexOptions.IgnoreCase);
+        return normalized;
     }
 
     private static void LoadLayout(IXLWorksheet ws, EventWorkbook model)
