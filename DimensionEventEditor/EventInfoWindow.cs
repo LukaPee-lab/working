@@ -1,8 +1,6 @@
 using System.Data;
-using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Data;
 using System.Windows.Markup;
 using System.Windows.Media;
 
@@ -338,10 +336,9 @@ public sealed class EventInfoWindow : Window
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
-        var dataView = ToDataTable(table).DefaultView;
-        var sourceView = CollectionViewSource.GetDefaultView(dataView);
+        var sourceTable = ToDataTable(table);
+        var filteredTable = sourceTable;
         var summarySearchBox = CreateSearchBox("집계 표 검색");
-        sourceView.Filter = item => MatchesSearch(item, summarySearchBox.Text);
 
         var topPanel = new DockPanel
         {
@@ -365,7 +362,7 @@ public sealed class EventInfoWindow : Window
 
         var dataGrid = new DataGrid
         {
-            ItemsSource = sourceView,
+            ItemsSource = filteredTable.DefaultView,
             IsReadOnly = true,
             AutoGenerateColumns = true,
             CanUserAddRows = false,
@@ -465,8 +462,9 @@ public sealed class EventInfoWindow : Window
 
         void RefreshTopFilter()
         {
-            sourceView.Refresh();
-            description.Text = SummaryDescription(table, sourceView);
+            filteredTable = FilterDataTable(sourceTable, summarySearchBox.Text);
+            dataGrid.ItemsSource = filteredTable.DefaultView;
+            description.Text = SummaryDescription(table, filteredTable.Rows.Count);
             UpdateDetails(table, dataGrid, detailsGrid, detailsTitle, detailSearchBox);
         }
 
@@ -478,7 +476,7 @@ public sealed class EventInfoWindow : Window
             if (detailsGrid.Items.Count == 1 && detailsGrid.Items[0] is EventInfoLocation location)
                 _navigate?.Invoke(location);
         };
-        description.Text = SummaryDescription(table, sourceView);
+        description.Text = SummaryDescription(table, filteredTable.Rows.Count);
         return grid;
     }
 
@@ -500,12 +498,25 @@ public sealed class EventInfoWindow : Window
             : DetailsDescription(key, details.Count, allDetails.Count);
     }
 
-    private static string SummaryDescription(EventInfoTable table, ICollectionView sourceView)
+    private static string SummaryDescription(EventInfoTable table, int visibleCount)
     {
-        var visibleCount = sourceView.Cast<object>().Count();
         return visibleCount == table.Rows.Count
             ? $"{table.Description}  /  rows: {table.Rows.Count}"
             : $"{table.Description}  /  rows: {visibleCount} / {table.Rows.Count}";
+    }
+
+    private static DataTable FilterDataTable(DataTable source, string? query)
+    {
+        if (string.IsNullOrWhiteSpace(query))
+            return source;
+
+        var filtered = source.Clone();
+        foreach (DataRow row in source.Rows)
+        {
+            if (MatchesSearch(row, query))
+                filtered.ImportRow(row);
+        }
+        return filtered;
     }
 
     private static string DetailsDescription(string key, int visibleCount, int totalCount)
@@ -563,6 +574,7 @@ public sealed class EventInfoWindow : Window
     {
         return item switch
         {
+            DataRow row => string.Join(" ", row.ItemArray.Select(value => value?.ToString() ?? "")),
             DataRowView row => string.Join(" ", row.Row.ItemArray.Select(value => value?.ToString() ?? "")),
             EventInfoLocation location => string.Join(" ", new[]
             {
