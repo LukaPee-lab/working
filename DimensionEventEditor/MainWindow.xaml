@@ -666,11 +666,11 @@
                                 <TextBlock Text="Collapse" Foreground="#bdbdbd" VerticalAlignment="Center" Margin="8,0,0,0"/>
                             </StackPanel>
                             <StackPanel Orientation="Horizontal" DockPanel.Dock="Right" Margin="8,5,6,5">
-                                <ToggleButton x:Name="ConsoleInfoToggle" Style="{StaticResource ConsoleFilterToggle}" IsChecked="True"
-                                              ToolTip="Info logs" Click="ConsoleFilterToggle_Click">
+                                <ToggleButton x:Name="ConsoleErrorToggle" Style="{StaticResource ConsoleFilterToggle}" IsChecked="True"
+                                              ToolTip="Errors" Click="ConsoleFilterToggle_Click">
                                     <StackPanel Orientation="Horizontal">
-                                        <TextBlock Text="i" Foreground="#d8d8d8" FontWeight="Bold" Margin="0,0,5,0"/>
-                                        <TextBlock x:Name="ConsoleNotiCount" Text="0" Foreground="#d8d8d8"/>
+                                        <TextBlock Text="!" Foreground="#ff684d" FontWeight="Bold" Margin="0,0,5,0"/>
+                                        <TextBlock x:Name="ConsoleErrorCount" Text="0" Foreground="#d8d8d8"/>
                                     </StackPanel>
                                 </ToggleButton>
                                 <ToggleButton x:Name="ConsoleWarningToggle" Style="{StaticResource ConsoleFilterToggle}" IsChecked="True"
@@ -680,11 +680,11 @@
                                         <TextBlock x:Name="ConsoleWarningCount" Text="0" Foreground="#d8d8d8"/>
                                     </StackPanel>
                                 </ToggleButton>
-                                <ToggleButton x:Name="ConsoleErrorToggle" Style="{StaticResource ConsoleFilterToggle}" IsChecked="True"
-                                              ToolTip="Errors" Click="ConsoleFilterToggle_Click">
+                                <ToggleButton x:Name="ConsoleInfoToggle" Style="{StaticResource ConsoleFilterToggle}" IsChecked="True"
+                                              ToolTip="Info logs" Click="ConsoleFilterToggle_Click">
                                     <StackPanel Orientation="Horizontal">
-                                        <TextBlock Text="!" Foreground="#ff684d" FontWeight="Bold" Margin="0,0,5,0"/>
-                                        <TextBlock x:Name="ConsoleErrorCount" Text="0" Foreground="#d8d8d8"/>
+                                        <TextBlock Text="i" Foreground="#d8d8d8" FontWeight="Bold" Margin="0,0,5,0"/>
+                                        <TextBlock x:Name="ConsoleNotiCount" Text="0" Foreground="#d8d8d8"/>
                                     </StackPanel>
                                 </ToggleButton>
                             </StackPanel>

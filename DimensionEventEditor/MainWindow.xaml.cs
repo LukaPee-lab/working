@@ -640,20 +640,20 @@ public partial class MainWindow : Window
 
         ConsoleList.Items.Clear();
 
-        if (ConsoleInfoToggle?.IsChecked != false)
+        if (ConsoleErrorToggle?.IsChecked != false)
         {
-            foreach (var message in _notiMessages.TakeLast(500).Where(m => Matches(m, filter)))
-                ConsoleList.Items.Add(CreateConsoleLogListItem("Info", message));
+            foreach (var entry in _errorMessages.Where(m => MatchesEntry(m, filter)))
+                ConsoleList.Items.Add(CreateConsoleIssueListItem(entry));
         }
         if (ConsoleWarningToggle?.IsChecked != false)
         {
             foreach (var entry in _warningMessages.Where(m => MatchesEntry(m, filter)))
                 ConsoleList.Items.Add(CreateConsoleIssueListItem(entry));
         }
-        if (ConsoleErrorToggle?.IsChecked != false)
+        if (ConsoleInfoToggle?.IsChecked != false)
         {
-            foreach (var entry in _errorMessages.Where(m => MatchesEntry(m, filter)))
-                ConsoleList.Items.Add(CreateConsoleIssueListItem(entry));
+            foreach (var message in _notiMessages.TakeLast(500).Where(m => Matches(m, filter)))
+                ConsoleList.Items.Add(CreateConsoleLogListItem("Info", message));
         }
 
         ConsoleNotiCount.Text = _notiMessages.Count.ToString();
@@ -773,7 +773,7 @@ public partial class MainWindow : Window
             _selectedGroup = group;
             _selectedChoice = choice;
             DrawGraph();
-            CenterGraphOnNode(group.Id);
+            CenterAndPulseGraphNode(group.Id);
             return;
         }
 
@@ -791,7 +791,7 @@ public partial class MainWindow : Window
             _selectedGroup = targetGroup;
             _selectedChoice = null;
             DrawGraph();
-            CenterGraphOnNode(targetGroup.Id);
+            CenterAndPulseGraphNode(targetGroup.Id);
             return;
         }
 
@@ -804,7 +804,18 @@ public partial class MainWindow : Window
             _selectedGroup = null;
             _selectedChoice = null;
             DrawGraph();
+            if (!string.IsNullOrWhiteSpace(targetEvent.FirstGroupId))
+                CenterAndPulseGraphNode(targetEvent.FirstGroupId);
         }
+    }
+
+    private void CenterAndPulseGraphNode(string layoutKey)
+    {
+        if (string.IsNullOrWhiteSpace(layoutKey))
+            return;
+
+        CenterGraphOnNode(layoutKey);
+        Dispatcher.BeginInvoke(() => PulseGraphNode(layoutKey), DispatcherPriority.Background);
     }
 
     private void SelectEventForNavigation(EventBaseRow evt)

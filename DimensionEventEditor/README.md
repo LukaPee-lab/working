@@ -165,6 +165,8 @@ Battle은 장면 노드 하나로 표현됩니다.
 - 상단 Tools 메뉴의 `Event info`에서 현재 DB의 보상, 비용, 난이도, 전투 정보를 표로 볼 수 있습니다.
 - 닫은 패널과 크기는 로컬 설정에 저장됩니다.
 - Console은 Unity 스타일 카운터 토글로 Noti/Warning/Error를 필터링합니다.
+- Console 목록은 해결 우선순위에 맞춰 Error, Warning, Info 순서로 표시합니다.
+- Console의 Error/Warning 항목을 클릭하면 해당 이벤트/장면/선택지 노드로 이동하고 하이라이트 애니메이션으로 위치를 알려줍니다.
 - 스크롤바와 팝업은 어두운 Unity 스타일 테마를 사용합니다.
 
 ## 조작
