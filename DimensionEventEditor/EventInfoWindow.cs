@@ -1,6 +1,8 @@
 using System.Data;
+using System.ComponentModel;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Markup;
 using System.Windows.Media;
 
@@ -291,6 +293,34 @@ public sealed class EventInfoWindow : Window
             </Setter.Value>
         </Setter>
     </Style>
+    <Style TargetType="{x:Type TextBox}">
+        <Setter Property="Background" Value="#2b2b2b"/>
+        <Setter Property="Foreground" Value="#d8d8d8"/>
+        <Setter Property="BorderBrush" Value="#4a4a4a"/>
+        <Setter Property="CaretBrush" Value="#ffffff"/>
+        <Setter Property="SelectionBrush" Value="#3f6388"/>
+        <Setter Property="Padding" Value="7,2"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type TextBox}">
+                    <Border x:Name="TextBoxChrome"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="1">
+                        <ScrollViewer x:Name="PART_ContentHost"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsKeyboardFocused" Value="True">
+                            <Setter TargetName="TextBoxChrome" Property="BorderBrush" Value="#6aa4d8"/>
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="TextBoxChrome" Property="BorderBrush" Value="#707070"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
 </ResourceDictionary>
 """);
         Resources.MergedDictionaries.Add(dictionary);
@@ -308,18 +338,34 @@ public sealed class EventInfoWindow : Window
         grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
 
+        var dataView = ToDataTable(table).DefaultView;
+        var sourceView = CollectionViewSource.GetDefaultView(dataView);
+        var summarySearchBox = CreateSearchBox("집계 표 검색");
+        sourceView.Filter = item => MatchesSearch(item, summarySearchBox.Text);
+
+        var topPanel = new DockPanel
+        {
+            Margin = new Thickness(10, 8, 10, 7),
+            LastChildFill = true
+        };
+        Grid.SetRow(topPanel, 0);
+        grid.Children.Add(topPanel);
+
+        var summarySearchPanel = CreateSearchPanel("검색", summarySearchBox);
+        DockPanel.SetDock(summarySearchPanel, Dock.Right);
+        topPanel.Children.Add(summarySearchPanel);
+
         var description = new TextBlock
         {
-            Text = $"{table.Description}  /  rows: {table.Rows.Count}",
             Foreground = Brush("#b8b8b8"),
-            Margin = new Thickness(10, 8, 10, 7),
+            Margin = new Thickness(0, 2, 12, 0),
             TextWrapping = TextWrapping.Wrap
         };
-        grid.Children.Add(description);
+        topPanel.Children.Add(description);
 
         var dataGrid = new DataGrid
         {
-            ItemsSource = ToDataTable(table).DefaultView,
+            ItemsSource = sourceView,
             IsReadOnly = true,
             AutoGenerateColumns = true,
             CanUserAddRows = false,
@@ -373,6 +419,12 @@ public sealed class EventInfoWindow : Window
         DockPanel.SetDock(detailsTitle, Dock.Top);
         detailsDock.Children.Add(detailsTitle);
 
+        var detailSearchBox = CreateSearchBox("세부 위치 검색");
+        var detailSearchPanel = CreateSearchPanel("검색", detailSearchBox);
+        detailSearchPanel.Margin = new Thickness(4, 0, 4, 5);
+        DockPanel.SetDock(detailSearchPanel, Dock.Top);
+        detailsDock.Children.Add(detailSearchPanel);
+
         var detailsGrid = new DataGrid
         {
             IsReadOnly = true,
@@ -411,16 +463,26 @@ public sealed class EventInfoWindow : Window
         };
         detailsDock.Children.Add(detailsGrid);
 
-        dataGrid.SelectionChanged += (_, _) => UpdateDetails(table, dataGrid, detailsGrid, detailsTitle);
+        void RefreshTopFilter()
+        {
+            sourceView.Refresh();
+            description.Text = SummaryDescription(table, sourceView);
+            UpdateDetails(table, dataGrid, detailsGrid, detailsTitle, detailSearchBox);
+        }
+
+        summarySearchBox.TextChanged += (_, _) => RefreshTopFilter();
+        detailSearchBox.TextChanged += (_, _) => UpdateDetails(table, dataGrid, detailsGrid, detailsTitle, detailSearchBox);
+        dataGrid.SelectionChanged += (_, _) => UpdateDetails(table, dataGrid, detailsGrid, detailsTitle, detailSearchBox);
         dataGrid.MouseDoubleClick += (_, _) =>
         {
             if (detailsGrid.Items.Count == 1 && detailsGrid.Items[0] is EventInfoLocation location)
                 _navigate?.Invoke(location);
         };
+        description.Text = SummaryDescription(table, sourceView);
         return grid;
     }
 
-    private void UpdateDetails(EventInfoTable table, DataGrid sourceGrid, DataGrid detailGrid, TextBlock detailTitle)
+    private void UpdateDetails(EventInfoTable table, DataGrid sourceGrid, DataGrid detailGrid, TextBlock detailTitle, TextBox detailSearchBox)
     {
         if (sourceGrid.SelectedItem is not DataRowView row)
         {
@@ -430,11 +492,94 @@ public sealed class EventInfoWindow : Window
         }
 
         var key = TableRowKey(table, row);
-        var details = FindLocations(table, key);
+        var allDetails = FindLocations(table, key);
+        var details = allDetails.Where(location => MatchesSearch(location, detailSearchBox.Text)).ToList();
         detailGrid.ItemsSource = details;
         detailTitle.Text = details.Count == 0
             ? $"세부 위치: {key} / 연결된 노드 위치가 없습니다."
-            : $"세부 위치: {key} / {details.Count}건  (더블클릭하면 Scene에서 해당 노드를 보여줍니다.)";
+            : DetailsDescription(key, details.Count, allDetails.Count);
+    }
+
+    private static string SummaryDescription(EventInfoTable table, ICollectionView sourceView)
+    {
+        var visibleCount = sourceView.Cast<object>().Count();
+        return visibleCount == table.Rows.Count
+            ? $"{table.Description}  /  rows: {table.Rows.Count}"
+            : $"{table.Description}  /  rows: {visibleCount} / {table.Rows.Count}";
+    }
+
+    private static string DetailsDescription(string key, int visibleCount, int totalCount)
+    {
+        var countText = visibleCount == totalCount
+            ? $"{visibleCount}건"
+            : $"{visibleCount} / {totalCount}건";
+        return $"세부 위치: {key} / {countText}  (더블클릭하면 Scene에서 해당 노드를 보여줍니다.)";
+    }
+
+    private static TextBox CreateSearchBox(string toolTip)
+    {
+        return new TextBox
+        {
+            Width = 260,
+            Height = 24,
+            ToolTip = toolTip,
+            VerticalContentAlignment = VerticalAlignment.Center
+        };
+    }
+
+    private static DockPanel CreateSearchPanel(string label, TextBox searchBox)
+    {
+        var panel = new DockPanel
+        {
+            Width = 318,
+            LastChildFill = true
+        };
+        var labelBlock = new TextBlock
+        {
+            Text = label,
+            Foreground = Brush("#cfcfcf"),
+            FontSize = 12,
+            Margin = new Thickness(0, 3, 8, 0),
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        DockPanel.SetDock(labelBlock, Dock.Left);
+        panel.Children.Add(labelBlock);
+        panel.Children.Add(searchBox);
+        return panel;
+    }
+
+    private static bool MatchesSearch(object? item, string? query)
+    {
+        var tokens = (query ?? "")
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (tokens.Length == 0)
+            return true;
+
+        var text = SearchText(item);
+        return tokens.All(token => text.Contains(token, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string SearchText(object? item)
+    {
+        return item switch
+        {
+            DataRowView row => string.Join(" ", row.Row.ItemArray.Select(value => value?.ToString() ?? "")),
+            EventInfoLocation location => string.Join(" ", new[]
+            {
+                location.TableName,
+                location.Key,
+                location.EventId,
+                location.EventName,
+                location.GroupId,
+                location.ChoiceId,
+                location.Branch,
+                location.NodeKey,
+                location.Kind,
+                location.Label,
+                location.Detail
+            }),
+            _ => item?.ToString() ?? ""
+        };
     }
 
     private List<EventInfoLocation> FindLocations(EventInfoTable table, string key)
