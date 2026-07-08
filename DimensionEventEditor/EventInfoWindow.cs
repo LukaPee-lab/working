@@ -1,6 +1,7 @@
 using System.Data;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Markup;
 using System.Windows.Media;
 
 namespace DimensionEventEditor;
@@ -22,6 +23,7 @@ public sealed class EventInfoWindow : Window
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         Background = Brush("#252525");
         Foreground = Brush("#d8d8d8");
+        ApplyUnityResources();
 
         var root = new DockPanel { LastChildFill = true };
         Content = root;
@@ -74,6 +76,226 @@ public sealed class EventInfoWindow : Window
         }
     }
 
+    private void ApplyUnityResources()
+    {
+        var dictionary = (ResourceDictionary)XamlReader.Parse("""
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <SolidColorBrush x:Key="UnityPanelBrush" Color="#252525"/>
+    <SolidColorBrush x:Key="UnityPanelDarkBrush" Color="#1f1f1f"/>
+    <SolidColorBrush x:Key="UnityBorderBrush" Color="#111111"/>
+    <SolidColorBrush x:Key="UnityLineBrush" Color="#3a3a3a"/>
+    <SolidColorBrush x:Key="UnityTextBrush" Color="#d8d8d8"/>
+    <SolidColorBrush x:Key="UnitySelectedBrush" Color="#3f6388"/>
+    <SolidColorBrush x:Key="UnitySelectedBorderBrush" Color="#6aa4d8"/>
+
+    <Style TargetType="{x:Type TabControl}">
+        <Setter Property="Background" Value="{StaticResource UnityPanelDarkBrush}"/>
+        <Setter Property="BorderBrush" Value="{StaticResource UnityBorderBrush}"/>
+        <Setter Property="Foreground" Value="{StaticResource UnityTextBrush}"/>
+        <Setter Property="Padding" Value="8,8,8,8"/>
+    </Style>
+    <Style TargetType="{x:Type TabItem}">
+        <Setter Property="Foreground" Value="#d8d8d8"/>
+        <Setter Property="Background" Value="#2b2b2b"/>
+        <Setter Property="BorderBrush" Value="#151515"/>
+        <Setter Property="Padding" Value="12,5"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type TabItem}">
+                    <Border x:Name="TabChrome"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="1,1,1,0"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter ContentSource="Header"
+                                          RecognizesAccessKey="True"
+                                          VerticalAlignment="Center"
+                                          HorizontalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="TabChrome" Property="Background" Value="#3a3a3a"/>
+                            <Setter Property="Foreground" Value="#ffffff"/>
+                        </Trigger>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="TabChrome" Property="Background" Value="#454545"/>
+                            <Setter Property="Foreground" Value="#ffffff"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+    <Style x:Key="ScrollBarTrackButton" TargetType="{x:Type RepeatButton}">
+        <Setter Property="Focusable" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type RepeatButton}">
+                    <Border Background="Transparent"/>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style x:Key="UnityScrollThumb" TargetType="{x:Type Thumb}">
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type Thumb}">
+                    <Border x:Name="ThumbChrome"
+                            Background="#5b5b5b"
+                            BorderBrush="#6b6b6b"
+                            BorderThickness="1"
+                            CornerRadius="4"/>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="ThumbChrome" Property="Background" Value="#6f6f6f"/>
+                            <Setter TargetName="ThumbChrome" Property="BorderBrush" Value="#808080"/>
+                        </Trigger>
+                        <Trigger Property="IsDragging" Value="True">
+                            <Setter TargetName="ThumbChrome" Property="Background" Value="#7d7d7d"/>
+                            <Setter TargetName="ThumbChrome" Property="BorderBrush" Value="#9a9a9a"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <ControlTemplate x:Key="VerticalUnityScrollBar" TargetType="{x:Type ScrollBar}">
+        <Grid Width="18" Background="#2a2a2a">
+            <Border Background="#303030" BorderBrush="#1a1a1a" BorderThickness="1"/>
+            <Track x:Name="PART_Track"
+                   Orientation="Vertical"
+                   IsDirectionReversed="True"
+                   Minimum="{TemplateBinding Minimum}"
+                   Maximum="{TemplateBinding Maximum}"
+                   Value="{Binding Value, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                   ViewportSize="{TemplateBinding ViewportSize}"
+                   Margin="3,2">
+                <Track.DecreaseRepeatButton>
+                    <RepeatButton Command="{x:Static ScrollBar.PageUpCommand}" Style="{StaticResource ScrollBarTrackButton}"/>
+                </Track.DecreaseRepeatButton>
+                <Track.Thumb>
+                    <Thumb Style="{StaticResource UnityScrollThumb}" MinHeight="34"/>
+                </Track.Thumb>
+                <Track.IncreaseRepeatButton>
+                    <RepeatButton Command="{x:Static ScrollBar.PageDownCommand}" Style="{StaticResource ScrollBarTrackButton}"/>
+                </Track.IncreaseRepeatButton>
+            </Track>
+        </Grid>
+    </ControlTemplate>
+    <ControlTemplate x:Key="HorizontalUnityScrollBar" TargetType="{x:Type ScrollBar}">
+        <Grid Height="18" Background="#2a2a2a">
+            <Border Background="#303030" BorderBrush="#1a1a1a" BorderThickness="1"/>
+            <Track x:Name="PART_Track"
+                   Orientation="Horizontal"
+                   Minimum="{TemplateBinding Minimum}"
+                   Maximum="{TemplateBinding Maximum}"
+                   Value="{Binding Value, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                   ViewportSize="{TemplateBinding ViewportSize}"
+                   Margin="2,3">
+                <Track.DecreaseRepeatButton>
+                    <RepeatButton Command="{x:Static ScrollBar.PageLeftCommand}" Style="{StaticResource ScrollBarTrackButton}"/>
+                </Track.DecreaseRepeatButton>
+                <Track.Thumb>
+                    <Thumb Style="{StaticResource UnityScrollThumb}" MinWidth="34"/>
+                </Track.Thumb>
+                <Track.IncreaseRepeatButton>
+                    <RepeatButton Command="{x:Static ScrollBar.PageRightCommand}" Style="{StaticResource ScrollBarTrackButton}"/>
+                </Track.IncreaseRepeatButton>
+            </Track>
+        </Grid>
+    </ControlTemplate>
+    <Style TargetType="{x:Type ScrollBar}">
+        <Setter Property="Background" Value="#2a2a2a"/>
+        <Setter Property="Width" Value="18"/>
+        <Setter Property="Height" Value="Auto"/>
+        <Setter Property="Template" Value="{StaticResource VerticalUnityScrollBar}"/>
+        <Style.Triggers>
+            <Trigger Property="Orientation" Value="Horizontal">
+                <Setter Property="Width" Value="Auto"/>
+                <Setter Property="Height" Value="18"/>
+                <Setter Property="Template" Value="{StaticResource HorizontalUnityScrollBar}"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style TargetType="{x:Type DataGridColumnHeader}">
+        <Setter Property="Background" Value="#303030"/>
+        <Setter Property="Foreground" Value="#e6e6e6"/>
+        <Setter Property="BorderBrush" Value="#111111"/>
+        <Setter Property="BorderThickness" Value="0,0,1,1"/>
+        <Setter Property="Padding" Value="8,3"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type DataGridColumnHeader}">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter VerticalAlignment="Center"
+                                          HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsMouseOver" Value="True">
+                            <Setter Property="Background" Value="#3c3c3c"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+    <Style TargetType="{x:Type DataGridRow}">
+        <Setter Property="Background" Value="#242424"/>
+        <Setter Property="Foreground" Value="#d8d8d8"/>
+        <Setter Property="SnapsToDevicePixels" Value="True"/>
+        <Style.Triggers>
+            <Trigger Property="AlternationIndex" Value="1">
+                <Setter Property="Background" Value="#2a2a2a"/>
+            </Trigger>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="#333333"/>
+            </Trigger>
+            <Trigger Property="IsSelected" Value="True">
+                <Setter Property="Background" Value="{StaticResource UnitySelectedBrush}"/>
+                <Setter Property="Foreground" Value="#ffffff"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+    <Style TargetType="{x:Type DataGridCell}">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="#d8d8d8"/>
+        <Setter Property="BorderBrush" Value="#343434"/>
+        <Setter Property="BorderThickness" Value="0,0,1,1"/>
+        <Setter Property="Padding" Value="6,0"/>
+        <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="{x:Type DataGridCell}">
+                    <Border x:Name="CellChrome"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter VerticalAlignment="Center"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <Trigger Property="IsSelected" Value="True">
+                            <Setter TargetName="CellChrome" Property="Background" Value="{StaticResource UnitySelectedBrush}"/>
+                            <Setter TargetName="CellChrome" Property="BorderBrush" Value="{StaticResource UnitySelectedBorderBrush}"/>
+                            <Setter Property="Foreground" Value="#ffffff"/>
+                        </Trigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+</ResourceDictionary>
+""");
+        Resources.MergedDictionaries.Add(dictionary);
+    }
+
     private Grid BuildTableTab(EventInfoTable table)
     {
         var grid = new Grid
@@ -103,12 +325,15 @@ public sealed class EventInfoWindow : Window
             CanUserAddRows = false,
             CanUserSortColumns = true,
             CanUserResizeColumns = true,
+            SelectionMode = DataGridSelectionMode.Single,
+            SelectionUnit = DataGridSelectionUnit.FullRow,
             GridLinesVisibility = DataGridGridLinesVisibility.Horizontal,
             HeadersVisibility = DataGridHeadersVisibility.Column,
             Background = Brush("#1f1f1f"),
             Foreground = Brush("#d8d8d8"),
             RowBackground = Brush("#242424"),
             AlternatingRowBackground = Brush("#2a2a2a"),
+            AlternationCount = 2,
             BorderBrush = Brush("#111111"),
             HorizontalGridLinesBrush = Brush("#3a3a3a"),
             VerticalGridLinesBrush = Brush("#303030"),
@@ -116,6 +341,8 @@ public sealed class EventInfoWindow : Window
             RowHeight = 24,
             Margin = new Thickness(8, 0, 8, 8)
         };
+        ScrollViewer.SetHorizontalScrollBarVisibility(dataGrid, ScrollBarVisibility.Auto);
+        ScrollViewer.SetVerticalScrollBarVisibility(dataGrid, ScrollBarVisibility.Auto);
         Grid.SetRow(dataGrid, 1);
         grid.Children.Add(dataGrid);
 
@@ -153,18 +380,23 @@ public sealed class EventInfoWindow : Window
             CanUserAddRows = false,
             CanUserSortColumns = true,
             CanUserResizeColumns = true,
+            SelectionMode = DataGridSelectionMode.Single,
+            SelectionUnit = DataGridSelectionUnit.FullRow,
             GridLinesVisibility = DataGridGridLinesVisibility.Horizontal,
             HeadersVisibility = DataGridHeadersVisibility.Column,
             Background = Brush("#202020"),
             Foreground = Brush("#d8d8d8"),
             RowBackground = Brush("#242424"),
             AlternatingRowBackground = Brush("#292929"),
+            AlternationCount = 2,
             BorderBrush = Brush("#111111"),
             HorizontalGridLinesBrush = Brush("#3a3a3a"),
             VerticalGridLinesBrush = Brush("#303030"),
             ColumnHeaderHeight = 26,
             RowHeight = 24
         };
+        ScrollViewer.SetHorizontalScrollBarVisibility(detailsGrid, ScrollBarVisibility.Auto);
+        ScrollViewer.SetVerticalScrollBarVisibility(detailsGrid, ScrollBarVisibility.Auto);
         AddDetailColumn(detailsGrid, "Event", "EventId", 92);
         AddDetailColumn(detailsGrid, "Name", "EventName", 160);
         AddDetailColumn(detailsGrid, "Group", "GroupId", 150);

@@ -400,7 +400,10 @@ public partial class MainWindow : Window
 
         DrawGraph();
         if (!string.IsNullOrWhiteSpace(layoutKey))
+        {
             CenterGraphOnNode(layoutKey);
+            Dispatcher.BeginInvoke(() => PulseGraphNode(layoutKey), DispatcherPriority.Background);
+        }
     }
 
     private string ResolveEventInfoLayoutKey(EventInfoLocation location)
@@ -5836,6 +5839,71 @@ public partial class MainWindow : Window
         InspectorAttentionOverlay.Opacity = 0;
         InspectorAttentionOverlay.BorderThickness = new Thickness(2);
 
+        var opacity = CreateAttentionOpacityAnimation();
+        opacity.Completed += (_, _) =>
+        {
+            InspectorAttentionOverlay.Opacity = 0;
+            InspectorAttentionOverlay.Visibility = Visibility.Collapsed;
+        };
+
+        InspectorAttentionOverlay.BeginAnimation(UIElement.OpacityProperty, opacity);
+        InspectorAttentionOverlay.BeginAnimation(Border.BorderThicknessProperty, CreateAttentionBorderAnimation());
+    }
+
+    private void PulseGraphNode(string key)
+    {
+        if (string.IsNullOrWhiteSpace(key))
+            return;
+
+        var target = FindGraphElementByTag(key);
+        if (target is null)
+            return;
+
+        var width = Math.Max(target.ActualWidth, target.Width);
+        var height = Math.Max(target.ActualHeight, target.Height);
+        if (width <= 0 || double.IsNaN(width))
+            width = target.RenderSize.Width;
+        if (height <= 0 || double.IsNaN(height))
+            height = target.RenderSize.Height;
+        if (width <= 0 || height <= 0)
+            return;
+
+        var left = Canvas.GetLeft(target);
+        var top = Canvas.GetTop(target);
+        if (double.IsNaN(left))
+            left = 0;
+        if (double.IsNaN(top))
+            top = 0;
+
+        var overlay = new Border
+        {
+            Width = width + 18,
+            Height = height + 18,
+            Background = new SolidColorBrush(Color.FromArgb(26, 74, 163, 255)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(120, 189, 255)),
+            BorderThickness = new Thickness(2),
+            CornerRadius = new CornerRadius(8),
+            IsHitTestVisible = false,
+            Opacity = 0
+        };
+        Canvas.SetLeft(overlay, left - 9);
+        Canvas.SetTop(overlay, top - 9);
+        Canvas.SetZIndex(overlay, 2500);
+        GraphCanvas.Children.Add(overlay);
+
+        var opacity = CreateAttentionOpacityAnimation();
+        opacity.Completed += (_, _) => GraphCanvas.Children.Remove(overlay);
+        overlay.BeginAnimation(UIElement.OpacityProperty, opacity);
+        overlay.BeginAnimation(Border.BorderThicknessProperty, CreateAttentionBorderAnimation());
+    }
+
+    private FrameworkElement? FindGraphElementByTag(string key)
+        => GraphCanvas.Children
+            .OfType<FrameworkElement>()
+            .FirstOrDefault(element => element.Tag is string tag && string.Equals(tag, key, StringComparison.OrdinalIgnoreCase));
+
+    private static DoubleAnimationUsingKeyFrames CreateAttentionOpacityAnimation()
+    {
         var opacity = new DoubleAnimationUsingKeyFrames
         {
             Duration = TimeSpan.FromSeconds(2)
@@ -5857,12 +5925,11 @@ public partial class MainWindow : Window
         {
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
         });
-        opacity.Completed += (_, _) =>
-        {
-            InspectorAttentionOverlay.Opacity = 0;
-            InspectorAttentionOverlay.Visibility = Visibility.Collapsed;
-        };
+        return opacity;
+    }
 
+    private static ThicknessAnimationUsingKeyFrames CreateAttentionBorderAnimation()
+    {
         var border = new ThicknessAnimationUsingKeyFrames
         {
             Duration = TimeSpan.FromSeconds(1.35)
@@ -5884,9 +5951,7 @@ public partial class MainWindow : Window
         {
             EasingFunction = new CubicEase { EasingMode = EasingMode.EaseInOut }
         });
-
-        InspectorAttentionOverlay.BeginAnimation(UIElement.OpacityProperty, opacity);
-        InspectorAttentionOverlay.BeginAnimation(Border.BorderThicknessProperty, border);
+        return border;
     }
 
     private void RewardNode_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
