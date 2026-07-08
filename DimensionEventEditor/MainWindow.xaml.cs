@@ -5331,7 +5331,8 @@ public partial class MainWindow : Window
                 }
             },
             BuildPreviewGraph,
-            _settings.LastExportId);
+            _settings.LastExportId,
+            _settings.LastTextExportId);
         if (preview.ShowDialog() == true)
         {
             try
@@ -5343,12 +5344,20 @@ public partial class MainWindow : Window
                 {
                     EventWorkbookService.ApplyExportId(_workbook, preview.CheckedEntries, exportId);
                     _settings.LastExportId = exportId;
+                }
+                var textExportId = preview.TextExportId;
+                if (!string.IsNullOrWhiteSpace(textExportId))
+                {
+                    _settings.LastTextExportId = textExportId;
+                }
+                if (!string.IsNullOrWhiteSpace(exportId) || !string.IsNullOrWhiteSpace(textExportId))
+                {
                     NexusPathResolver.SaveSettings(_settings);
                 }
                 var busy = ShowBusy("Exporting workbook...");
                 try
                 {
-                    EventWorkbookService.SaveAs(_workbook, _workbook.SourcePath, createBackup: true);
+                    EventWorkbookService.SaveAs(_workbook, _workbook.SourcePath, createBackup: true, textExportId: textExportId);
                 }
                 finally
                 {

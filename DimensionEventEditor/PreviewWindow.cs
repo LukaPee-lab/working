@@ -20,6 +20,7 @@ public sealed class PreviewWindow : Window
     private readonly TextBox _afterDiff;
     private readonly Button _revertButton;
     private readonly TextBox _exportIdBox;
+    private readonly TextBox _textExportIdBox;
     private readonly Dictionary<ScrollViewer, ScaleTransform> _previewScales = [];
     private readonly Dictionary<ScrollViewer, Point> _previewPanStarts = [];
     private readonly Dictionary<ScrollViewer, Point> _previewPanOffsets = [];
@@ -34,7 +35,12 @@ public sealed class PreviewWindow : Window
         public override string ToString() => $"{Key}  ({Entries.Count} changes)";
     }
 
-    public PreviewWindow(Func<IReadOnlyList<DiffEntry>> loadDiff, Action<IReadOnlyList<DiffEntry>> revert, Func<string, bool, EventGraphPreview?> loadGraphPreview, string exportId)
+    public PreviewWindow(
+        Func<IReadOnlyList<DiffEntry>> loadDiff,
+        Action<IReadOnlyList<DiffEntry>> revert,
+        Func<string, bool, EventGraphPreview?> loadGraphPreview,
+        string exportId,
+        string textExportId)
     {
         _loadDiff = loadDiff;
         _revert = revert;
@@ -58,10 +64,14 @@ public sealed class PreviewWindow : Window
         DockPanel.SetDock(_title, Dock.Top);
         root.Children.Add(_title);
 
-        var exportPanel = new DockPanel { Margin = new Thickness(0, 0, 0, 10) };
+        var exportPanel = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(0, 0, 0, 10)
+        };
         exportPanel.Children.Add(new TextBlock
         {
-            Text = "Export ID",
+            Text = "Table Export ID",
             Foreground = new SolidColorBrush(Color.FromRgb(190, 190, 190)),
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(0, 0, 8, 0)
@@ -76,6 +86,23 @@ public sealed class PreviewWindow : Window
             BorderBrush = new SolidColorBrush(Color.FromRgb(85, 85, 85))
         };
         exportPanel.Children.Add(_exportIdBox);
+        exportPanel.Children.Add(new TextBlock
+        {
+            Text = "Text Export ID",
+            Foreground = new SolidColorBrush(Color.FromRgb(190, 190, 190)),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(18, 0, 8, 0)
+        });
+        _textExportIdBox = new TextBox
+        {
+            Text = string.IsNullOrWhiteSpace(textExportId) ? EventWorkbookService.DefaultTextExportId : textExportId,
+            Width = 260,
+            Height = 28,
+            Background = new SolidColorBrush(Color.FromRgb(43, 43, 43)),
+            Foreground = Brushes.White,
+            BorderBrush = new SolidColorBrush(Color.FromRgb(85, 85, 85))
+        };
+        exportPanel.Children.Add(_textExportIdBox);
         DockPanel.SetDock(exportPanel, Dock.Top);
         root.Children.Add(exportPanel);
 
@@ -169,6 +196,7 @@ public sealed class PreviewWindow : Window
         .ToList();
 
     public string ExportId => _exportIdBox.Text.Trim();
+    public string TextExportId => _textExportIdBox.Text.Trim();
 
     private static Grid TwoColumnSection(string leftHeader, string rightHeader)
     {

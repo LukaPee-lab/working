@@ -277,7 +277,7 @@ public static class EventWorkbookService
         }
     }
 
-    public static void SaveAs(EventWorkbook model, string outputPath, bool createBackup)
+    public static void SaveAs(EventWorkbook model, string outputPath, bool createBackup, string? textExportId = null)
     {
         NormalizeExitTerminals(model);
 
@@ -292,7 +292,7 @@ public static class EventWorkbookService
         WriteBase(EnsureSheet(workbook, BaseSheetName), model);
         WriteGroups(EnsureSheet(workbook, GroupSheetName), model);
         WriteChoices(EnsureSheet(workbook, ChoiceSheetName), model);
-        WriteText(EnsureSheet(workbook, TextSheetName), model);
+        WriteText(EnsureSheet(workbook, TextSheetName), model, textExportId);
         WriteLayout(NormalizeLayoutSheet(workbook), model);
         workbook.SaveAs(outputPath);
         FixWorksheetDimensions(outputPath, model);
@@ -382,26 +382,40 @@ public static class EventWorkbookService
         return $"s1_EVT_{max + 1:000}";
     }
 
-    public static List<TextEntry> GenerateTextEntries(EventWorkbook workbook)
+    public static List<TextEntry> GenerateTextEntries(EventWorkbook workbook, string? textExportId = null)
     {
+        var overrideTextExportId = textExportId?.Trim();
+        var existingTextExportIds = workbook.TextEntries
+            .Where(e => NotBlank(e.Tid) && NotBlank(e.ExportId))
+            .GroupBy(e => e.Tid, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(g => g.Key!, g => g.Last().ExportId, StringComparer.OrdinalIgnoreCase);
+        string ExportIdFor(string tid)
+        {
+            if (!string.IsNullOrWhiteSpace(overrideTextExportId))
+                return overrideTextExportId;
+            return existingTextExportIds.TryGetValue(tid, out var existing) && NotBlank(existing)
+                ? existing
+                : DefaultTextExportId;
+        }
+
         var entries = new List<TextEntry>();
         entries.AddRange(workbook.Events.Select(e => new TextEntry
         {
-            ExportId = DefaultTextExportId,
+            ExportId = ExportIdFor(e.EventNameTid),
             Tid = e.EventNameTid,
             Text = e.Memo,
             Comment = $"이벤트명: {e.Id}"
         }));
         entries.AddRange(workbook.Groups.Select(g => new TextEntry
         {
-            ExportId = DefaultTextExportId,
+            ExportId = ExportIdFor(g.SituationTextTid),
             Tid = g.SituationTextTid,
             Text = g.Memo,
             Comment = $"상황 설명: {g.Id}"
         }));
         entries.AddRange(workbook.Choices.Select(c => new TextEntry
         {
-            ExportId = DefaultTextExportId,
+            ExportId = ExportIdFor(c.ChoiceTextTid),
             Tid = c.ChoiceTextTid,
             Text = c.Memo,
             Comment = $"선택지: {c.Id}"
@@ -1226,14 +1240,14 @@ public static class EventWorkbookService
         }
     }
 
-    private static void WriteText(IXLWorksheet ws, EventWorkbook model)
+    private static void WriteText(IXLWorksheet ws, EventWorkbook model, string? textExportId)
     {
         ws.Cell(1, 1).Value = "TID";
         ws.Cell(1, 2).Value = "Text";
         ws.Cell(1, 3).Value = "Comment";
         ws.Cell(1, 4).Value = "ExportID";
 
-        var generated = GenerateTextEntries(model)
+        var generated = GenerateTextEntries(model, textExportId)
             .GroupBy(e => e.Tid, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.Last(), StringComparer.OrdinalIgnoreCase);
 
@@ -1256,7 +1270,7 @@ public static class EventWorkbookService
             ws.Cell(row, 1).Value = entry.Tid;
             ws.Cell(row, 2).Value = entry.Text;
             ws.Cell(row, 3).Value = entry.Comment;
-            ws.Cell(row, 4).Value = DefaultTextExportId;
+            ws.Cell(row, 4).Value = entry.ExportId;
         }
     }
 

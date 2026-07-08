@@ -190,6 +190,7 @@ public sealed class AppSettings
     public bool ShowInspector { get; set; } = true;
     public bool ShowConsole { get; set; } = true;
     public string LastExportId { get; set; } = EventWorkbookService.DefaultEventExportId;
+    public string LastTextExportId { get; set; } = EventWorkbookService.DefaultTextExportId;
 }
 
 public static class ParseUtil
