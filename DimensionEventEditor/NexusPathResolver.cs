@@ -43,21 +43,11 @@ public static class NexusPathResolver
         if (!string.IsNullOrWhiteSpace(settings.EventWorkbookPath) && File.Exists(settings.EventWorkbookPath))
             return settings.EventWorkbookPath;
 
-        var bundledPath = Path.Combine(AppContext.BaseDirectory, "Data", BundledEventWorkbookName);
-        if (File.Exists(bundledPath))
-            return bundledPath;
-
         if (!string.IsNullOrWhiteSpace(settings.ReposRoot))
         {
             var fromSettingsRoot = Path.Combine(settings.ReposRoot, RelativeEventPath);
             if (File.Exists(fromSettingsRoot))
                 return fromSettingsRoot;
-        }
-
-        foreach (var candidate in OneDriveEventWorkbookCandidates())
-        {
-            if (File.Exists(candidate))
-                return candidate;
         }
 
         var dRepos = Path.Combine("D:\\repos", RelativeEventPath);
@@ -70,22 +60,6 @@ public static class NexusPathResolver
             return possibleRepos;
 
         return null;
-    }
-
-    private static IEnumerable<string> OneDriveEventWorkbookCandidates()
-    {
-        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        yield return Path.Combine(profile,
-            "OneDrive - Super Creative",
-            "EpicSeven - 문서",
-            "기획실",
-            "2_코어시스템팀",
-            "1. 이병연",
-            "1_작업중",
-            "175126 260917 신규 PVE 전투",
-            "dimension_event_editor_windows_release",
-            "Data",
-            BundledEventWorkbookName);
     }
 
     public static string? ResolveDefaultPlayerExe()
