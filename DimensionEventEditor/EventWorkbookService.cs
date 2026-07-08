@@ -26,8 +26,12 @@ public static class EventWorkbookService
         "비용 정보",
         "이벤트 난이도",
         "전투 정보",
-        "흐름 정보",
         "밸런스 체크"
+    ];
+
+    private static readonly string[] ObsoleteEventInfoSheetNames =
+    [
+        "흐름 정보"
     ];
 
     private static readonly string[] ExitMemoVariants =
@@ -466,14 +470,13 @@ public static class EventWorkbookService
             p => p.Key,
             p => p.Value.Where(c => !IsBattleResultChoice(c, groupsById[c.GroupId])).ToList(),
             StringComparer.OrdinalIgnoreCase);
-        AddReportLocations(report, workbook, eventById, groupsById, rewardBranches, costBranches);
+        AddReportLocations(report, workbook, eventById, rewardBranches, costBranches);
 
         BuildEventSummaryTable(report, events, groupsByEvent, choicesByEvent, visibleChoicesByEvent, rewardBranches, costBranches);
         BuildRewardInfoTable(report, rewardBranches);
         BuildCostInfoTable(report, costBranches);
         BuildDifficultyInfoTable(report, events, groupsByEvent, choicesByEvent, visibleChoicesByEvent, rewardBranches, costBranches);
         BuildBattleInfoTable(report, workbook, eventById);
-        BuildFlowInfoTable(report, workbook, eventById, groupsById);
         BuildBalanceCheckTable(report, events, groupsByEvent, choicesByEvent, rewardBranches, costBranches);
         return report;
     }
@@ -638,51 +641,10 @@ public static class EventWorkbookService
         }
     }
 
-    private static void BuildFlowInfoTable(EventInfoReport report, EventWorkbook workbook, Dictionary<string, EventBaseRow> eventById, Dictionary<string, ChoiceGroupRow> groupsById)
-    {
-        var table = CreateInfoTable(report, "흐름 정보", "장면의 next_action과 선택지 연결 상태를 요약합니다.",
-            "category", "key", "cnt", "event_cnt", "events");
-
-        foreach (var group in workbook.Groups
-                     .GroupBy(g => Default(g.NextAction, "(비어 있음)"), StringComparer.OrdinalIgnoreCase)
-                     .OrderByDescending(g => g.Count())
-                     .ThenBy(g => g.Key))
-        {
-            table.Rows.Add(
-            [
-                "next_action",
-                group.Key,
-                group.Count(),
-                group.Select(g => g.EventId).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
-                JoinLimited(group.Select(g => EventLabel(g.EventId, eventById)).Distinct(StringComparer.OrdinalIgnoreCase), 12)
-            ]);
-        }
-
-        var linkedTargets = workbook.Choices
-            .SelectMany(c => new[] { c.SuccessNextGroupId, c.FailNextGroupId })
-            .Where(NotBlank)
-            .GroupBy(x => x!, StringComparer.OrdinalIgnoreCase)
-            .OrderByDescending(g => g.Count())
-            .ThenBy(g => g.Key);
-        foreach (var target in linkedTargets)
-        {
-            var eventId = groupsById.TryGetValue(target.Key, out var group) ? group.EventId : "";
-            table.Rows.Add(
-            [
-                "target_group",
-                target.Key,
-                target.Count(),
-                NotBlank(eventId) ? 1 : 0,
-                NotBlank(eventId) ? EventLabel(eventId, eventById) : "(대상 없음)"
-            ]);
-        }
-    }
-
     private static void AddReportLocations(
         EventInfoReport report,
         EventWorkbook workbook,
         Dictionary<string, EventBaseRow> eventById,
-        Dictionary<string, ChoiceGroupRow> groupsById,
         List<RewardBranchInfo> rewardBranches,
         List<CostBranchInfo> costBranches)
     {
@@ -737,47 +699,6 @@ public static class EventWorkbookService
                 Kind = "battle",
                 Label = $"{group.EventId} {eventName}",
                 Detail = $"{group.Id} / stage={Default(group.StageId, "-")}"
-            });
-        }
-
-        foreach (var group in workbook.Groups)
-        {
-            var evt = eventById.GetValueOrDefault(group.EventId);
-            var eventName = evt?.Memo ?? "";
-            report.Locations.Add(new EventInfoLocation
-            {
-                TableName = "흐름 정보",
-                Key = Default(group.NextAction, "(비어 있음)"),
-                EventId = group.EventId,
-                EventName = eventName,
-                GroupId = group.Id,
-                NodeKey = group.Id,
-                Kind = "scene",
-                Label = $"{group.EventId} {eventName}",
-                Detail = $"{group.Id} / action={Default(group.NextAction, "-")}"
-            });
-        }
-
-        foreach (var target in workbook.Choices
-                     .SelectMany(c => new[] { c.SuccessNextGroupId, c.FailNextGroupId })
-                     .Where(NotBlank)
-                     .Distinct(StringComparer.OrdinalIgnoreCase))
-        {
-            if (!groupsById.TryGetValue(target!, out var group))
-                continue;
-            var evt = eventById.GetValueOrDefault(group.EventId);
-            var eventName = evt?.Memo ?? "";
-            report.Locations.Add(new EventInfoLocation
-            {
-                TableName = "흐름 정보",
-                Key = target!,
-                EventId = group.EventId,
-                EventName = eventName,
-                GroupId = group.Id,
-                NodeKey = group.Id,
-                Kind = "scene",
-                Label = $"{group.EventId} {eventName}",
-                Detail = $"{group.Id} / linked target"
             });
         }
     }
@@ -1862,6 +1783,12 @@ public static class EventWorkbookService
 
     private static void WriteEventInfoSheets(XLWorkbook workbook, EventWorkbook model)
     {
+        foreach (var sheetName in ObsoleteEventInfoSheetNames)
+        {
+            if (workbook.Worksheets.TryGetWorksheet(sheetName, out var obsoleteSheet))
+                obsoleteSheet.Delete();
+        }
+
         var report = BuildEventInfoReport(model);
         foreach (var table in report.Tables)
             WriteEventInfoSheet(EnsureSheet(workbook, table.Name), table);

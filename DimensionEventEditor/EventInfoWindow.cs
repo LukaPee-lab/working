@@ -50,7 +50,7 @@ public sealed class EventInfoWindow : Window
                 },
                 new TextBlock
                 {
-                    Text = "현재 로드된 이벤트 테이블을 기준으로 보상, 비용, 난이도, 전투, 흐름 정보를 집계합니다. 기존 Export Preview에서 확정하면 같은 내용이 한글 시트로 저장됩니다.",
+                    Text = "현재 로드된 이벤트 테이블을 기준으로 보상, 비용, 난이도, 전투 정보를 집계합니다. 기존 Export Preview에서 확정하면 같은 내용이 한글 시트로 저장됩니다.",
                     Margin = new Thickness(0, 4, 0, 0),
                     FontSize = 12,
                     Foreground = Brush("#b8b8b8")
@@ -470,7 +470,6 @@ public sealed class EventInfoWindow : Window
             "보상 정보" => "reward_id(type)",
             "비용 정보" => "cost_type",
             "전투 정보" => "stage_id",
-            "흐름 정보" => "key",
             "밸런스 체크" => "check",
             _ => table.Columns.FirstOrDefault() ?? ""
         };
