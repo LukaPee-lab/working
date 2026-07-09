@@ -6806,7 +6806,7 @@ public partial class MainWindow : Window
                 PushUndo();
                 var result = GetBattleResultChoice(group, create: true);
                 if (result is not null)
-                    SetChoiceBranchNextGroup(result, _linkBattleBranch, targetGroupId);
+                    SetChoiceDirectNextGroup(result, _linkBattleBranch, targetGroupId);
                 BuildGroupInspector(group);
             }
             else if (group is not null)
@@ -6835,7 +6835,7 @@ public partial class MainWindow : Window
             else if (targetGroupId is not null && choice is not null)
             {
                 PushUndo();
-                SetChoiceBranchNextGroup(choice, _linkBranch, targetGroupId);
+                SetChoiceDirectNextGroup(choice, _linkBranch, targetGroupId);
                 BuildChoiceInspector(choice);
             }
             else if (choice is not null && pendingRewardKey is not null)
@@ -7022,7 +7022,7 @@ public partial class MainWindow : Window
             return;
 
         var exitGroup = CreateEditableExitGroup(pending.EventId);
-        SetChoiceBranchNextGroup(choice, branch, exitGroup.Id);
+        SetChoiceDirectNextGroup(choice, branch, exitGroup.Id);
         _workbook.Layouts.Remove(pendingKey);
         _workbook.Layouts[exitGroup.Id] = new NodeLayout
         {
@@ -7048,7 +7048,7 @@ public partial class MainWindow : Window
         if (exitGroup is null || !IsExitGroup(exitGroup))
             return;
 
-        SetChoiceBranchNextGroup(choice, branch, exitGroup.Id);
+        SetChoiceDirectNextGroup(choice, branch, exitGroup.Id);
         _selectedObjectKey = null;
         _selectedGroup = exitGroup;
         _selectedChoice = null;
@@ -7078,7 +7078,7 @@ public partial class MainWindow : Window
         };
         _workbook.Groups.Add(battleGroup);
         GetBattleResultChoice(battleGroup, create: true);
-        SetChoiceBranchNextGroup(choice, branch, battleGroup.Id);
+        SetChoiceDirectNextGroup(choice, branch, battleGroup.Id);
 
         _workbook.Layouts.Remove(pendingKey);
         _workbook.Layouts[battleGroup.Id] = new NodeLayout
@@ -7105,10 +7105,18 @@ public partial class MainWindow : Window
         if (group is null || !IsBattleGroup(group))
             return;
 
-        SetChoiceBranchNextGroup(choice, branch, group.Id);
+        SetChoiceDirectNextGroup(choice, branch, group.Id);
         _selectedObjectKey = BattleLayoutKey(group.Id);
         _selectedGroup = group;
         _selectedChoice = null;
+    }
+
+    private bool SetChoiceDirectNextGroup(EventChoiceRow choice, string branch, string nextGroupId)
+    {
+        var (rewardType, _) = GetChoiceReward(choice, branch);
+        if (!IsNone(rewardType))
+            DetachRewardBranch(choice, branch, keepObject: true);
+        return SetChoiceBranchNextGroup(choice, branch, nextGroupId);
     }
 
     private bool SetChoiceBranchNextGroup(EventChoiceRow choice, string branch, string nextGroupId)
