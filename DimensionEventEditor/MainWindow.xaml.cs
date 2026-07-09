@@ -1518,13 +1518,10 @@ public partial class MainWindow : Window
         root.Children.Add(border);
 
         var overlay = new Canvas();
-        if (!isStartNode)
-        {
-            var inputPin = InputPin(GroupInPinKey(group.Id), "IN: 연결된 라인 선택");
-            Canvas.SetLeft(inputPin, -PinSize / 2);
-            Canvas.SetTop(inputPin, NodeTitleHeight + 10);
-            overlay.Children.Add(inputPin);
-        }
+        var inputPin = InputPin(GroupInPinKey(group.Id), "IN: 연결된 라인 선택");
+        Canvas.SetLeft(inputPin, -PinSize / 2);
+        Canvas.SetTop(inputPin, NodeTitleHeight + 10);
+        overlay.Children.Add(inputPin);
         if (IsBattleGroup(group))
         {
             var successPin = BattleOutputPin("T", group.Id, "success", "#3cb878");
@@ -4307,6 +4304,7 @@ public partial class MainWindow : Window
             return;
 
         PushUndo();
+        PromoteGroupOwnedObjectsToPending(group);
         var removedChoiceIds = _workbook.Choices
             .Where(c => c.GroupId == group.Id)
             .Select(c => c.Id)
@@ -4339,6 +4337,16 @@ public partial class MainWindow : Window
         RefreshHierarchy();
         DrawGraph();
         RefreshIssues();
+    }
+
+    private void PromoteGroupOwnedObjectsToPending(ChoiceGroupRow group)
+    {
+        if (_workbook is null)
+            return;
+
+        PromoteGroupActionToPending(group);
+        foreach (var choice in _workbook.Choices.Where(c => string.Equals(c.GroupId, group.Id, StringComparison.OrdinalIgnoreCase)).ToList())
+            PromoteChoiceRewardsToPending(choice);
     }
 
     private void DeleteChoice(EventChoiceRow choice)
@@ -4525,6 +4533,11 @@ public partial class MainWindow : Window
                 group.NextAction = "choice";
             _workbook.Layouts.Remove(key);
         }
+
+        foreach (var group in _workbook.Groups
+                     .Where(g => groupIds.Contains(g.Id))
+                     .ToList())
+            PromoteGroupOwnedObjectsToPending(group);
 
         var removedChoiceIds = _workbook.Choices
             .Where(c => groupIds.Contains(c.GroupId))
@@ -6649,9 +6662,6 @@ public partial class MainWindow : Window
         var addBattle = new MenuItem { Header = "전투 노드 추가" };
         addBattle.Click += (_, _) => AddBattleNodeFromMenu(canvasPoint);
         menu.Items.Add(addBattle);
-        var addExit = new MenuItem { Header = "종료 노드 추가" };
-        addExit.Click += (_, _) => AddExitNodeFromMenu(canvasPoint);
-        menu.Items.Add(addExit);
         menu.IsOpen = true;
     }
 
@@ -6698,31 +6708,6 @@ public partial class MainWindow : Window
         _selectedGroup = null;
         _selectedChoice = null;
         DrawGraph();
-        RefreshIssues();
-    }
-
-    private void AddExitNodeFromMenu(Point canvasPoint)
-    {
-        if (_workbook is null || _selectedEvent is null)
-            return;
-
-        PushUndo();
-        var key = PendingExitLayoutKey(_selectedEvent.Id);
-        _workbook.Layouts[key] = new NodeLayout
-        {
-            EventId = _selectedEvent.Id,
-            GroupId = key,
-            X = RoundCanvasCoord(canvasPoint.X),
-            Y = RoundCanvasCoord(canvasPoint.Y),
-            Width = ExitNodeWidth,
-            Height = ExitNodeHeight
-        };
-        _selectedObjectKey = key;
-        _selectedGroup = null;
-        _selectedChoice = null;
-
-        DrawGraph();
-        BuildPendingObjectInspector(key);
         RefreshIssues();
     }
 
@@ -7464,8 +7449,6 @@ public partial class MainWindow : Window
         var groups = _workbook.Groups.Where(g => g.EventId == _selectedEvent.Id).ToList();
         foreach (var group in groups)
         {
-            if (string.Equals(group.Id, _selectedEvent.FirstGroupId, StringComparison.OrdinalIgnoreCase))
-                continue;
             var pin = GetInputPinPoint(group.Id);
             if ((pin - point).Length <= 34)
                 return group.Id;
@@ -7473,8 +7456,6 @@ public partial class MainWindow : Window
 
         foreach (var group in groups)
         {
-            if (string.Equals(group.Id, _selectedEvent.FirstGroupId, StringComparison.OrdinalIgnoreCase))
-                continue;
             if (!_workbook.Layouts.TryGetValue(group.Id, out var layout))
                 continue;
             var rect = new Rect(layout.X, layout.Y, layout.Width, Math.Max(layout.Height, 160));
