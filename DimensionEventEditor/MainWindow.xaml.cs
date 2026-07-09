@@ -2837,7 +2837,7 @@ public partial class MainWindow : Window
         {
             if (pair.Key.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase))
             {
-                DrawPendingObjectNode(pair.Key, "Reward", "T/F 핀으로 연결", pair.Value, "reward");
+                DrawPendingObjectNode(pair.Key, "Reward", PendingRewardBody(pair.Value), pair.Value, "reward");
             }
             else if (pair.Key.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase))
             {
@@ -2914,6 +2914,13 @@ public partial class MainWindow : Window
         Canvas.SetLeft(root, layout.X);
         Canvas.SetTop(root, layout.Y);
         GraphCanvas.Children.Add(root);
+    }
+
+    private static string PendingRewardBody(NodeLayout layout)
+    {
+        var type = string.IsNullOrWhiteSpace(layout.PayloadType) ? "gold" : layout.PayloadType;
+        var amount = layout.PayloadAmount?.ToString() ?? "1";
+        return $"{type} x{amount}";
     }
 
     private static bool IsBattleGroup(ChoiceGroupRow group)
@@ -4342,9 +4349,8 @@ public partial class MainWindow : Window
         if (result != MessageBoxResult.OK)
             return;
         PushUndo();
+        PromoteChoiceRewardsToPending(choice);
         _workbook.Choices.Remove(choice);
-        _workbook.Layouts.Remove(RewardLayoutKey(choice.Id, "success"));
-        _workbook.Layouts.Remove(RewardLayoutKey(choice.Id, "fail"));
         _workbook.Layouts.Remove(ChoiceExitLayoutKey(choice.Id, "success"));
         _workbook.Layouts.Remove(ChoiceExitLayoutKey(choice.Id, "fail"));
         _selectedChoice = null;
@@ -4368,7 +4374,8 @@ public partial class MainWindow : Window
         {
             PushUndo();
             if (_selectedObjectKey.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase)
-                || _selectedObjectKey.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase))
+                || _selectedObjectKey.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase)
+                || _selectedObjectKey.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase))
             {
                 _workbook.Layouts.Remove(_selectedObjectKey);
                 _selectedObjectKey = null;
@@ -4379,16 +4386,8 @@ public partial class MainWindow : Window
                 if (parts.Length >= 3)
                 {
                     var choice = _workbook.Choices.FirstOrDefault(c => c.Id == parts[1]);
-                    if (choice is not null && parts[2] == "success")
-                    {
-                        choice.SuccessRewardType = "none";
-                        choice.SuccessRewardAmount = null;
-                    }
-                    else if (choice is not null && parts[2] == "fail")
-                    {
-                        choice.FailRewardType = "none";
-                        choice.FailRewardAmount = null;
-                    }
+                    if (choice is not null)
+                        ClearChoiceReward(choice, parts[2]);
                 }
                 _workbook.Layouts.Remove(_selectedObjectKey);
                 _selectedObjectKey = null;
@@ -4478,23 +4477,16 @@ public partial class MainWindow : Window
             if (parts.Length >= 3)
             {
                 var choice = _workbook.Choices.FirstOrDefault(c => c.Id == parts[1]);
-                if (choice is not null && parts[2] == "success")
-                {
-                    choice.SuccessRewardType = "none";
-                    choice.SuccessRewardAmount = null;
-                }
-                else if (choice is not null && parts[2] == "fail")
-                {
-                    choice.FailRewardType = "none";
-                    choice.FailRewardAmount = null;
-                }
+                if (choice is not null)
+                    ClearChoiceReward(choice, parts[2]);
             }
             _workbook.Layouts.Remove(key);
         }
 
         foreach (var key in selected.Where(k =>
-                     k.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase)
-                     || k.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase)))
+                      k.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase)
+                      || k.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase)
+                      || k.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase)))
             _workbook.Layouts.Remove(key);
 
         foreach (var key in selected.Where(k => k.StartsWith(ChoiceExitPrefix, StringComparison.OrdinalIgnoreCase)))
@@ -6085,12 +6077,31 @@ public partial class MainWindow : Window
         ClearInspectorPreview();
         var isReward = key.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase);
         var isBattle = key.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase);
-        InspectorPanel.Children.Add(SectionTitle(isReward ? "보상 노드" : "전투 노드"));
+        var isExit = key.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase);
+        InspectorPanel.Children.Add(SectionTitle(isReward ? "보상 노드" : isBattle ? "전투 노드" : isExit ? "종료 노드" : "객체 노드"));
+        if (isReward && _workbook?.Layouts.TryGetValue(key, out var rewardLayout) == true)
+        {
+            if (string.IsNullOrWhiteSpace(rewardLayout.PayloadType))
+                rewardLayout.PayloadType = "gold";
+            rewardLayout.PayloadAmount ??= 1;
+            AddText("reward_type", rewardLayout.PayloadType, v =>
+            {
+                rewardLayout.PayloadType = string.IsNullOrWhiteSpace(v) ? "gold" : v;
+            });
+            AddText("reward_amount", rewardLayout.PayloadAmount?.ToString() ?? "", v =>
+            {
+                rewardLayout.PayloadAmount = ParseUtil.NullableInt(v);
+            });
+        }
         InspectorPanel.Children.Add(new TextBlock
         {
             Text = isReward
                 ? "선택지 T/F 핀에서 연결하면 해당 결과의 reward 컬럼으로 저장됩니다. 이후 같은 T/F 핀을 exit 장면에 연결하면 보상 후 종료 흐름이 됩니다."
-                : "선택지 T/F 핀에서 연결하면 전투 장면 row가 생성되고 해당 결과의 next_group으로 저장됩니다.",
+                : isBattle
+                    ? "선택지 T/F 핀에서 연결하면 전투 장면 row가 생성되고 해당 결과의 next_group으로 저장됩니다."
+                    : isExit
+                        ? "선택지 T/F 핀에서 연결하면 종료 장면 row가 생성되고 해당 결과의 next_group으로 저장됩니다."
+                        : "선택지 T/F 핀에서 연결할 수 있는 객체 노드입니다.",
             Foreground = new SolidColorBrush(Color.FromRgb(190, 190, 190)),
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 6, 0, 12)
@@ -6347,20 +6358,7 @@ public partial class MainWindow : Window
             case "choice_reward":
             case "battle_reward":
                 if (_workbook.Choices.FirstOrDefault(c => string.Equals(c.Id, link.SourceId, StringComparison.OrdinalIgnoreCase)) is { } rewardChoice)
-                {
-                    if (link.Branch == "success")
-                    {
-                        rewardChoice.SuccessRewardType = "none";
-                        rewardChoice.SuccessRewardAmount = null;
-                        _workbook.Layouts.Remove(RewardLayoutKey(rewardChoice.Id, "success"));
-                    }
-                    else
-                    {
-                        rewardChoice.FailRewardType = "none";
-                        rewardChoice.FailRewardAmount = null;
-                        _workbook.Layouts.Remove(RewardLayoutKey(rewardChoice.Id, "fail"));
-                    }
-                }
+                    DetachRewardBranch(rewardChoice, link.Branch, keepObject: true);
                 break;
             case "choice_next":
             case "reward_next":
@@ -6397,6 +6395,7 @@ public partial class MainWindow : Window
     {
         if (_workbook is null)
             return;
+        PromoteGroupActionToPending(group);
         group.NextAction = "choice";
         group.StageId = "";
         RemoveBattleResultChoice(group);
@@ -6668,7 +6667,9 @@ public partial class MainWindow : Window
             X = RoundCanvasCoord(canvasPoint.X),
             Y = RoundCanvasCoord(canvasPoint.Y),
             Width = RewardNodeWidth,
-            Height = RewardNodeHeight
+            Height = RewardNodeHeight,
+            PayloadType = "gold",
+            PayloadAmount = 1
         };
         _selectedObjectKey = key;
         DrawGraph();
@@ -6986,16 +6987,9 @@ public partial class MainWindow : Window
         if (_workbook is null || !_workbook.Layouts.TryGetValue(pendingKey, out var pending))
             return;
 
-        if (branch == "success")
-        {
-            choice.SuccessRewardType = IsNone(choice.SuccessRewardType) ? "gold" : choice.SuccessRewardType;
-            choice.SuccessRewardAmount ??= 1;
-        }
-        else
-        {
-            choice.FailRewardType = IsNone(choice.FailRewardType) ? "gold" : choice.FailRewardType;
-            choice.FailRewardAmount ??= 1;
-        }
+        var rewardType = string.IsNullOrWhiteSpace(pending.PayloadType) ? "gold" : pending.PayloadType;
+        var rewardAmount = pending.PayloadAmount ?? 1;
+        SetChoiceReward(choice, branch, rewardType, rewardAmount);
 
         var key = RewardLayoutKey(choice.Id, branch);
         _workbook.Layouts.Remove(pendingKey);
@@ -7188,6 +7182,116 @@ public partial class MainWindow : Window
 
     private static string GetChoiceNextGroup(EventChoiceRow choice, string branch)
         => branch == "success" ? choice.SuccessNextGroupId : choice.FailNextGroupId;
+
+    private void DetachRewardBranch(EventChoiceRow choice, string branch, bool keepObject)
+    {
+        if (_workbook is null)
+            return;
+
+        if (keepObject)
+            PromoteRewardBranchToPending(choice, branch);
+
+        ClearChoiceReward(choice, branch);
+        _workbook.Layouts.Remove(RewardLayoutKey(choice.Id, branch));
+    }
+
+    private void PromoteChoiceRewardsToPending(EventChoiceRow choice)
+    {
+        DetachRewardBranch(choice, "success", keepObject: true);
+        DetachRewardBranch(choice, "fail", keepObject: true);
+    }
+
+    private void PromoteRewardBranchToPending(EventChoiceRow choice, string branch)
+    {
+        if (_workbook is null)
+            return;
+
+        var (type, amount) = GetChoiceReward(choice, branch);
+        if (IsNone(type))
+            return;
+
+        var sourceKey = RewardLayoutKey(choice.Id, branch);
+        if (!_workbook.Layouts.TryGetValue(sourceKey, out var sourceLayout))
+            return;
+
+        var hasOtherOwner = RewardBranchesSharingLayout(sourceKey)
+            .Any(item => !string.Equals(item.Key, sourceKey, StringComparison.OrdinalIgnoreCase));
+        if (hasOtherOwner)
+            return;
+
+        var pendingKey = PendingRewardLayoutKey(sourceLayout.EventId, branch);
+        _workbook.Layouts[pendingKey] = new NodeLayout
+        {
+            EventId = sourceLayout.EventId,
+            GroupId = pendingKey,
+            X = RoundCanvasCoord(sourceLayout.X),
+            Y = RoundCanvasCoord(sourceLayout.Y),
+            Width = RewardNodeWidth,
+            Height = RewardNodeHeight,
+            PayloadType = type,
+            PayloadAmount = amount
+        };
+        _selectedObjectKey = pendingKey;
+    }
+
+    private void PromoteGroupActionToPending(ChoiceGroupRow group)
+    {
+        if (_workbook is null)
+            return;
+
+        if (IsBattleGroup(group) && _workbook.Layouts.TryGetValue(BattleLayoutKey(group.Id), out var battleLayout))
+        {
+            var pendingKey = PendingBattleLayoutKey(group.EventId);
+            _workbook.Layouts[pendingKey] = CopyObjectLayout(battleLayout, pendingKey, BattleNodeWidth, BattleNodeHeight);
+            _selectedObjectKey = pendingKey;
+            return;
+        }
+
+        if (!IsExitGroup(group))
+            return;
+
+        if (_workbook.Layouts.TryGetValue(GroupRewardLayoutKey(group.Id), out var rewardLayout))
+        {
+            var pendingKey = PendingRewardLayoutKey(group.EventId, "terminal");
+            var copy = CopyObjectLayout(rewardLayout, pendingKey, RewardNodeWidth, RewardNodeHeight);
+            copy.PayloadType = string.IsNullOrWhiteSpace(rewardLayout.PayloadType) ? "gold" : rewardLayout.PayloadType;
+            copy.PayloadAmount = rewardLayout.PayloadAmount ?? 1;
+            _workbook.Layouts[pendingKey] = copy;
+            _selectedObjectKey = pendingKey;
+        }
+        else if (_workbook.Layouts.TryGetValue(ExitLayoutKey(group.Id), out var exitLayout))
+        {
+            var pendingKey = PendingExitLayoutKey(group.EventId);
+            _workbook.Layouts[pendingKey] = CopyObjectLayout(exitLayout, pendingKey, ExitNodeWidth, ExitNodeHeight);
+            _selectedObjectKey = pendingKey;
+        }
+    }
+
+    private static NodeLayout CopyObjectLayout(NodeLayout source, string key, double width, double height) => new()
+    {
+        EventId = source.EventId,
+        GroupId = key,
+        X = RoundCanvasCoord(source.X),
+        Y = RoundCanvasCoord(source.Y),
+        Width = RoundCoord(width),
+        Height = RoundCoord(height),
+        PayloadType = source.PayloadType,
+        PayloadAmount = source.PayloadAmount
+    };
+
+    private static void ClearChoiceReward(EventChoiceRow choice, string branch)
+    {
+        if (branch == "success")
+        {
+            choice.SuccessRewardType = "none";
+            choice.SuccessRewardAmount = null;
+        }
+        else
+        {
+            choice.FailRewardType = "none";
+            choice.FailRewardAmount = null;
+        }
+    }
 
     private static void SetChoiceReward(EventChoiceRow choice, string branch, string rewardType, int? rewardAmount)
     {

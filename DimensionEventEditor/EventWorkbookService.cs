@@ -1414,7 +1414,7 @@ public static class EventWorkbookService
             [GroupSheetName] = (Math.Max(3, model.Groups.Count + 3), 9),
             [ChoiceSheetName] = (Math.Max(3, model.Choices.Count + 3), 15),
             [TextSheetName] = (Math.Max(1, GenerateTextEntries(model).Count + 1), 4),
-            [LayoutSheetName] = (Math.Max(1, model.Layouts.Count + 1), 7)
+            [LayoutSheetName] = (Math.Max(1, model.Layouts.Count + 1), 10)
         };
         foreach (var table in BuildEventInfoReport(model).Tables)
             dimensions[table.Name] = (Math.Max(4, table.Rows.Count + 4), Math.Max(1, table.Columns.Count));
@@ -1738,7 +1738,9 @@ public static class EventWorkbookService
                 X = Double(Cell(ws, row, 4), 0),
                 Y = Double(Cell(ws, row, 5), 0),
                 Width = Double(Cell(ws, row, 6), 260),
-                Height = Double(Cell(ws, row, 7), 132)
+                Height = Double(Cell(ws, row, 7), 132),
+                PayloadType = Cell(ws, row, 9),
+                PayloadAmount = ParseUtil.NullableInt(Cell(ws, row, 10))
             };
         }
     }
@@ -1940,6 +1942,8 @@ public static class EventWorkbookService
         ws.Cell(1, 6).Value = "width";
         ws.Cell(1, 7).Value = "height";
         ws.Cell(1, 8).Value = "updated_at";
+        ws.Cell(1, 9).Value = "payload_type";
+        ws.Cell(1, 10).Value = "payload_amount";
         ClearData(ws, 2);
         var row = 2;
         foreach (var layout in model.Layouts.Values.OrderBy(l => l.EventId).ThenBy(l => l.GroupId))
@@ -1952,6 +1956,8 @@ public static class EventWorkbookService
             ws.Cell(row, 6).Value = RoundLayout(layout.Width);
             ws.Cell(row, 7).Value = RoundLayout(layout.Height);
             ws.Cell(row, 8).Value = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+            ws.Cell(row, 9).Value = layout.PayloadType;
+            SetNullable(ws.Cell(row, 10), layout.PayloadAmount);
             row++;
         }
         ws.Visibility = XLWorksheetVisibility.Visible;
@@ -2062,7 +2068,7 @@ public static class EventWorkbookService
             .ToDictionary(g => g.Key, g =>
             {
                 var layout = g.Last();
-                return string.Join("|", layout.EventId, RoundLayout(layout.X), RoundLayout(layout.Y), RoundLayout(layout.Width), RoundLayout(layout.Height));
+                return string.Join("|", layout.EventId, RoundLayout(layout.X), RoundLayout(layout.Y), RoundLayout(layout.Width), RoundLayout(layout.Height), layout.PayloadType, layout.PayloadAmount);
             }, StringComparer.OrdinalIgnoreCase);
 
     private static double RoundLayout(double value) => Math.Round(value, 1, MidpointRounding.AwayFromZero);
@@ -2194,7 +2200,9 @@ public static class EventWorkbookService
         X = source.X,
         Y = source.Y,
         Width = source.Width,
-        Height = source.Height
+        Height = source.Height,
+        PayloadType = source.PayloadType,
+        PayloadAmount = source.PayloadAmount
     };
 
     private static void Copy(EventBaseRow source, EventBaseRow target)

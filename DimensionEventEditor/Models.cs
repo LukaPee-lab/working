@@ -76,6 +76,8 @@ public sealed class NodeLayout
     public double Y { get; set; }
     public double Width { get; set; } = 260;
     public double Height { get; set; } = 132;
+    public string PayloadType { get; set; } = "";
+    public int? PayloadAmount { get; set; }
 }
 
 public sealed class EventGraphPreview
