@@ -324,69 +324,10 @@ public static class EventWorkbookService
 
         var changed = 0;
         changed += NormalizeIdentityCasing(workbook);
-        changed += RemoveDeprecatedTerminalLayouts(workbook);
         changed += NormalizeExitActionGroups(workbook);
         changed += EnsureReferencedGroups(workbook);
         changed += EnsureBattleResultChoices(workbook);
         changed += NormalizeExitGroupIds(workbook);
-
-        var groupsByEvent = workbook.Groups
-            .Where(g => NotBlank(g.EventId))
-            .GroupBy(g => g.EventId, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.OrdinalIgnoreCase);
-        var groupsById = workbook.Groups.ToDictionary(g => g.Id, StringComparer.OrdinalIgnoreCase);
-
-        foreach (var evt in workbook.Events)
-        {
-            if (!groupsByEvent.TryGetValue(evt.Id, out var eventGroups) || eventGroups.Count == 0)
-                continue;
-
-            changed += EnsurePreBattleEscapeChoices(workbook, evt, eventGroups, groupsById);
-
-            ChoiceGroupRow? exitGroup = null;
-            foreach (var choice in workbook.Choices.Where(c => groupsById.TryGetValue(c.GroupId, out var owner)
-                                                                && Same(owner.EventId, evt.Id)))
-            {
-                if (!groupsById.TryGetValue(choice.GroupId, out var ownerGroup))
-                    continue;
-                if (Same(ownerGroup.NextAction, "exit"))
-                    continue;
-                var isBattleResult = IsBattleResultChoice(choice, ownerGroup);
-                if (NotBlank(choice.SuccessNextGroupId)
-                    && groupsById.TryGetValue(choice.SuccessNextGroupId, out var successTarget)
-                    && Same(successTarget.NextAction, "exit"))
-                {
-                    exitGroup ??= successTarget;
-                }
-                else if (Blank(choice.SuccessNextGroupId))
-                {
-                    exitGroup ??= EnsureExitGroup(workbook, evt, eventGroups);
-                    groupsById[exitGroup.Id] = exitGroup;
-                    choice.SuccessNextGroupId = exitGroup.Id;
-                    changed++;
-                }
-
-                if (NotBlank(choice.FailNextGroupId)
-                    && groupsById.TryGetValue(choice.FailNextGroupId, out var failTarget)
-                    && Same(failTarget.NextAction, "exit"))
-                {
-                    exitGroup ??= failTarget;
-                }
-                else if ((choice.SuccessRate is not null || isBattleResult) && Blank(choice.FailNextGroupId))
-                {
-                    exitGroup ??= EnsureExitGroup(workbook, evt, eventGroups);
-                    groupsById[exitGroup.Id] = exitGroup;
-                    choice.FailNextGroupId = exitGroup.Id;
-                    changed++;
-                }
-            }
-
-            if (!eventGroups.Any(g => Same(g.NextAction, "exit")))
-            {
-                EnsureExitGroup(workbook, evt, eventGroups);
-                changed++;
-            }
-        }
 
         changed += EnsureExitMemos(workbook);
         return changed;

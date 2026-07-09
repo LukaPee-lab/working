@@ -6000,7 +6000,8 @@ public partial class MainWindow : Window
         _selectedNodeKeys.Clear();
         _selectedObjectKey = key;
         if (key.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase)
-            || key.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase))
+            || key.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase)
+            || key.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase))
         {
             BuildPendingObjectInspector(key);
         }
@@ -6096,11 +6097,11 @@ public partial class MainWindow : Window
         InspectorPanel.Children.Add(new TextBlock
         {
             Text = isReward
-                ? "선택지 T/F 핀에서 연결하면 해당 결과의 reward 컬럼으로 저장됩니다. 이후 같은 T/F 핀을 exit 장면에 연결하면 보상 후 종료 흐름이 됩니다."
+                ? "선택지 T/F 핀에서 연결하면 해당 결과의 reward 컬럼으로 저장됩니다. 다음 흐름은 보상 노드의 출력 핀에서 직접 연결하세요."
                 : isBattle
-                    ? "선택지 T/F 핀에서 연결하면 전투 장면 row가 생성되고 해당 결과의 next_group으로 저장됩니다."
+                    ? "장면 노드의 출력 핀에서 연결하면 해당 장면의 next_action=battle로 저장됩니다."
                     : isExit
-                        ? "선택지 T/F 핀에서 연결하면 종료 장면 row가 생성되고 해당 결과의 next_group으로 저장됩니다."
+                        ? "장면 노드의 출력 핀에서 연결하면 해당 장면의 next_action=exit로 저장됩니다."
                         : "선택지 T/F 핀에서 연결할 수 있는 객체 노드입니다.",
             Foreground = new SolidColorBrush(Color.FromRgb(190, 190, 190)),
             TextWrapping = TextWrapping.Wrap,
@@ -6596,7 +6597,8 @@ public partial class MainWindow : Window
                      && choiceIds.Contains(key.Split('|').ElementAtOrDefault(1) ?? ""))
                 yield return key;
             else if ((key.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase)
-                      || key.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase))
+                      || key.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase)
+                      || key.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase))
                      && string.Equals(_workbook.Layouts[key].EventId, _selectedEvent.Id, StringComparison.OrdinalIgnoreCase))
                 yield return key;
         }
@@ -6705,22 +6707,22 @@ public partial class MainWindow : Window
             return;
 
         PushUndo();
-        var group = CreateEditableExitGroup(_selectedEvent.Id);
-        _workbook.Layouts[group.Id] = new NodeLayout
+        var key = PendingExitLayoutKey(_selectedEvent.Id);
+        _workbook.Layouts[key] = new NodeLayout
         {
             EventId = _selectedEvent.Id,
-            GroupId = group.Id,
+            GroupId = key,
             X = RoundCanvasCoord(canvasPoint.X),
             Y = RoundCanvasCoord(canvasPoint.Y),
-            Width = NodeWidth,
-            Height = NodeMinHeight
+            Width = ExitNodeWidth,
+            Height = ExitNodeHeight
         };
-        _selectedObjectKey = null;
-        _selectedGroup = group;
+        _selectedObjectKey = key;
+        _selectedGroup = null;
         _selectedChoice = null;
 
         DrawGraph();
-        BuildGroupInspector(group);
+        BuildPendingObjectInspector(key);
         RefreshIssues();
     }
 
@@ -6865,10 +6867,7 @@ public partial class MainWindow : Window
             }
             else if (choice is not null && pendingBattleKey is not null)
             {
-                PushUndo();
-                AttachPendingChoiceBattle(choice, _linkBranch, pendingBattleKey);
-                if (_selectedGroup is not null)
-                    BuildGroupInspector(_selectedGroup);
+                ThemedMessageBox.Show(this, "전투 노드는 장면 노드의 출력 핀에 연결해서 next_action=battle로 설정하세요.", "연결 불가한 노드입니다", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             else if (choice is not null && existingBattleKey is not null)
             {
@@ -6879,9 +6878,7 @@ public partial class MainWindow : Window
             }
             else if (choice is not null && pendingExitKey is not null)
             {
-                PushUndo();
-                AttachPendingChoiceExit(choice, _linkBranch, pendingExitKey);
-                BuildChoiceInspector(choice);
+                ThemedMessageBox.Show(this, "종료 노드는 장면 노드의 출력 핀에 연결해서 next_action=exit로 설정하세요.", "연결 불가한 노드입니다", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             else if (choice is not null && existingExitKey is not null)
             {
@@ -7012,17 +7009,12 @@ public partial class MainWindow : Window
 
         var rewardType = "gold";
         int? rewardAmount = 1;
-        var nextGroupId = "";
         if (TryGetRewardBranchPayload(rewardKey, out var sourceChoice, out var sourceBranch))
         {
             (rewardType, rewardAmount) = GetChoiceReward(sourceChoice, sourceBranch);
-            nextGroupId = GetChoiceNextGroup(sourceChoice, sourceBranch);
         }
 
         SetChoiceReward(choice, branch, rewardType, rewardAmount);
-        if (!string.IsNullOrWhiteSpace(nextGroupId)
-            && !string.Equals(choice.GroupId, nextGroupId, StringComparison.OrdinalIgnoreCase))
-            SetChoiceBranchNextGroup(choice, branch, nextGroupId);
 
         var key = RewardLayoutKey(choice.Id, branch);
         _workbook.Layouts[key] = new NodeLayout
@@ -7192,6 +7184,7 @@ public partial class MainWindow : Window
             PromoteRewardBranchToPending(choice, branch);
 
         ClearChoiceReward(choice, branch);
+        ClearChoiceBranchNext(choice, branch);
         _workbook.Layouts.Remove(RewardLayoutKey(choice.Id, branch));
     }
 
