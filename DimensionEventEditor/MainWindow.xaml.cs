@@ -27,7 +27,7 @@ public partial class MainWindow : Window
     private const double ChoiceRowHeight = 42;
     private const double ChoiceRowGap = 8;
     private const double PinSize = 15;
-    private const double RewardNodeWidth = 190;
+    private const double RewardNodeWidth = 260;
     private const double RewardNodeHeight = 88;
     private const double BattleNodeWidth = 210;
     private const double BattleNodeHeight = 72;
@@ -2685,9 +2685,10 @@ public partial class MainWindow : Window
 
     private Border RewardFieldBox(string choiceId, string branch, string field, string label, string value)
     {
+        var displayValue = string.IsNullOrWhiteSpace(value) ? "-" : value;
         var row = new Grid();
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(92) });
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(54) });
 
         var labelText = new TextBlock
         {
@@ -2702,7 +2703,7 @@ public partial class MainWindow : Window
 
         var valueText = new TextBlock
         {
-            Text = string.IsNullOrWhiteSpace(value) ? "-" : value,
+            Text = displayValue,
             Foreground = Brushes.White,
             FontSize = 11,
             FontWeight = FontWeights.SemiBold,
@@ -2723,7 +2724,7 @@ public partial class MainWindow : Window
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(3),
             Tag = $"{choiceId}|{branch}|{field}",
-            ToolTip = "더블 클릭해서 수정",
+            ToolTip = $"{label}: {displayValue}\n더블 클릭해서 수정",
             Child = row
         };
         box.MouseLeftButtonDown += RewardField_MouseLeftButtonDown;
