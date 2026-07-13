@@ -208,6 +208,7 @@ public sealed class AppSettings
 {
     public string? EventWorkbookPath { get; set; }
     public string? ReposRoot { get; set; }
+    public string? DevRoot { get; set; }
     public string? PlayerExePath { get; set; }
     public string? BackgroundImageRoot { get; set; }
     public string? LastBackgroundImagePath { get; set; }

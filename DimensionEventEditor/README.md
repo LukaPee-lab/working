@@ -280,7 +280,9 @@ Battle은 장면 노드 하나로 표현됩니다.
 
 장면의 `background`는 직접 입력하거나 picker 버튼으로 선택할 수 있습니다.
 
-- 기본 이미지 루트: `D:\repos\dev\game\Resources\res\nexus`
+- 이미지 홈은 저장된 DEV 위치, 마지막 이미지 위치, 실행 중인 DEV 클라이언트, repos 후보 순서로 자동 탐색합니다.
+- DEV 위치를 찾지 못하면 시작 시 폴더 선택 창이 열립니다. `dev` 폴더 또는 그 상위 `repos` 폴더를 선택할 수 있습니다.
+- 선택한 DEV 위치는 settings의 `DevRoot`에 저장되며, 이미지 홈은 `{DevRoot}\game\Resources\res\nexus`를 사용합니다.
 - Inspector 하단에 background preview가 표시됩니다.
 - 이미지가 없으면 `Preview not found`로 표시됩니다.
 - `background`가 비어 있으면 자동으로 기본 배경을 넣지 않고 validation error를 표시합니다.

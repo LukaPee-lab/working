@@ -40,7 +40,6 @@ public partial class MainWindow : Window
     private const string ChoiceExitPrefix = "choice_exit|";
     private const string GroupRewardPrefix = "group_reward|";
     private const string ChoiceArrayDragFormat = "DimensionEventEditor.ChoiceArrayDrag";
-    private const string DefaultBackgroundImageRoot = @"D:\repos\dev\game\Resources\res\nexus";
     private static readonly string[] BackgroundImageExtensions = [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"];
     private const double GraphDefaultX = 4200;
     private const double GraphDefaultY = 2600;
@@ -167,6 +166,7 @@ public partial class MainWindow : Window
             return;
 
         _initialLoadStarted = true;
+        EnsureDevRootConfigured(promptIfMissing: true);
         _ = LoadInitialWorkbookAsync();
     }
 
@@ -3860,10 +3860,15 @@ public partial class MainWindow : Window
             if (handle is null)
                 return;
 
+            var homeRoot = ResolveBackgroundHomeRoot(promptIfMissing: true);
+            if (homeRoot is null)
+                return;
+
             var startRoot = !string.IsNullOrWhiteSpace(_settings.BackgroundImageRoot)
+                            && Directory.Exists(_settings.BackgroundImageRoot)
                 ? _settings.BackgroundImageRoot
-                : DefaultBackgroundImageRoot;
-            var dialog = new BackgroundImagePickerWindow(DefaultBackgroundImageRoot, startRoot, handle.Box.Text)
+                : homeRoot;
+            var dialog = new BackgroundImagePickerWindow(homeRoot, startRoot, handle.Box.Text)
             {
                 Owner = this
             };
@@ -4000,7 +4005,7 @@ public partial class MainWindow : Window
             return key;
 
         var relative = key.Replace('/', IoPath.DirectorySeparatorChar).Replace('\\', IoPath.DirectorySeparatorChar);
-        var roots = new[] { DefaultBackgroundImageRoot, _settings.BackgroundImageRoot }
+        var roots = new[] { ResolveBackgroundHomeRoot(promptIfMissing: false), _settings.BackgroundImageRoot }
             .Where(root => !string.IsNullOrWhiteSpace(root))
             .Select(root => root!)
             .Distinct(StringComparer.OrdinalIgnoreCase);
@@ -4926,6 +4931,68 @@ public partial class MainWindow : Window
         }
 
         return null;
+    }
+
+    private string? ResolveBackgroundHomeRoot(bool promptIfMissing)
+    {
+        var devRoot = NexusPathResolver.ResolveDefaultDevRoot(_settings);
+        if (devRoot is not null)
+        {
+            if (!string.Equals(_settings.DevRoot, devRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                _settings.DevRoot = devRoot;
+                NexusPathResolver.SaveSettings(_settings);
+            }
+            return NexusPathResolver.GetBackgroundImageRoot(devRoot);
+        }
+
+        return promptIfMissing && EnsureDevRootConfigured(promptIfMissing: true)
+            ? NexusPathResolver.GetBackgroundImageRoot(_settings.DevRoot!)
+            : null;
+    }
+
+    private bool EnsureDevRootConfigured(bool promptIfMissing)
+    {
+        var devRoot = NexusPathResolver.ResolveDefaultDevRoot(_settings);
+        if (devRoot is not null)
+        {
+            _settings.DevRoot = devRoot;
+            NexusPathResolver.SaveSettings(_settings);
+            return true;
+        }
+
+        if (!promptIfMissing)
+            return false;
+
+        var initialDirectory = !string.IsNullOrWhiteSpace(_settings.ReposRoot) && Directory.Exists(_settings.ReposRoot)
+            ? _settings.ReposRoot
+            : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        var dialog = new OpenFolderDialog
+        {
+            Title = "Epic Seven dev 폴더 또는 repos 폴더를 선택하세요",
+            InitialDirectory = initialDirectory,
+            Multiselect = false
+        };
+        if (dialog.ShowDialog(this) != true)
+            return false;
+
+        devRoot = NexusPathResolver.FindDevRoot(dialog.FolderName);
+        if (devRoot is null)
+        {
+            ThemedMessageBox.Show(
+                this,
+                "선택한 위치에서 game\\Resources\\res\\nexus 폴더를 찾지 못했습니다.\n\ndev 폴더 또는 그 상위 repos 폴더를 선택하세요.",
+                "DEV 경로가 올바르지 않습니다",
+                MessageBoxButton.OK,
+                MessageBoxImage.Warning);
+            return false;
+        }
+
+        _settings.DevRoot = devRoot;
+        _settings.BackgroundImageRoot = NexusPathResolver.GetBackgroundImageRoot(devRoot);
+        NexusPathResolver.SaveSettings(_settings);
+        Log($"DEV 경로 설정: {devRoot}");
+        return true;
     }
 
     private static bool IsRewardObjectKey(string key)

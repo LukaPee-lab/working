@@ -10,6 +10,7 @@ public static class NexusPathResolver
     private const string BundledEventWorkbookName = "nexus_event 차원 탐사 이벤트.xlsx";
 
     private const string RelativeEventPath = "design\\DB\\alpha\\nexus_event 차원 탐사 이벤트.xlsx";
+    private const string RelativeBackgroundImagePath = "game\\Resources\\res\\nexus";
 
     public static string SettingsPath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
@@ -76,6 +77,83 @@ public static class NexusPathResolver
 
         return null;
     }
+
+    public static string? ResolveDefaultDevRoot(AppSettings settings)
+    {
+        foreach (var candidate in new[] { settings.DevRoot, settings.BackgroundImageRoot })
+        {
+            var resolved = FindDevRoot(candidate);
+            if (resolved is not null)
+                return resolved;
+        }
+
+        try
+        {
+            foreach (var instance in EpicSevenDevClientService.FindInstances())
+            {
+                var resolved = FindDevRoot(instance.ExecutablePath);
+                if (resolved is not null)
+                    return resolved;
+            }
+        }
+        catch
+        {
+            // Running clients are only one optional discovery source.
+        }
+
+        foreach (var candidate in new[]
+                 {
+                     settings.ReposRoot,
+                     "D:\\repos",
+                     Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "repos")
+                 })
+        {
+            var resolved = FindDevRoot(candidate);
+            if (resolved is not null)
+                return resolved;
+        }
+
+        return null;
+    }
+
+    public static string? FindDevRoot(string? selectedPath)
+    {
+        if (string.IsNullOrWhiteSpace(selectedPath))
+            return null;
+
+        try
+        {
+            var path = Path.GetFullPath(selectedPath.Trim().Trim('"'));
+            if (File.Exists(path))
+                path = Path.GetDirectoryName(path) ?? path;
+
+            var directDev = Path.Combine(path, "dev");
+            if (LooksLikeDevRoot(directDev))
+                return directDev;
+
+            var current = Directory.Exists(path) ? new DirectoryInfo(path) : Directory.GetParent(path);
+            while (current is not null)
+            {
+                if (LooksLikeDevRoot(current.FullName))
+                    return current.FullName;
+                current = current.Parent;
+            }
+        }
+        catch
+        {
+            // Invalid or inaccessible candidates are ignored.
+        }
+
+        return null;
+    }
+
+    public static bool LooksLikeDevRoot(string? path)
+        => !string.IsNullOrWhiteSpace(path)
+           && Directory.Exists(path)
+           && Directory.Exists(GetBackgroundImageRoot(path));
+
+    public static string GetBackgroundImageRoot(string devRoot)
+        => Path.Combine(devRoot, RelativeBackgroundImagePath);
 
     private static IEnumerable<string> PlayerExeCandidates(AppSettings settings)
     {
