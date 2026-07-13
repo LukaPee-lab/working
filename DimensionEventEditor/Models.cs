@@ -34,7 +34,7 @@ public sealed class ChoiceGroupRow
     public string Memo { get; set; } = "";
     public string ExportId { get; set; } = EventWorkbookService.DefaultEventExportId;
     public string EventId { get; set; } = "";
-    public string Background { get; set; } = "dimension_spiral";
+    public string Background { get; set; } = "";
     public string NpcId { get; set; } = "";
     public string SituationTextTid { get; set; } = "";
     public string NextAction { get; set; } = "choice";

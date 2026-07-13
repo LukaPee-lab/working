@@ -112,6 +112,8 @@ public static class EventWorkbookService
                 issues.Add(Error($"{group.Id}: event_id가 base에 없습니다. ({group.EventId})"));
             if (Blank(group.Memo))
                 issues.Add(Error($"{group.Id}: 상황 메모가 비어 있습니다."));
+            if (Blank(group.Background))
+                issues.Add(Error($"{group.Id}: background가 비어 있습니다."));
             if (Blank(group.SituationTextTid))
                 issues.Add(Error($"{group.Id}: situation_text TID가 비어 있습니다."));
             if (Same(group.NextAction, "choice") && workbook.Choices.All(c => !Same(c.GroupId, group.Id)))
@@ -903,8 +905,7 @@ public static class EventWorkbookService
                     Seq = Math.Max(1, nextSeq),
                     ChoiceTextTid = $"{id}_choice_text",
                     CostType = "none",
-                    SuccessRewardType = "relic",
-                    SuccessRewardAmount = 1,
+                    SuccessRewardType = "none",
                     FailRewardType = "none"
                 };
                 workbook.Choices.Add(choice);
@@ -950,11 +951,19 @@ public static class EventWorkbookService
             choice.CostType = "none";
             changed++;
         }
-        if (Blank(choice.SuccessRewardType) || (Same(choice.SuccessRewardType, "none") && choice.SuccessRewardAmount is null))
+        if (Blank(choice.SuccessRewardType))
         {
-            choice.SuccessRewardType = "relic";
-            choice.SuccessRewardAmount = 1;
+            choice.SuccessRewardType = "none";
+            choice.SuccessRewardAmount = null;
             changed++;
+        }
+        else if (Same(choice.SuccessRewardType, "none"))
+        {
+            if (choice.SuccessRewardAmount is not null)
+            {
+                choice.SuccessRewardAmount = null;
+                changed++;
+            }
         }
         else if (!Same(choice.SuccessRewardType, "none") && choice.SuccessRewardAmount is null)
         {
@@ -1111,7 +1120,7 @@ public static class EventWorkbookService
                 Memo = isExit ? ExitMemoForEvent(evt, eventId) : "장면 내용을 입력하세요.",
                 ExportId = DefaultEventExportId,
                 EventId = eventId,
-                Background = template?.Background ?? "dimension_spiral",
+                Background = template?.Background ?? "",
                 NpcId = template?.NpcId ?? "",
                 SituationTextTid = $"{groupId}_situation_text",
                 NextAction = isExit ? "exit" : "choice",
@@ -1148,7 +1157,7 @@ public static class EventWorkbookService
             Memo = ExitMemoForEvent(evt, evt.Id),
             ExportId = EventWorkbookService.DefaultEventExportId,
             EventId = evt.Id,
-            Background = Default(template.Background, "dimension_spiral"),
+            Background = template.Background,
             NpcId = template.NpcId,
             SituationTextTid = $"{id}_situation_text",
             NextAction = "exit",
@@ -1538,7 +1547,7 @@ public static class EventWorkbookService
                 Memo = Cell(ws, row, 2),
                 ExportId = Default(Cell(ws, row, 3), DefaultEventExportId),
                 EventId = Cell(ws, row, 4),
-                Background = Default(Cell(ws, row, 5), "dimension_spiral"),
+                Background = Cell(ws, row, 5),
                 NpcId = Cell(ws, row, 6),
                 SituationTextTid = Cell(ws, row, 7),
                 NextAction = Default(Cell(ws, row, 8), "choice"),

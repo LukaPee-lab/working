@@ -2,7 +2,17 @@
 
 에픽세븐 차원 탐사 `nexus_event` 엑셀 DB를 노드 그래프로 보고 수정하는 WPF/.NET 10 에디터입니다.
 
-이 저장소에는 에디터 소스만 둡니다. 실제 작업 DB인 `nexus_event 차원 탐사 이벤트.xlsx`는 작업자 로컬 또는 배포 폴더의 `Data` 폴더에 따로 둡니다.
+이 저장소에는 에디터 소스만 둡니다. 실제 작업 DB인 `nexus_event 차원 탐사 이벤트.xlsx`는 작업자 로컬 DB 폴더에 둡니다. 배포 폴더의 `Data` 폴더는 실행/검증용 보조 데이터이며, 앱이 기본 DB로 자동 선택하지 않습니다.
+
+## 최신 반영 사항
+
+- Battle과 Exit은 우클릭으로 만드는 별도 객체가 아니라 장면 노드의 `next_action` 상태입니다.
+- 빈 캔버스 우클릭 메뉴에는 `장면 노드 추가`, `보상 노드 추가`만 표시합니다.
+- 과거 레이아웃에 남아 있던 임시 Battle 객체는 그래프를 다시 그릴 때 정리합니다.
+- Reward 노드는 독립 객체처럼 선택, 복사, 삭제, 이동됩니다. 클릭해도 앞 장면이나 선택지를 대신 선택하지 않습니다.
+- 여러 선택지 branch가 같은 Reward 노드에 연결될 수 있습니다. 나중에 연결한 branch는 같은 reward type/amount와 reward 이후 경로를 사용합니다.
+- Reward 노드의 출력은 다음 장면 또는 Exit 장면으로 연결합니다.
+- `background`는 자동 기본값을 넣지 않습니다. 비어 있으면 validation error로 표시합니다.
 
 ## 프로젝트 구성
 
@@ -53,6 +63,8 @@ Start-Process .\bin\Release\net10.0-windows\DimensionEventEditor.exe
 4. `%USERPROFILE%\repos\design\DB\alpha`
 
 직접 파일을 열려면 상단 `Open DB`를 사용합니다.
+
+배포 폴더의 `Data` 폴더는 자동 탐색 순서에 넣지 않습니다. DB 폴더가 우선입니다.
 
 ## 테이블 구조
 
@@ -132,8 +144,9 @@ Reward 노드는 선택지 row의 reward 컬럼을 시각화하는 보조 노드
 - T Reward는 `success_reward_type`, `success_reward_amount`를 수정합니다.
 - F Reward는 `fail_reward_type`, `fail_reward_amount`를 수정합니다.
 - 노드 안의 `reward_type`, `reward_amount` 필드를 더블 클릭해서 바로 수정할 수 있습니다.
+- Reward 노드를 클릭하면 Reward 전용 Inspector가 열립니다.
 - 여러 선택지 핀이 같은 Reward 노드에 연결될 수 있습니다.
-- 공유 Reward 노드의 값을 바꾸면 같은 위치를 공유하는 branch들의 reward 값이 같이 갱신됩니다.
+- 기존 Reward 노드에 다른 선택지 핀을 연결하면, 연결한 branch에 reward type/amount와 reward 이후 경로가 복사됩니다.
 - Reward 출력은 다음 장면 또는 Exit 장면으로 연결합니다.
 
 ### Battle 노드
@@ -247,9 +260,13 @@ Battle은 장면 노드 하나로 표현됩니다.
 
 ## Runtime Player
 
-상단 Play 버튼은 현재 편집 중인 데이터를 임시 runtime workbook으로 저장한 뒤 `Dimension Exploration Event Player.exe`를 실행합니다.
+상단 Play 버튼을 누르면 Godot Event Player 또는 실행 중인 Epic Seven DEV 클라이언트를 선택합니다.
 
-- 실행 중에는 DB 편집 UI를 잠급니다.
+- Godot은 현재 편집 중인 데이터를 임시 runtime workbook으로 저장한 뒤 `Dimension Exploration Event Player.exe`를 실행합니다.
+- Epic Seven DEV는 선택한 클라이언트의 console에 `#ct:nexus_run_event( '<event_id>' )`를 전송하고 해당 게임 창을 맨 앞으로 올립니다.
+- DEV가 여러 개 실행 중이면 창 제목, PID, 시작 시각을 보고 실행할 클라이언트를 선택합니다. STOVE 라이브 클라이언트는 목록에서 제외합니다.
+- DEV console에 `nexus_run_event needs a server active run`이 출력되면 에디터 Console에 `차원 탐사 인게임에 진입한 상태에서 재생해야 합니다.` 오류를 함께 표시합니다.
+- Godot 실행 중에는 DB 편집 UI를 잠급니다.
 - Stop 또는 다시 Play를 누르면 플레이어를 종료하고 편집 UI를 복구합니다.
 - Pause는 Godot 플레이어 프로세스를 suspend/resume합니다.
 
@@ -266,6 +283,7 @@ Battle은 장면 노드 하나로 표현됩니다.
 - 기본 이미지 루트: `D:\repos\dev\game\Resources\res\nexus`
 - Inspector 하단에 background preview가 표시됩니다.
 - 이미지가 없으면 `Preview not found`로 표시됩니다.
+- `background`가 비어 있으면 자동으로 기본 배경을 넣지 않고 validation error를 표시합니다.
 
 ## QA와 검증
 
@@ -282,10 +300,19 @@ QA diff entries: 0
 QA reload errors: 0
 ```
 
+최근 release 검증 기준:
+
+```text
+50 events / 367 groups / 397 choices
+QA diff entries: 0
+QA reload errors: 0
+Round-trip diff entries: 0
+```
+
 스킬 패키지의 검증 스크립트:
 
 ```powershell
-python C:\Users\lbh95\.codex\skills\dimension-exploration-event-designer\scripts\validate_nexus_event_tables.py --event-file "C:\Users\lbh95\Downloads\nexus_event 차원 탐사 이벤트.xlsx"
+python C:\Users\lbh9517\.codex\skills\dimension-exploration-event-designer\scripts\validate_nexus_event_tables.py --event-file "C:\Users\lbh9517\Downloads\nexus_event 차원 탐사 이벤트.xlsx"
 ```
 
 ## 이벤트 작성 스킬
@@ -293,13 +320,13 @@ python C:\Users\lbh95\.codex\skills\dimension-exploration-event-designer\scripts
 차원 탐사 이벤트 작성용 Codex 스킬은 다음 위치에 둡니다.
 
 ```text
-C:\Users\lbh95\.codex\skills\dimension-exploration-event-designer
+C:\Users\lbh9517\.codex\skills\dimension-exploration-event-designer
 ```
 
 배포용 zip:
 
 ```text
-C:\Users\lbh95\Downloads\dimension-exploration-event-skill.zip
+C:\Users\lbh9517\OneDrive - Super Creative\EpicSeven - 문서\기획실\2_코어시스템팀\1. 이병연\1_작업중\175126 260917 신규 PVE 전투\차원탐사_skill\dimension-exploration-event-skill.zip
 ```
 
 스킬은 다음 규칙을 Codex에게 알려줍니다.
@@ -314,7 +341,7 @@ C:\Users\lbh95\Downloads\dimension-exploration-event-skill.zip
 ## Publish
 
 ```powershell
-$publishDir = "C:\Users\lbh95\Desktop\dimension_event_editor_windows_release"
+$publishDir = "C:\Users\lbh9517\OneDrive - Super Creative\EpicSeven - 문서\기획실\2_코어시스템팀\1. 이병연\1_작업중\175126 260917 신규 PVE 전투\dimension_event_editor_windows_release"
 Get-Process DimensionEventEditor -ErrorAction SilentlyContinue | Stop-Process -Force
 dotnet publish .\DimensionEventEditor.csproj -c Release -r win-x64 --self-contained false -o $publishDir
 ```

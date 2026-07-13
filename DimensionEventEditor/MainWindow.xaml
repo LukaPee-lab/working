@@ -530,7 +530,7 @@
                             BorderThickness="1"
                             Panel.ZIndex="5">
                         <StackPanel Orientation="Horizontal">
-                            <Button x:Name="PlayButton" Content="▶" Style="{StaticResource RuntimeIconButton}" ToolTip="Play selected event" Click="PlayButton_Click"/>
+                            <Button x:Name="PlayButton" Content="▶" Style="{StaticResource RuntimeIconButton}" ToolTip="실행 대상 선택" Click="PlayButton_Click"/>
                             <Button x:Name="PauseButton" Content="❚❚" Style="{StaticResource RuntimeIconButton}" IsEnabled="False" ToolTip="Pause/Resume player" Click="PauseButton_Click"/>
                             <Button x:Name="StopButton" Content="■" Style="{StaticResource RuntimeIconButton}" IsEnabled="False" ToolTip="Stop player" Click="StopButton_Click"/>
                         </StackPanel>

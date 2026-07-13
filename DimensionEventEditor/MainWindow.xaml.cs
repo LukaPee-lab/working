@@ -96,9 +96,13 @@ public partial class MainWindow : Window
     private bool _rightDownOnCanvas;
     private ChoiceGroupRow? _copiedGroup;
     private List<EventChoiceRow> _copiedChoices = [];
+    private NodeLayout? _copiedObjectLayout;
+    private string? _copiedObjectKind;
+    private string _copiedObjectBranch = "terminal";
     private readonly List<string> _notiMessages = [];
     private readonly List<ConsoleLogEntry> _warningMessages = [];
     private readonly List<ConsoleLogEntry> _errorMessages = [];
+    private readonly List<ConsoleLogEntry> _runtimeErrorMessages = [];
     private readonly Stack<EventWorkbook> _undoStack = [];
     private readonly HashSet<string> _selectedNodeKeys = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<string, Point> _multiDragStartPositions = [];
@@ -613,6 +617,7 @@ public partial class MainWindow : Window
             AddIssue(issue);
         foreach (var issue in CompileSelectedEventLogic())
             AddIssue(issue);
+        _errorMessages.AddRange(_runtimeErrorMessages);
         RefreshConsoleLists();
     }
 
@@ -908,6 +913,8 @@ public partial class MainWindow : Window
         RefreshHierarchy();
         if (_selectedNodeKeys.Count > 1)
             BuildMultiSelectionInspector();
+        else if (!string.IsNullOrWhiteSpace(_selectedObjectKey) && _workbook.Layouts.ContainsKey(_selectedObjectKey))
+            BuildSelectedObjectInspector(_selectedObjectKey);
         else if (_selectedChoice is not null && _workbook.Choices.Contains(_selectedChoice))
             BuildChoiceInspector(_selectedChoice);
         else if (_selectedGroup is not null && _workbook.Groups.Contains(_selectedGroup))
@@ -1363,7 +1370,6 @@ public partial class MainWindow : Window
                 pair.Value.Y = RoundCanvasCoord(pair.Value.Y + dy);
             }
             else if ((pair.Key.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase)
-                      || pair.Key.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase)
                       || pair.Key.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase))
                      && string.Equals(pair.Value.EventId, _selectedEvent.Id, StringComparison.OrdinalIgnoreCase))
             {
@@ -1772,7 +1778,7 @@ public partial class MainWindow : Window
 
     private void RewardField_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.ClickCount < 2 || sender is not FrameworkElement { Tag: string tag } || _workbook is null)
+        if (sender is not FrameworkElement { Tag: string tag } || _workbook is null)
             return;
 
         var parts = tag.Split('|');
@@ -1783,8 +1789,22 @@ public partial class MainWindow : Window
         if (choice is null)
             return;
 
-        BeginInlineRewardFieldEdit(choice, parts[1], parts[2]);
+        var key = RewardLayoutKey(choice.Id, parts[1]);
+        SelectRewardObject(key);
+        if (e.ClickCount >= 2)
+            BeginInlineRewardFieldEdit(choice, parts[1], parts[2]);
         e.Handled = true;
+    }
+
+    private void SelectRewardObject(string key)
+    {
+        _selectedNodeKeys.Clear();
+        _selectedObjectKey = key;
+        _selectedChoice = null;
+        _selectedGroup = null;
+        RefreshHierarchy();
+        BuildRewardObjectInspector(key);
+        DrawGraph();
     }
 
     private void BeginInlineRewardFieldEdit(EventChoiceRow choice, string branch, string field)
@@ -1798,12 +1818,7 @@ public partial class MainWindow : Window
 
         var (type, amount) = GetChoiceReward(choice, branch);
         var original = field == "amount" ? amount?.ToString() ?? "" : type;
-        _selectedNodeKeys.Clear();
-        _selectedObjectKey = key;
-        _selectedChoice = choice;
-        _selectedGroup = _workbook.Groups.FirstOrDefault(g => string.Equals(g.Id, choice.GroupId, StringComparison.OrdinalIgnoreCase));
-        RefreshHierarchy();
-        BuildChoiceInspector(choice);
+        SelectRewardObject(key);
 
         var editor = new TextBox
         {
@@ -1841,8 +1856,8 @@ public partial class MainWindow : Window
             RefreshHierarchy();
             RefreshIssues();
             DrawGraph();
-            if (_workbook?.Choices.Contains(choice) == true)
-                BuildChoiceInspector(choice);
+            if (_workbook?.Layouts.ContainsKey(key) == true)
+                BuildRewardObjectInspector(key);
         }
 
         void OnLostFocus(object sender, RoutedEventArgs e) => Finish(commit: true);
@@ -2075,8 +2090,7 @@ public partial class MainWindow : Window
                 Seq = Math.Max(1, nextSeq),
                 ChoiceTextTid = $"{id}_choice_text",
                 CostType = "none",
-                SuccessRewardType = "relic",
-                SuccessRewardAmount = 1,
+                SuccessRewardType = "none",
                 FailRewardType = "none"
             };
             _workbook.Choices.Add(choice);
@@ -2099,11 +2113,14 @@ public partial class MainWindow : Window
             choice.ChoiceTextTid = $"{choice.Id}_choice_text";
         if (string.IsNullOrWhiteSpace(choice.CostType))
             choice.CostType = "none";
-        if (string.IsNullOrWhiteSpace(choice.SuccessRewardType)
-            || (string.Equals(choice.SuccessRewardType, "none", StringComparison.OrdinalIgnoreCase) && choice.SuccessRewardAmount is null))
+        if (string.IsNullOrWhiteSpace(choice.SuccessRewardType))
         {
-            choice.SuccessRewardType = "relic";
-            choice.SuccessRewardAmount = 1;
+            choice.SuccessRewardType = "none";
+            choice.SuccessRewardAmount = null;
+        }
+        else if (string.Equals(choice.SuccessRewardType, "none", StringComparison.OrdinalIgnoreCase))
+        {
+            choice.SuccessRewardAmount = null;
         }
         else if (!string.Equals(choice.SuccessRewardType, "none", StringComparison.OrdinalIgnoreCase) && choice.SuccessRewardAmount is null)
         {
@@ -2624,8 +2641,7 @@ public partial class MainWindow : Window
     {
         var key = RewardLayoutKey(choice.Id, branch);
         var selected = _selectedNodeKeys.Contains(key)
-            || string.Equals(_selectedObjectKey, key, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(_selectedChoice?.Id, choice.Id, StringComparison.OrdinalIgnoreCase);
+            || string.Equals(_selectedObjectKey, key, StringComparison.OrdinalIgnoreCase);
         var root = new Grid
         {
             Width = rect.Width,
@@ -2838,7 +2854,9 @@ public partial class MainWindow : Window
             }
             else if (pair.Key.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase))
             {
-                DrawPendingObjectNode(pair.Key, "Battle", "T/F 핀으로 연결", pair.Value, "battle");
+                _workbook.Layouts.Remove(pair.Key);
+                if (string.Equals(_selectedObjectKey, pair.Key, StringComparison.OrdinalIgnoreCase))
+                    _selectedObjectKey = null;
             }
             else if (pair.Key.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase))
             {
@@ -2940,7 +2958,6 @@ public partial class MainWindow : Window
     private static string ExitLayoutKey(string groupId) => $"exit|{groupId}";
     private static string ChoiceExitLayoutKey(string choiceId, string branch) => $"{ChoiceExitPrefix}{choiceId}|{branch}";
     private static string PendingRewardLayoutKey(string eventId, string branch) => $"{PendingRewardPrefix}{eventId}|{branch}|{Guid.NewGuid():N}";
-    private static string PendingBattleLayoutKey(string eventId) => $"{PendingBattlePrefix}{eventId}|{Guid.NewGuid():N}";
     private static string PendingExitLayoutKey(string eventId) => $"{PendingExitPrefix}{eventId}|{Guid.NewGuid():N}";
     private static string ChoiceOutPinKey(string choiceId, string branch) => $"out|choice|{choiceId}|{branch}";
     private static string RewardOutPinKey(string choiceId, string branch) => $"out|reward|{choiceId}|{branch}";
@@ -2961,7 +2978,6 @@ public partial class MainWindow : Window
 
     private static bool IsPendingObjectLayoutKey(string key)
         => key.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase)
-           || key.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase)
            || key.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase);
 
     private NodeLayout EnsureObjectLayout(string key, string eventId, double x, double y, double width, double height)
@@ -3911,14 +3927,18 @@ public partial class MainWindow : Window
         var previewGrid = new Grid();
         previewGrid.Children.Add(image);
         previewGrid.Children.Add(placeholder);
-        panel.Children.Add(new Border
+        var previewBorder = new Border
         {
             Height = 170,
             Background = new SolidColorBrush(Color.FromRgb(30, 30, 30)),
             BorderBrush = new SolidColorBrush(Color.FromRgb(68, 68, 68)),
             BorderThickness = new Thickness(1),
+            Cursor = Cursors.Hand,
+            ToolTip = "클릭해서 크게 보기",
             Child = previewGrid
-        });
+        };
+        previewBorder.MouseLeftButtonUp += (_, _) => ShowBackgroundPreview(group);
+        panel.Children.Add(previewBorder);
 
         var pathText = new TextBlock
         {
@@ -3949,6 +3969,28 @@ public partial class MainWindow : Window
 
         Refresh();
         return Refresh;
+    }
+
+    private void ShowBackgroundPreview(ChoiceGroupRow group)
+    {
+        var key = NormalizeBackgroundKey(group.Background);
+        if (string.IsNullOrWhiteSpace(key))
+        {
+            ThemedMessageBox.Show(this, "background가 비어 있습니다.", "Background Preview", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var resolved = ResolveBackgroundImagePath(group.Background);
+        if (resolved is null)
+        {
+            ThemedMessageBox.Show(this, $"Background image file not found.\n\n{key}", "Background Preview", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        new BackgroundPreviewWindow(key, resolved)
+        {
+            Owner = this
+        }.ShowDialog();
     }
 
     private string? ResolveBackgroundImagePath(string background)
@@ -3986,7 +4028,7 @@ public partial class MainWindow : Window
     private static string NormalizeBackgroundKey(string background)
     {
         var key = background.Trim().Trim('"');
-        return string.IsNullOrWhiteSpace(key) ? "dimension_spiral" : key;
+        return key;
     }
 
     private static ImageSource? LoadBackgroundPreviewBitmap(string path, int decodePixelWidth)
@@ -4357,14 +4399,30 @@ public partial class MainWindow : Window
         if (result != MessageBoxResult.OK)
             return;
         PushUndo();
+        var groupId = choice.GroupId;
         PromoteChoiceRewardsToPending(choice);
         _workbook.Choices.Remove(choice);
         _workbook.Layouts.Remove(ChoiceExitLayoutKey(choice.Id, "success"));
         _workbook.Layouts.Remove(ChoiceExitLayoutKey(choice.Id, "fail"));
+        RenumberChoicesInGroup(groupId);
         _selectedChoice = null;
         RefreshHierarchy();
         DrawGraph();
         RefreshIssues();
+    }
+
+    private void RenumberChoicesInGroup(string groupId)
+    {
+        if (_workbook is null || string.IsNullOrWhiteSpace(groupId))
+            return;
+
+        var group = _workbook.Groups.FirstOrDefault(g => string.Equals(g.Id, groupId, StringComparison.OrdinalIgnoreCase));
+        if (group is null)
+            return;
+
+        var choices = VisibleChoicesForGroup(group, _workbook.Choices.Where(c => string.Equals(c.GroupId, group.Id, StringComparison.OrdinalIgnoreCase)));
+        for (var i = 0; i < choices.Count; i++)
+            choices[i].Seq = i + 1;
     }
 
     private void DeleteSelected()
@@ -4382,7 +4440,6 @@ public partial class MainWindow : Window
         {
             PushUndo();
             if (_selectedObjectKey.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase)
-                || _selectedObjectKey.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase)
                 || _selectedObjectKey.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase))
             {
                 _workbook.Layouts.Remove(_selectedObjectKey);
@@ -4493,7 +4550,6 @@ public partial class MainWindow : Window
 
         foreach (var key in selected.Where(k =>
                       k.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase)
-                      || k.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase)
                       || k.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase)))
             _workbook.Layouts.Remove(key);
 
@@ -4600,6 +4656,8 @@ public partial class MainWindow : Window
         }
         if (!groups.Any(IsExitGroup))
             issues.Add(FlowError($"{_selectedEvent.Id}: 이벤트 종료용 next_action=exit 장면이 없습니다."));
+        foreach (var group in groups.Where(g => string.IsNullOrWhiteSpace(g.Background)).OrderBy(g => g.Id))
+            issues.Add(FlowError($"{group.Id}: background가 비어 있습니다."));
 
         var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var queue = new Queue<string>();
@@ -4771,6 +4829,12 @@ public partial class MainWindow : Window
         if (_workbook is null)
             return;
 
+        if (SelectedObjectKeyForClipboard() is { } objectKey)
+        {
+            CopySelectedObjectNode(objectKey);
+            return;
+        }
+
         var group = _selectedGroup;
         if (group is null && _selectedChoice is not null)
             group = _workbook.Groups.FirstOrDefault(g => g.Id == _selectedChoice.GroupId);
@@ -4783,17 +4847,27 @@ public partial class MainWindow : Window
             .OrderBy(c => c.Seq))
             .Select(CloneChoiceForClipboard)
             .ToList();
+        _copiedObjectLayout = null;
+        _copiedObjectKind = null;
         Log($"COPY NODE: {group.Id}");
     }
 
     private void PasteCopiedNode()
     {
-        if (_workbook is null || _selectedEvent is null || _copiedGroup is null)
+        if (_workbook is null || _selectedEvent is null)
+            return;
+
+        if (PasteCopiedObjectNode())
+            return;
+
+        if (_copiedGroup is null)
             return;
 
         PushUndo();
-        var id = NextGroupId(_selectedEvent.Id);
         var group = CloneGroupForClipboard(_copiedGroup);
+        var id = IsExitGroup(group)
+            ? EventWorkbookService.NextExitGroupId(_workbook, _selectedEvent.Id)
+            : NextGroupId(_selectedEvent.Id);
         group.Id = id;
         group.EventId = _selectedEvent.Id;
         group.SituationTextTid = $"{id}_situation_text";
@@ -4808,8 +4882,7 @@ public partial class MainWindow : Window
             choice.Id = choiceId;
             choice.GroupId = id;
             choice.ChoiceTextTid = $"{choiceId}_choice_text";
-            choice.SuccessNextGroupId = "";
-            choice.FailNextGroupId = "";
+            ClearPastedChoiceBranchPayload(choice);
             _workbook.Choices.Add(choice);
         }
 
@@ -4838,6 +4911,129 @@ public partial class MainWindow : Window
         DrawGraph();
         RefreshIssues();
         Log($"PASTE NODE: {id} / 연결 제거됨");
+    }
+
+    private string? SelectedObjectKeyForClipboard()
+    {
+        if (!string.IsNullOrWhiteSpace(_selectedObjectKey))
+            return _selectedObjectKey;
+
+        if (_selectedNodeKeys.Count == 1)
+        {
+            var key = _selectedNodeKeys.First();
+            if (IsRewardObjectKey(key))
+                return key;
+        }
+
+        return null;
+    }
+
+    private static bool IsRewardObjectKey(string key)
+        => key.StartsWith("reward|", StringComparison.OrdinalIgnoreCase)
+           || key.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase)
+           || key.StartsWith(GroupRewardPrefix, StringComparison.OrdinalIgnoreCase);
+
+    private void CopySelectedObjectNode(string key)
+    {
+        if (_workbook is null)
+            return;
+
+        if (!TryBuildCopiedRewardLayout(key, out var copied, out var branch))
+        {
+            Log($"COPY SKIP: object node {key}");
+            return;
+        }
+
+        _copiedObjectLayout = copied;
+        _copiedObjectKind = "reward";
+        _copiedObjectBranch = branch;
+        _copiedGroup = null;
+        _copiedChoices.Clear();
+        Log($"COPY REWARD NODE: {copied.PayloadType} x{copied.PayloadAmount?.ToString() ?? "1"}");
+    }
+
+    private bool TryBuildCopiedRewardLayout(string key, out NodeLayout copied, out string branch)
+    {
+        copied = new NodeLayout();
+        branch = "terminal";
+
+        if (_workbook is null || !_workbook.Layouts.TryGetValue(key, out var sourceLayout))
+            return false;
+
+        var rewardType = sourceLayout.PayloadType;
+        var rewardAmount = sourceLayout.PayloadAmount;
+
+        if (key.StartsWith("reward|", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!TryGetRewardBranchPayload(key, out var choice, out branch))
+                return false;
+            (rewardType, rewardAmount) = GetChoiceReward(choice, branch);
+        }
+        else if (key.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            branch = PendingRewardBranch(key);
+        }
+
+        if (string.IsNullOrWhiteSpace(rewardType) || IsNone(rewardType))
+            rewardType = "gold";
+
+        copied = new NodeLayout
+        {
+            EventId = !string.IsNullOrWhiteSpace(sourceLayout.EventId)
+                ? sourceLayout.EventId
+                : _selectedEvent?.Id ?? "",
+            GroupId = "",
+            X = RoundCanvasCoord(sourceLayout.X),
+            Y = RoundCanvasCoord(sourceLayout.Y),
+            Width = RewardNodeWidth,
+            Height = RewardNodeHeight,
+            PayloadType = rewardType,
+            PayloadAmount = rewardAmount ?? 1
+        };
+        return true;
+    }
+
+    private bool PasteCopiedObjectNode()
+    {
+        if (_workbook is null
+            || _selectedEvent is null
+            || _copiedObjectLayout is null
+            || !string.Equals(_copiedObjectKind, "reward", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        PushUndo();
+        var basePoint = new Point(_copiedObjectLayout.X + 46, _copiedObjectLayout.Y + 46);
+        if (!string.IsNullOrWhiteSpace(_selectedObjectKey)
+            && _workbook.Layouts.TryGetValue(_selectedObjectKey, out var selectedLayout))
+        {
+            basePoint = new Point(selectedLayout.X + 46, selectedLayout.Y + 46);
+        }
+
+        var key = PendingRewardLayoutKey(_selectedEvent.Id, _copiedObjectBranch);
+        _workbook.Layouts[key] = new NodeLayout
+        {
+            EventId = _selectedEvent.Id,
+            GroupId = key,
+            X = RoundCanvasCoord(basePoint.X),
+            Y = RoundCanvasCoord(basePoint.Y),
+            Width = RewardNodeWidth,
+            Height = RewardNodeHeight,
+            PayloadType = _copiedObjectLayout.PayloadType,
+            PayloadAmount = _copiedObjectLayout.PayloadAmount ?? 1
+        };
+
+        _selectedNodeKeys.Clear();
+        _selectedObjectKey = key;
+        _selectedGroup = null;
+        _selectedChoice = null;
+        RefreshHierarchy();
+        DrawGraph();
+        BuildPendingObjectInspector(key);
+        RefreshIssues();
+        Log($"PASTE REWARD NODE: {key} / 연결 제거됨");
+        return true;
     }
 
     private string NextGroupId(string eventId)
@@ -4872,7 +5068,7 @@ public partial class MainWindow : Window
             EventId = eventId,
             Memo = "event end",
             ExportId = EventWorkbookService.DefaultEventExportId,
-            Background = template?.Background ?? "dimension_spiral",
+            Background = template?.Background ?? "",
             NpcId = template?.NpcId ?? "",
             SituationTextTid = $"{id}_situation_text",
             NextAction = "exit",
@@ -4913,6 +5109,16 @@ public partial class MainWindow : Window
         FailRewardAmount = source.FailRewardAmount,
         FailNextGroupId = source.FailNextGroupId
     };
+
+    private static void ClearPastedChoiceBranchPayload(EventChoiceRow choice)
+    {
+        choice.SuccessRewardType = "none";
+        choice.SuccessRewardAmount = null;
+        choice.SuccessNextGroupId = "";
+        choice.FailRewardType = "none";
+        choice.FailRewardAmount = null;
+        choice.FailNextGroupId = "";
+    }
 
     private void PushUndo()
     {
@@ -4962,7 +5168,7 @@ public partial class MainWindow : Window
         foreach (var t in source.TextEntries)
             clone.TextEntries.Add(new TextEntry { ExportId = t.ExportId, Tid = t.Tid, Text = t.Text, Comment = t.Comment });
         foreach (var pair in source.Layouts)
-            clone.Layouts[pair.Key] = new NodeLayout { EventId = pair.Value.EventId, GroupId = pair.Value.GroupId, X = pair.Value.X, Y = pair.Value.Y, Width = pair.Value.Width, Height = pair.Value.Height };
+            clone.Layouts[pair.Key] = new NodeLayout { EventId = pair.Value.EventId, GroupId = pair.Value.GroupId, X = pair.Value.X, Y = pair.Value.Y, Width = pair.Value.Width, Height = pair.Value.Height, PayloadType = pair.Value.PayloadType, PayloadAmount = pair.Value.PayloadAmount };
         foreach (var pair in source.ColumnHelps)
             clone.ColumnHelps[pair.Key] = pair.Value;
         return clone;
@@ -4983,6 +5189,8 @@ public partial class MainWindow : Window
     private void ConsoleClearButton_Click(object sender, RoutedEventArgs e)
     {
         _notiMessages.Clear();
+        _runtimeErrorMessages.Clear();
+        RefreshIssues();
         RefreshConsoleLists();
     }
 
@@ -5105,7 +5313,118 @@ public partial class MainWindow : Window
             return;
         }
 
+        var picker = new RuntimeTargetPickerWindow(EpicSevenDevClientService.FindInstances())
+        {
+            Owner = this
+        };
+        if (picker.ShowDialog() != true)
+            return;
+
+        if (picker.SelectedTarget == RuntimeLaunchTarget.EpicSevenDev)
+        {
+            if (picker.SelectedDevInstance is not null)
+                _ = StartSelectedEventInEpicSevenDevAsync(picker.SelectedDevInstance);
+            return;
+        }
+
         StartSelectedEventPlayer();
+    }
+
+    private async Task StartSelectedEventInEpicSevenDevAsync(EpicSevenDevInstance instance)
+    {
+        if (!PrepareSelectedEventForRuntime())
+            return;
+
+        var eventId = _selectedEvent!.Id;
+        _runtimeErrorMessages.RemoveAll(entry =>
+            string.Equals(entry.TargetId, eventId, StringComparison.OrdinalIgnoreCase)
+            && entry.Message.Contains("nexus_run_event", StringComparison.OrdinalIgnoreCase));
+        RefreshIssues();
+
+        string before;
+        try { before = EpicSevenDevClientService.ReadConsoleText(instance); }
+        catch { before = ""; }
+
+        var result = EpicSevenDevClientService.SendRunEvent(instance, eventId);
+        if (!result.Success)
+        {
+            AddRuntimeError(eventId, result.Message);
+            ThemedMessageBox.Show(this, result.Message, "Epic Seven DEV 실행 실패", MessageBoxButton.OK, MessageBoxImage.Error);
+            return;
+        }
+
+        Log($"EPIC7 DEV RUN EVENT: {eventId} / PID {instance.ProcessId} / {instance.GameWindowTitle}");
+
+        for (var attempt = 0; attempt < 16; attempt++)
+        {
+            await Task.Delay(250);
+            string current;
+            try { current = EpicSevenDevClientService.ReadConsoleText(instance); }
+            catch { break; }
+            if (string.IsNullOrWhiteSpace(current))
+                continue;
+
+            var delta = current.Length >= before.Length && current.StartsWith(before, StringComparison.Ordinal)
+                ? current[before.Length..]
+                : current;
+            if (delta.Contains("nexus_run_event needs a server active run", StringComparison.OrdinalIgnoreCase))
+            {
+                AddRuntimeError(
+                    eventId,
+                    $"[LUA] [ERROR] [NEXUS] nexus_run_event needs a server active run / " +
+                    $"차원 탐사 인게임에 진입한 상태에서 재생해야 합니다. / {eventId}");
+                return;
+            }
+
+            if (delta.Contains("[ERROR]", StringComparison.OrdinalIgnoreCase)
+                && delta.Contains("nexus_run_event", StringComparison.OrdinalIgnoreCase))
+            {
+                var line = delta.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)
+                    .LastOrDefault(text => text.Contains("nexus_run_event", StringComparison.OrdinalIgnoreCase))
+                    ?? $"DEV console에서 nexus_run_event 오류가 발생했습니다. / {eventId}";
+                AddRuntimeError(eventId, line.Trim());
+                return;
+            }
+        }
+    }
+
+    private void AddRuntimeError(string eventId, string message)
+    {
+        var entry = new ConsoleLogEntry
+        {
+            Severity = "Error",
+            Message = $"Error: {message}",
+            TargetId = eventId,
+            TargetKind = "event"
+        };
+        _runtimeErrorMessages.Add(entry);
+        _errorMessages.Add(entry);
+        RefreshConsoleLists();
+    }
+
+    private bool PrepareSelectedEventForRuntime()
+    {
+        if (_workbook is null || _selectedEvent is null)
+            return false;
+
+        EnsureGeneratedTids(force: false);
+        if (EventWorkbookService.NormalizeExitTerminals(_workbook) > 0)
+        {
+            RestoreSelectionAfterModelChange();
+            RefreshEventList();
+            RefreshHierarchy();
+            DrawGraph();
+        }
+        RefreshIssues();
+        var errors = EventWorkbookService.Validate(_workbook)
+            .Concat(CompileSelectedEventLogic())
+            .Count(issue => issue.Severity == ValidationSeverity.Error);
+        if (errors <= 0)
+            return true;
+
+        Log($"COMPILE FAILED: {_selectedEvent.Id} / 오류 {errors}건");
+        ThemedMessageBox.Show(this, $"로직 오류 {errors}건이 있습니다. Console / Validation을 확인하세요.", "Compile failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+        return false;
     }
 
     private void PauseButton_Click(object sender, RoutedEventArgs e)
@@ -5139,27 +5458,10 @@ public partial class MainWindow : Window
 
     private void StartSelectedEventPlayer()
     {
-        if (_workbook is null || _selectedEvent is null)
+        if (!PrepareSelectedEventForRuntime())
             return;
 
-        EnsureGeneratedTids(force: false);
-        if (EventWorkbookService.NormalizeExitTerminals(_workbook) > 0)
-        {
-            RestoreSelectionAfterModelChange();
-            RefreshEventList();
-            RefreshHierarchy();
-            DrawGraph();
-        }
-        RefreshIssues();
-        var errors = EventWorkbookService.Validate(_workbook)
-            .Concat(CompileSelectedEventLogic())
-            .Count(i => i.Severity == ValidationSeverity.Error);
-        if (errors > 0)
-        {
-            Log($"COMPILE FAILED: {_selectedEvent.Id} / 오류 {errors}건");
-            ThemedMessageBox.Show(this, $"로직 오류 {errors}건이 있습니다. Console / Validation을 확인하세요.", "Compile failed", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
+        var selectedEvent = _selectedEvent!;
 
         var playerExe = ResolvePlayerExeOrPrompt();
         if (string.IsNullOrWhiteSpace(playerExe))
@@ -5168,7 +5470,7 @@ public partial class MainWindow : Window
         try
         {
             var runtimeWorkbook = CreateRuntimeWorkbook();
-            WritePlayerLaunchRequest(playerExe, runtimeWorkbook, _runtimeRelicWorkbookPath, _selectedEvent.Id);
+            WritePlayerLaunchRequest(playerExe, runtimeWorkbook, _runtimeRelicWorkbookPath, selectedEvent.Id);
 
             var startInfo = new ProcessStartInfo
             {
@@ -5178,7 +5480,7 @@ public partial class MainWindow : Window
             };
             startInfo.ArgumentList.Add("--");
             startInfo.ArgumentList.Add("--event-id");
-            startInfo.ArgumentList.Add(_selectedEvent.Id);
+            startInfo.ArgumentList.Add(selectedEvent.Id);
             startInfo.ArgumentList.Add("--excel");
             startInfo.ArgumentList.Add(runtimeWorkbook);
             if (!string.IsNullOrWhiteSpace(_runtimeRelicWorkbookPath))
@@ -5200,7 +5502,7 @@ public partial class MainWindow : Window
             _playerProcess.Exited += (_, _) => Dispatcher.BeginInvoke(() => OnPlayerExited("event"));
             _playerWatchTimer.Start();
             Keyboard.ClearFocus();
-            Log($"PLAYER START: {_selectedEvent.Id} / {IoPath.GetFileName(playerExe)}");
+            Log($"PLAYER START: {selectedEvent.Id} / {IoPath.GetFileName(playerExe)}");
             UpdateRuntimeUiState();
         }
         catch (IOException)
@@ -5999,6 +6301,41 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
+    private void BuildSelectedObjectInspector(string key)
+    {
+        if (_workbook is null)
+            return;
+
+        if (key.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase)
+            || key.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            BuildPendingObjectInspector(key);
+        }
+        else if (key.StartsWith("reward|", StringComparison.OrdinalIgnoreCase))
+        {
+            BuildRewardObjectInspector(key);
+        }
+        else if (key.StartsWith(ChoiceExitPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var parts = key.Split('|');
+            if (parts.Length >= 3)
+            {
+                var choice = _workbook.Choices.FirstOrDefault(c => c.Id == parts[1]);
+                if (choice is not null)
+                    BuildChoiceInspector(choice);
+            }
+        }
+        else if (key.StartsWith("battle|", StringComparison.OrdinalIgnoreCase)
+                 || key.StartsWith(GroupRewardPrefix, StringComparison.OrdinalIgnoreCase)
+                 || key.StartsWith("exit|", StringComparison.OrdinalIgnoreCase))
+        {
+            var groupId = key.Split('|').ElementAtOrDefault(1) ?? "";
+            var group = _workbook.Groups.FirstOrDefault(g => g.Id == groupId);
+            if (group is not null)
+                BuildGroupInspector(group);
+        }
+    }
+
     private void ObjectNode_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (sender is not FrameworkElement { Tag: string key } || _workbook is null)
@@ -6012,27 +6349,9 @@ public partial class MainWindow : Window
         }
         _selectedNodeKeys.Clear();
         _selectedObjectKey = key;
-        if (key.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase)
-            || key.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase)
-            || key.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase))
-        {
-            BuildPendingObjectInspector(key);
-        }
-        else if (key.StartsWith("reward|", StringComparison.OrdinalIgnoreCase))
-        {
-            var parts = key.Split('|');
-            if (parts.Length >= 3)
-            {
-                var choice = _workbook.Choices.FirstOrDefault(c => c.Id == parts[1]);
-                if (choice is not null)
-                {
-                    _selectedChoice = choice;
-                    _selectedGroup = _workbook.Groups.FirstOrDefault(g => g.Id == choice.GroupId);
-                    BuildChoiceInspector(choice);
-                }
-            }
-        }
-        else if (key.StartsWith(ChoiceExitPrefix, StringComparison.OrdinalIgnoreCase))
+        _selectedGroup = null;
+        _selectedChoice = null;
+        if (key.StartsWith(ChoiceExitPrefix, StringComparison.OrdinalIgnoreCase))
         {
             var parts = key.Split('|');
             if (parts.Length >= 3)
@@ -6079,6 +6398,7 @@ public partial class MainWindow : Window
                 BuildGroupInspector(group);
             }
         }
+        BuildSelectedObjectInspector(key);
 
         BeginLayoutDrag(key, e);
         RefreshHierarchy();
@@ -6090,9 +6410,8 @@ public partial class MainWindow : Window
         InspectorPanel.Children.Clear();
         ClearInspectorPreview();
         var isReward = key.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase);
-        var isBattle = key.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase);
         var isExit = key.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase);
-        InspectorPanel.Children.Add(SectionTitle(isReward ? "보상 노드" : isBattle ? "전투 노드" : isExit ? "종료 노드" : "객체 노드"));
+        InspectorPanel.Children.Add(SectionTitle(isReward ? "보상 노드" : isExit ? "종료 노드" : "객체 노드"));
         if (isReward && _workbook?.Layouts.TryGetValue(key, out var rewardLayout) == true)
         {
             if (string.IsNullOrWhiteSpace(rewardLayout.PayloadType))
@@ -6111,11 +6430,9 @@ public partial class MainWindow : Window
         {
             Text = isReward
                 ? "선택지 T/F 핀에서 연결하면 해당 결과의 reward 컬럼으로 저장됩니다. 다음 흐름은 보상 노드의 출력 핀에서 직접 연결하세요."
-                : isBattle
-                    ? "장면 노드의 출력 핀에서 연결하면 해당 장면의 next_action=battle로 저장됩니다."
-                    : isExit
-                        ? "장면 노드의 출력 핀에서 연결하면 해당 장면의 next_action=exit로 저장됩니다."
-                        : "선택지 T/F 핀에서 연결할 수 있는 객체 노드입니다.",
+                : isExit
+                    ? "장면 노드의 출력 핀에서 연결하면 해당 장면의 next_action=exit로 저장됩니다."
+                    : "선택지 T/F 핀에서 연결할 수 있는 객체 노드입니다.",
             Foreground = new SolidColorBrush(Color.FromRgb(190, 190, 190)),
             TextWrapping = TextWrapping.Wrap,
             Margin = new Thickness(0, 6, 0, 12)
@@ -6123,6 +6440,60 @@ public partial class MainWindow : Window
         var delete = new Button
         {
             Content = "노드 삭제",
+            Height = 32,
+            Background = new SolidColorBrush(Color.FromRgb(112, 45, 52)),
+            Foreground = Brushes.White
+        };
+        delete.Click += (_, _) => DeleteSelected();
+        InspectorPanel.Children.Add(delete);
+    }
+
+    private void BuildRewardObjectInspector(string key)
+    {
+        InspectorPanel.Children.Clear();
+        ClearInspectorPreview();
+        InspectorPanel.Children.Add(SectionTitle("보상 노드"));
+        if (!TryGetRewardBranchPayload(key, out var choice, out var branch))
+        {
+            InspectorPanel.Children.Add(new TextBlock
+            {
+                Text = "보상 정보를 찾을 수 없습니다.",
+                Foreground = new SolidColorBrush(Color.FromRgb(190, 190, 190)),
+                TextWrapping = TextWrapping.Wrap
+            });
+            return;
+        }
+
+        var (rewardType, rewardAmount) = GetChoiceReward(choice, branch);
+        AddText("reward_type", rewardType, v =>
+        {
+            ApplyRewardClusterField(choice, branch, "type", v);
+            BuildRewardObjectInspector(key);
+        });
+        AddText("reward_amount", rewardAmount?.ToString() ?? "", v =>
+        {
+            ApplyRewardClusterField(choice, branch, "amount", v);
+            BuildRewardObjectInspector(key);
+        });
+        AddText("next_group_id", GetChoiceNextGroup(choice, branch), v =>
+        {
+            if (string.IsNullOrWhiteSpace(v))
+                ClearRewardClusterNextGroup(key);
+            else
+                SetRewardClusterNextGroup(choice, branch, v);
+            BuildRewardObjectInspector(key);
+        });
+
+        InspectorPanel.Children.Add(new TextBlock
+        {
+            Text = "같은 위치에 겹친 보상 노드가 있으면 보상값과 다음 장면이 함께 적용됩니다.",
+            Foreground = new SolidColorBrush(Color.FromRgb(190, 190, 190)),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 8, 0, 12)
+        });
+        var delete = new Button
+        {
+            Content = "보상 노드 삭제",
             Height = 32,
             Background = new SolidColorBrush(Color.FromRgb(112, 45, 52)),
             Foreground = Brushes.White
@@ -6610,7 +6981,6 @@ public partial class MainWindow : Window
                      && choiceIds.Contains(key.Split('|').ElementAtOrDefault(1) ?? ""))
                 yield return key;
             else if ((key.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase)
-                      || key.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase)
                       || key.StartsWith(PendingExitPrefix, StringComparison.OrdinalIgnoreCase))
                      && string.Equals(_workbook.Layouts[key].EventId, _selectedEvent.Id, StringComparison.OrdinalIgnoreCase))
                 yield return key;
@@ -6659,9 +7029,6 @@ public partial class MainWindow : Window
         var addReward = new MenuItem { Header = "보상 노드 추가" };
         addReward.Click += (_, _) => AddRewardNodeFromMenu(canvasPoint);
         menu.Items.Add(addReward);
-        var addBattle = new MenuItem { Header = "전투 노드 추가" };
-        addBattle.Click += (_, _) => AddBattleNodeFromMenu(canvasPoint);
-        menu.Items.Add(addBattle);
         menu.IsOpen = true;
     }
 
@@ -6684,29 +7051,6 @@ public partial class MainWindow : Window
             PayloadAmount = 1
         };
         _selectedObjectKey = key;
-        DrawGraph();
-        RefreshIssues();
-    }
-
-    private void AddBattleNodeFromMenu(Point canvasPoint)
-    {
-        if (_workbook is null || _selectedEvent is null)
-            return;
-
-        PushUndo();
-        var key = PendingBattleLayoutKey(_selectedEvent.Id);
-        _workbook.Layouts[key] = new NodeLayout
-        {
-            EventId = _selectedEvent.Id,
-            GroupId = key,
-            X = RoundCanvasCoord(canvasPoint.X),
-            Y = RoundCanvasCoord(canvasPoint.Y),
-            Width = BattleNodeWidth,
-            Height = BattleNodeHeight
-        };
-        _selectedObjectKey = key;
-        _selectedGroup = null;
-        _selectedChoice = null;
         DrawGraph();
         RefreshIssues();
     }
@@ -6818,7 +7162,6 @@ public partial class MainWindow : Window
         {
             var choice = _workbook.Choices.FirstOrDefault(c => c.Id == _linkChoiceId);
             var pendingRewardKey = FindPendingRewardAt(point);
-            var pendingBattleKey = FindPendingBattleAt(point);
             var pendingExitKey = FindPendingExitAt(point);
             var existingRewardKey = FindExistingRewardAt(point);
             var existingBattleKey = FindExistingBattleAt(point);
@@ -6842,17 +7185,13 @@ public partial class MainWindow : Window
             {
                 PushUndo();
                 AttachPendingReward(choice, _linkBranch, pendingRewardKey);
-                BuildChoiceInspector(choice);
+                BuildRewardObjectInspector(RewardLayoutKey(choice.Id, _linkBranch));
             }
             else if (choice is not null && existingRewardKey is not null)
             {
                 PushUndo();
                 AttachChoiceToExistingReward(choice, _linkBranch, existingRewardKey);
-                BuildChoiceInspector(choice);
-            }
-            else if (choice is not null && pendingBattleKey is not null)
-            {
-                ThemedMessageBox.Show(this, "전투 노드는 장면 노드의 출력 핀에 연결해서 next_action=battle로 설정하세요.", "연결 불가한 노드입니다", MessageBoxButton.OK, MessageBoxImage.Information);
+                BuildRewardObjectInspector(RewardLayoutKey(choice.Id, _linkBranch));
             }
             else if (choice is not null && existingBattleKey is not null)
             {
@@ -6874,7 +7213,6 @@ public partial class MainWindow : Window
             else if (choice is not null
                      && (pendingRewardKey is not null
                          || existingRewardKey is not null
-                         || pendingBattleKey is not null
                          || existingBattleKey is not null
                          || pendingExitKey is not null
                          || existingExitKey is not null))
@@ -6934,16 +7272,15 @@ public partial class MainWindow : Window
             return;
 
         var pendingRewardKey = FindPendingRewardAt(point);
-        var pendingBattleKey = FindPendingBattleAt(point);
         var pendingExitKey = FindPendingExitAt(point);
         var existingRewardKey = FindExistingRewardAt(point);
         var existingBattleKey = FindExistingBattleAt(point);
         var existingExitKey = FindExistingExitAt(point);
 
-        if (pendingBattleKey is not null || existingBattleKey is not null)
+        if (existingBattleKey is not null)
         {
             PushUndo();
-            AttachBattleToGroup(group, pendingBattleKey ?? existingBattleKey!);
+            AttachBattleToGroup(group, existingBattleKey);
             BuildGroupInspector(group);
         }
         else if (pendingRewardKey is not null || existingRewardKey is not null)
@@ -6985,6 +7322,8 @@ public partial class MainWindow : Window
             Height = RewardNodeHeight
         };
         _selectedObjectKey = key;
+        _selectedChoice = null;
+        _selectedGroup = null;
     }
 
     private void AttachChoiceToExistingReward(EventChoiceRow choice, string branch, string rewardKey)
@@ -6994,12 +7333,16 @@ public partial class MainWindow : Window
 
         var rewardType = "gold";
         int? rewardAmount = 1;
+        var nextGroupId = "";
         if (TryGetRewardBranchPayload(rewardKey, out var sourceChoice, out var sourceBranch))
         {
             (rewardType, rewardAmount) = GetChoiceReward(sourceChoice, sourceBranch);
+            nextGroupId = GetChoiceNextGroup(sourceChoice, sourceBranch);
         }
 
         SetChoiceReward(choice, branch, rewardType, rewardAmount);
+        if (!string.IsNullOrWhiteSpace(nextGroupId))
+            SetChoiceBranchNextGroup(choice, branch, nextGroupId);
 
         var key = RewardLayoutKey(choice.Id, branch);
         _workbook.Layouts[key] = new NodeLayout
@@ -7012,8 +7355,8 @@ public partial class MainWindow : Window
             Height = RewardNodeHeight
         };
         _selectedObjectKey = key;
-        _selectedChoice = choice;
-        _selectedGroup = _workbook.Groups.FirstOrDefault(g => string.Equals(g.Id, choice.GroupId, StringComparison.OrdinalIgnoreCase));
+        _selectedChoice = null;
+        _selectedGroup = null;
     }
 
     private void AttachPendingChoiceExit(EventChoiceRow choice, string branch, string pendingKey)
@@ -7051,47 +7394,6 @@ public partial class MainWindow : Window
         SetChoiceDirectNextGroup(choice, branch, exitGroup.Id);
         _selectedObjectKey = null;
         _selectedGroup = exitGroup;
-        _selectedChoice = null;
-    }
-
-    private void AttachPendingChoiceBattle(EventChoiceRow choice, string branch, string pendingKey)
-    {
-        if (_workbook is null || !_workbook.Layouts.TryGetValue(pendingKey, out var pending))
-            return;
-
-        var sourceGroup = _workbook.Groups.FirstOrDefault(g => string.Equals(g.Id, choice.GroupId, StringComparison.OrdinalIgnoreCase));
-        if (sourceGroup is null)
-            return;
-
-        var id = NextGroupId(sourceGroup.EventId);
-        var battleGroup = new ChoiceGroupRow
-        {
-            Id = id,
-            EventId = sourceGroup.EventId,
-            Memo = "전투가 시작된다.",
-            ExportId = EventWorkbookService.DefaultEventExportId,
-            Background = sourceGroup.Background,
-            NpcId = sourceGroup.NpcId,
-            SituationTextTid = $"{id}_situation_text",
-            NextAction = "battle",
-            StageId = DefaultBattleStageId
-        };
-        _workbook.Groups.Add(battleGroup);
-        GetBattleResultChoice(battleGroup, create: true);
-        SetChoiceDirectNextGroup(choice, branch, battleGroup.Id);
-
-        _workbook.Layouts.Remove(pendingKey);
-        _workbook.Layouts[battleGroup.Id] = new NodeLayout
-        {
-            EventId = battleGroup.EventId,
-            GroupId = battleGroup.Id,
-            X = RoundCanvasCoord(pending.X),
-            Y = RoundCanvasCoord(pending.Y),
-            Width = NodeWidth,
-            Height = NodeMinHeight
-        };
-        _selectedObjectKey = null;
-        _selectedGroup = battleGroup;
         _selectedChoice = null;
     }
 
@@ -7225,14 +7527,6 @@ public partial class MainWindow : Window
         if (_workbook is null)
             return;
 
-        if (IsBattleGroup(group) && _workbook.Layouts.TryGetValue(BattleLayoutKey(group.Id), out var battleLayout))
-        {
-            var pendingKey = PendingBattleLayoutKey(group.EventId);
-            _workbook.Layouts[pendingKey] = CopyObjectLayout(battleLayout, pendingKey, BattleNodeWidth, BattleNodeHeight);
-            _selectedObjectKey = pendingKey;
-            return;
-        }
-
         if (!IsExitGroup(group))
             return;
 
@@ -7308,6 +7602,15 @@ public partial class MainWindow : Window
 
         foreach (var item in cluster)
             SetChoiceBranchNextGroup(item.Choice, item.Branch, nextGroupId);
+    }
+
+    private void ClearRewardClusterNextGroup(string rewardKey)
+    {
+        if (_workbook is null)
+            return;
+
+        foreach (var item in RewardBranchesSharingLayout(rewardKey))
+            ClearChoiceBranchNext(item.Choice, item.Branch);
     }
 
     private void ApplyRewardClusterField(EventChoiceRow choice, string branch, string field, string raw)
@@ -7559,21 +7862,6 @@ public partial class MainWindow : Window
             return null;
         foreach (var pair in _workbook.Layouts.Where(p =>
                      p.Key.StartsWith(PendingRewardPrefix, StringComparison.OrdinalIgnoreCase)
-                     && string.Equals(p.Value.EventId, _selectedEvent.Id, StringComparison.OrdinalIgnoreCase)))
-        {
-            var pin = new Point(pair.Value.X, pair.Value.Y + pair.Value.Height / 2);
-            if ((pin - point).Length <= 34)
-                return pair.Key;
-        }
-        return null;
-    }
-
-    private string? FindPendingBattleAt(Point point)
-    {
-        if (_workbook is null || _selectedEvent is null)
-            return null;
-        foreach (var pair in _workbook.Layouts.Where(p =>
-                     p.Key.StartsWith(PendingBattlePrefix, StringComparison.OrdinalIgnoreCase)
                      && string.Equals(p.Value.EventId, _selectedEvent.Id, StringComparison.OrdinalIgnoreCase)))
         {
             var pin = new Point(pair.Value.X, pair.Value.Y + pair.Value.Height / 2);
