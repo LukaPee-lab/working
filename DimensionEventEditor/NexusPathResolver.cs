@@ -63,6 +63,32 @@ public static class NexusPathResolver
         return null;
     }
 
+    public static string? ResolveEventWorkbookSelection(string? selectedPath)
+    {
+        if (string.IsNullOrWhiteSpace(selectedPath))
+            return null;
+
+        var path = selectedPath.Trim().Trim('"');
+        if (LooksLikeEventWorkbook(path))
+            return Path.GetFullPath(path);
+        if (!Directory.Exists(path))
+            return null;
+
+        var exact = Path.Combine(path, BundledEventWorkbookName);
+        if (LooksLikeEventWorkbook(exact))
+            return Path.GetFullPath(exact);
+
+        try
+        {
+            return Directory.EnumerateFiles(path, "nexus_event*.xlsx", SearchOption.TopDirectoryOnly)
+                .FirstOrDefault(LooksLikeEventWorkbook);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     public static string? ResolveDefaultPlayerExe()
     {
         var settings = LoadSettings();

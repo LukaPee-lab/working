@@ -166,7 +166,6 @@ public partial class MainWindow : Window
             return;
 
         _initialLoadStarted = true;
-        EnsureDevRootConfigured(promptIfMissing: true);
         _ = LoadInitialWorkbookAsync();
     }
 
@@ -178,13 +177,17 @@ public partial class MainWindow : Window
     private async Task LoadInitialWorkbookAsync()
     {
         var path = NexusPathResolver.ResolveDefaultEventWorkbook();
+        var hasClientPath = EnsureDevRootConfigured();
+        if (string.IsNullOrWhiteSpace(path) || !hasClientPath)
+        {
+            ShowPreferences(loadDatabase: false);
+            path = NexusPathResolver.ResolveDefaultEventWorkbook();
+        }
+
         if (!string.IsNullOrWhiteSpace(path))
             await LoadWorkbookAsync(path, "Loading DB workbook...");
         else
-        {
-            Log("nexus_event 테이블을 찾지 못했습니다. Open DB로 파일을 선택하세요.");
-            PromptOpenWorkbook();
-        }
+            Log("nexus_event 테이블을 찾지 못했습니다. Preference > Asset Path에서 DB Table Path를 설정하세요.");
     }
 
     private void LoadWorkbook(string path)
@@ -367,6 +370,43 @@ public partial class MainWindow : Window
             Owner = this
         };
         window.Show();
+    }
+
+    private void PreferenceMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        ShowPreferences();
+    }
+
+    private bool ShowPreferences(bool loadDatabase = true)
+    {
+        var currentDbPath = _settings.EventWorkbookPath ?? _workbook?.SourcePath;
+        var currentDevRoot = NexusPathResolver.ResolveDefaultDevRoot(_settings) ?? _settings.DevRoot;
+        var dialog = new PreferencesWindow(currentDbPath, currentDevRoot)
+        {
+            Owner = this
+        };
+        if (dialog.ShowDialog() != true)
+            return false;
+
+        var dbChanged = !string.Equals(_workbook?.SourcePath, dialog.DbTablePath, StringComparison.OrdinalIgnoreCase);
+        _settings.EventWorkbookPath = dialog.DbTablePath;
+        _settings.ReposRoot = FindReposRoot(dialog.DbTablePath);
+        _settings.DevRoot = dialog.ClientPath;
+        _settings.BackgroundImageRoot = NexusPathResolver.GetBackgroundImageRoot(dialog.ClientPath);
+        if (!string.IsNullOrWhiteSpace(_settings.LastBackgroundImagePath)
+            && !_settings.LastBackgroundImagePath.StartsWith(_settings.BackgroundImageRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            _settings.LastBackgroundImagePath = null;
+        }
+        NexusPathResolver.SaveSettings(_settings);
+        Log($"PREFERENCES SAVE: DB={dialog.DbTablePath} / CLIENT={dialog.ClientPath}");
+
+        if (loadDatabase && (dbChanged || _workbook is null))
+            LoadWorkbook(dialog.DbTablePath);
+        else if (loadDatabase && _selectedGroup is not null)
+            BuildGroupInspector(_selectedGroup);
+
+        return true;
     }
 
     private void NavigateToEventInfoLocation(EventInfoLocation location)
@@ -4946,12 +4986,15 @@ public partial class MainWindow : Window
             return NexusPathResolver.GetBackgroundImageRoot(devRoot);
         }
 
-        return promptIfMissing && EnsureDevRootConfigured(promptIfMissing: true)
+        if (promptIfMissing)
+            ShowPreferences();
+
+        return NexusPathResolver.LooksLikeDevRoot(_settings.DevRoot)
             ? NexusPathResolver.GetBackgroundImageRoot(_settings.DevRoot!)
             : null;
     }
 
-    private bool EnsureDevRootConfigured(bool promptIfMissing)
+    private bool EnsureDevRootConfigured()
     {
         var devRoot = NexusPathResolver.ResolveDefaultDevRoot(_settings);
         if (devRoot is not null)
@@ -4960,39 +5003,7 @@ public partial class MainWindow : Window
             NexusPathResolver.SaveSettings(_settings);
             return true;
         }
-
-        if (!promptIfMissing)
-            return false;
-
-        var initialDirectory = !string.IsNullOrWhiteSpace(_settings.ReposRoot) && Directory.Exists(_settings.ReposRoot)
-            ? _settings.ReposRoot
-            : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
-        var dialog = new OpenFolderDialog
-        {
-            Title = "Epic Seven dev 폴더 또는 repos 폴더를 선택하세요",
-            InitialDirectory = initialDirectory,
-            Multiselect = false
-        };
-        if (dialog.ShowDialog(this) != true)
-            return false;
-
-        devRoot = NexusPathResolver.FindDevRoot(dialog.FolderName);
-        if (devRoot is null)
-        {
-            ThemedMessageBox.Show(
-                this,
-                "선택한 위치에서 game\\Resources\\res\\nexus 폴더를 찾지 못했습니다.\n\ndev 폴더 또는 그 상위 repos 폴더를 선택하세요.",
-                "DEV 경로가 올바르지 않습니다",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
-            return false;
-        }
-
-        _settings.DevRoot = devRoot;
-        _settings.BackgroundImageRoot = NexusPathResolver.GetBackgroundImageRoot(devRoot);
-        NexusPathResolver.SaveSettings(_settings);
-        Log($"DEV 경로 설정: {devRoot}");
-        return true;
+        return false;
     }
 
     private static bool IsRewardObjectKey(string key)
@@ -5277,30 +5288,6 @@ public partial class MainWindow : Window
         busy.Show();
         Dispatcher.Invoke(() => { }, DispatcherPriority.Render);
         return busy;
-    }
-
-    private void OpenButton_Click(object sender, RoutedEventArgs e)
-    {
-        PromptOpenWorkbook();
-    }
-
-    private void PromptOpenWorkbook()
-    {
-        var dialog = new OpenFileDialog
-        {
-            Title = "nexus_event 차원 탐사 이벤트.xlsx 선택",
-            Filter = "Excel Workbook (*.xlsx)|*.xlsx|All files (*.*)|*.*",
-            InitialDirectory = Directory.Exists("D:\\repos\\design\\DB\\alpha") ? "D:\\repos\\design\\DB\\alpha" : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
-        };
-        if (dialog.ShowDialog(this) == true)
-        {
-            if (!NexusPathResolver.LooksLikeEventWorkbook(dialog.FileName))
-            {
-                ThemedMessageBox.Show(this, "nexus_event 테이블 구조가 아닙니다.", "Invalid workbook", MessageBoxButton.OK, MessageBoxImage.Warning);
-                return;
-            }
-            LoadWorkbook(dialog.FileName);
-        }
     }
 
     private void ReloadButton_Click(object sender, RoutedEventArgs e)
@@ -5795,7 +5782,7 @@ public partial class MainWindow : Window
         var locked = _runtimeLocked;
         var running = locked && IsPlayerRunning();
         EditorSurface.IsHitTestVisible = !locked;
-        OpenButton.IsEnabled = !locked;
+        PreferenceMenuItem.IsEnabled = !locked;
         ReloadButton.IsEnabled = !locked;
         AutoLayoutButton.IsEnabled = !locked;
         AutoLayoutAllButton.IsEnabled = !locked;

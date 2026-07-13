@@ -485,6 +485,7 @@
             <DockPanel>
                 <Border DockPanel.Dock="Top" Height="22" Background="#343434" BorderBrush="#202020" BorderThickness="0,0,0,1">
                     <Menu Height="21" Background="#343434">
+                        <MenuItem x:Name="PreferenceMenuItem" Header="Preference" Style="{StaticResource TopMenuItem}" Click="PreferenceMenuItem_Click"/>
                         <MenuItem Header="Window" Style="{StaticResource TopMenuItem}">
                             <MenuItem x:Name="EventListMenuItem" Header="Event List" Style="{StaticResource DarkSubMenuItem}" IsCheckable="True" IsChecked="True" Tag="eventList" Click="WindowPaneMenuItem_Click"/>
                             <MenuItem x:Name="SceneMenuItem" Header="Scene" Style="{StaticResource DarkSubMenuItem}" IsCheckable="True" IsChecked="True" Tag="scene" Click="WindowPaneMenuItem_Click"/>
@@ -501,7 +502,6 @@
                 </Border>
                 <Grid Margin="8,3">
                     <StackPanel Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center" Panel.ZIndex="1">
-                        <Button x:Name="OpenButton" Content="Open DB" Width="82" Click="OpenButton_Click"/>
                         <Button x:Name="ReloadButton" Content="Reload" Width="76" Click="ReloadButton_Click"/>
                         <Button x:Name="AutoLayoutButton" Width="112" Height="40" Padding="4,0" ToolTip="Auto Layout (Ctrl+Shift+L)" Click="AutoLayoutButton_Click">
                             <StackPanel VerticalAlignment="Center">

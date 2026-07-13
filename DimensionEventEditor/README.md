@@ -62,7 +62,7 @@ Start-Process .\bin\Release\net10.0-windows\DimensionEventEditor.exe
 3. `D:\repos\design\DB\alpha`
 4. `%USERPROFILE%\repos\design\DB\alpha`
 
-직접 파일을 열려면 상단 `Open DB`를 사용합니다.
+상단 `Preference`의 `Asset Path` 탭에서 `DB Table Path`와 `Client Path`를 직접 설정할 수 있습니다. `DB Table Path`는 엑셀 파일 또는 해당 파일이 있는 폴더를 받을 수 있으며, 저장하면 즉시 새 DB를 로드합니다. 설정값은 로컬 settings에 저장됩니다.
 
 배포 폴더의 `Data` 폴더는 자동 탐색 순서에 넣지 않습니다. DB 폴더가 우선입니다.
 
@@ -281,7 +281,7 @@ Battle은 장면 노드 하나로 표현됩니다.
 장면의 `background`는 직접 입력하거나 picker 버튼으로 선택할 수 있습니다.
 
 - 이미지 홈은 저장된 DEV 위치, 마지막 이미지 위치, 실행 중인 DEV 클라이언트, repos 후보 순서로 자동 탐색합니다.
-- DEV 위치를 찾지 못하면 시작 시 폴더 선택 창이 열립니다. `dev` 폴더 또는 그 상위 `repos` 폴더를 선택할 수 있습니다.
+- DB 또는 DEV 위치를 찾지 못하면 시작 시 `Preference > Asset Path`가 열립니다. `Client Path`에는 `dev` 폴더 또는 그 상위 `repos` 폴더를 지정할 수 있습니다.
 - 선택한 DEV 위치는 settings의 `DevRoot`에 저장되며, 이미지 홈은 `{DevRoot}\game\Resources\res\nexus`를 사용합니다.
 - Inspector 하단에 background preview가 표시됩니다.
 - 이미지가 없으면 `Preview not found`로 표시됩니다.
