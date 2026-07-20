@@ -1,9 +1,10 @@
 bin/
 obj/
+.vs/
 **/bin/
 **/obj/
 *.user
 *.suo
-DimensionEventEditor_QA_*.xlsx
-DimensionEventEditor/Data/*.xlsx
-DimensionEventEditor/Data/*.xlsm
+NexusEditor_QA_*.xlsx
+NexusEditor/Data/*.xlsx
+NexusEditor/Data/*.xlsm
