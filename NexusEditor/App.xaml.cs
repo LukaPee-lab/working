@@ -303,6 +303,39 @@ public partial class App : Application
             }
         }
 
+        var topologyTest = source.DeepClone();
+        var topologyCategoryIndex = topologyTest.Categories.Select(row => row.Index ?? 0).DefaultIfEmpty().Max() + 1;
+        var topologyCategory = ResearchWorkbookService.CreateCategory(topologyTest, "qa_topology", topologyCategoryIndex);
+        var branchSource = ResearchWorkbookService.CreateNode(topologyTest, topologyCategory.Category, 201, 4).Node;
+        var branchTargets = new[] { 2, 4, 6, 8 }
+            .Select(row => ResearchWorkbookService.CreateNode(topologyTest, topologyCategory.Category, 202, row).Node)
+            .ToList();
+        var branchResults = branchTargets.Take(3)
+            .Select(target => ResearchWorkbookService.TryConnectCondition(topologyTest, branchSource.RowIdentity, target.RowIdentity))
+            .ToList();
+        if (branchResults.Any(result => !result.Success)
+            || string.IsNullOrWhiteSpace(branchResults[^1].WarningMessage))
+            failures.Add("1-3 연구 분기의 경고 허용 규칙 실패");
+        if (ResearchWorkbookService.TryConnectCondition(topologyTest, branchSource.RowIdentity, branchTargets[3].RowIdentity).Success)
+            failures.Add("연구 노드의 네 번째 후행 연결 차단 실패");
+        var distantTarget = ResearchWorkbookService.CreateNode(topologyTest, topologyCategory.Category, 203, 4).Node;
+        var distantResult = ResearchWorkbookService.TryConnectCondition(topologyTest, branchSource.RowIdentity, distantTarget.RowIdentity);
+        if (distantResult.Success || !distantResult.Message.Contains("바로 다음", StringComparison.Ordinal))
+            failures.Add("인접하지 않은 column 간 연구 노드 연결 차단 실패");
+
+        var mergeSources = new[] { 2, 4, 6, 8 }
+            .Select(row => ResearchWorkbookService.CreateNode(topologyTest, topologyCategory.Category, 204, row).Node)
+            .ToList();
+        var mergeTarget = ResearchWorkbookService.CreateNode(topologyTest, topologyCategory.Category, 205, 4).Node;
+        var mergeResults = mergeSources.Take(3)
+            .Select(prerequisite => ResearchWorkbookService.TryConnectCondition(topologyTest, prerequisite.RowIdentity, mergeTarget.RowIdentity))
+            .ToList();
+        if (mergeResults.Any(result => !result.Success)
+            || string.IsNullOrWhiteSpace(mergeResults[^1].WarningMessage))
+            failures.Add("3-1 연구 합류의 경고 허용 규칙 실패");
+        if (ResearchWorkbookService.TryConnectCondition(topologyTest, mergeSources[3].RowIdentity, mergeTarget.RowIdentity).Success)
+            failures.Add("연구 노드의 네 번째 선행 연결 차단 실패");
+
         var test = source.DeepClone();
         var categoryIndex = test.Categories.Select(row => row.Index ?? 0).DefaultIfEmpty().Max() + 1;
         var category = ResearchWorkbookService.CreateCategory(test, "qa_editor", categoryIndex);
@@ -337,7 +370,7 @@ public partial class App : Application
             failures.Add("다중 노드 이동의 선택 노드 간 자리 교차 또는 참조 연쇄 갱신 실패");
 
         var oldFirstId = multiMovedFirst.Id;
-        var moved = ResearchWorkbookService.TryMoveNode(test, first.Node.RowIdentity, 101, 5);
+        var moved = ResearchWorkbookService.TryMoveNode(test, first.Node.RowIdentity, 102, 5);
         var movedFirst = test.Nodes.First(row => row.RowIdentity == first.Node.RowIdentity);
         var movedSecond = test.Nodes.First(row => row.RowIdentity == second.Node.RowIdentity);
         if (!moved.Success || movedFirst.Id == oldFirstId
@@ -382,7 +415,7 @@ public partial class App : Application
             failures.Add($"신규 연구 데이터 왕복 실패: first={roundTrip.FirstPassDifferences.Count}, second={roundTrip.SecondPassDifferences.Count}, newErrors={roundTrip.NewValidationIssues.Count}");
 
         var deletion = test.DeepClone();
-        var firstToDelete = deletion.Nodes.First(row => row.Column == 101 && row.Category == renamedCategory.Category);
+        var firstToDelete = deletion.Nodes.First(row => row.Column == 102 && row.Category == renamedCategory.Category);
         if (ResearchWorkbookService.TryDeleteNode(deletion, firstToDelete.RowIdentity).Success)
             failures.Add("참조 중인 선행 노드가 보호되지 않음");
         if (!ResearchWorkbookService.TryDeleteNode(deletion, firstToDelete.RowIdentity, removeConditionReferences: true).Success)

@@ -388,6 +388,7 @@ public sealed class ResearchMutationResult
 {
     public bool Success { get; init; }
     public string Message { get; init; } = "";
+    public string WarningMessage { get; init; } = "";
     public List<string> AffectedRowIdentities { get; } = [];
 
     public static ResearchMutationResult Failed(string message) => new() { Success = false, Message = message };

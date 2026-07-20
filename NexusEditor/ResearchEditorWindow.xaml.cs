@@ -7,6 +7,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
+using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using Path = System.IO.Path;
 using ShapePath = System.Windows.Shapes.Path;
@@ -15,12 +16,12 @@ namespace NexusEditor;
 
 public partial class ResearchEditorWindow : Window
 {
-    private const double NodeWidth = 190;
-    private const double NodeHeight = 122;
-    private const double ColumnSpacing = 214;
+    private const double NodeWidth = 146;
+    private const double NodeHeight = 162;
+    private const double ColumnSpacing = 188;
     private const double GraphLeft = 110;
-    private const double LaneTop = 100;
-    private const double LaneSpacing = 300;
+    private const double LaneTop = 78;
+    private const double LaneSpacing = 236;
 
     private readonly Action<WorkspaceMode>? _workspaceSwitch;
     private readonly Dictionary<string, Border> _nodeVisuals = new(StringComparer.OrdinalIgnoreCase);
@@ -30,6 +31,8 @@ public partial class ResearchEditorWindow : Window
     private readonly Stack<UndoState> _undoStack = [];
     private readonly List<ResearchConsoleEntry> _consoleEntries = [];
     private readonly List<ResearchNodeClipboardItem> _nodeClipboard = [];
+    private readonly Dictionary<string, ImageSource?> _researchAssetCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _reportedMissingAssets = new(StringComparer.OrdinalIgnoreCase);
     private long _consoleSequence;
 
     private ResearchEditorSettings _settings;
@@ -37,6 +40,7 @@ public partial class ResearchEditorWindow : Window
     private ResearchWorkbookContext? _workbook;
     private ResearchCategoryRow? _selectedCategory;
     private ResearchNodeRow? _primaryNode;
+    private string? _researchImageRoot;
     private bool _isLoading;
     private bool _suppressCategorySelection;
     private bool _suppressInspectorCommit;
@@ -63,6 +67,7 @@ public partial class ResearchEditorWindow : Window
         InitializeComponent();
         _workspaceSwitch = workspaceSwitch;
         _settings = ResearchPathResolver.LoadSettings();
+        RefreshResearchAssetRoot();
         RestoreLayout();
     }
 
@@ -103,6 +108,7 @@ public partial class ResearchEditorWindow : Window
             _undoStack.Clear();
             _selectedNodeIdentities.Clear();
             _primaryNode = null;
+            RefreshResearchAssetRoot();
             ResearchPathResolver.Remember(paths);
             WorkbookPathText.Text = $"{Path.GetFileName(paths.OutSystemPath)} + {Path.GetFileName(paths.EffectPath)}";
             PopulateCategories();
@@ -240,28 +246,44 @@ public partial class ResearchEditorWindow : Window
         {
             Width = NodeWidth,
             Height = NodeHeight,
-            Background = new SolidColorBrush(Color.FromRgb(46, 46, 46)),
+            Background = new SolidColorBrush(Color.FromRgb(35, 35, 35)),
             BorderBrush = new SolidColorBrush(Color.FromRgb(91, 91, 91)),
             BorderThickness = new Thickness(1.2),
-            CornerRadius = new CornerRadius(4),
+            CornerRadius = new CornerRadius(3),
             Tag = node,
-            ToolTip = $"{node.Id}\n{node.NodeEffectDesc}"
+            ToolTip = $"{node.Id}\n{node.NodeEffectDesc}\nimage: {node.Image}\nactive_step: {node.ActiveStep ?? 0}"
         };
         card.MouseLeftButtonDown += Node_MouseLeftButtonDown;
         card.MouseMove += Node_MouseMove;
         card.MouseLeftButtonUp += Node_MouseLeftButtonUp;
 
-        var grid = new Grid();
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(27) });
+        var root = new Grid();
+        card.Child = root;
+        var frameSource = LoadResearchAsset("nexus1_bg_research_slot", reportMissing: false);
+        if (frameSource is not null)
+        {
+            root.Children.Add(new Image
+            {
+                Source = frameSource,
+                Stretch = Stretch.Fill,
+                Opacity = 0.82,
+                IsHitTestVisible = false
+            });
+        }
+
+        var grid = new Grid { Margin = new Thickness(7, 6, 7, 7) };
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(23) });
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(28) });
-        card.Child = grid;
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(34) });
+        Panel.SetZIndex(grid, 1);
+        root.Children.Add(grid);
 
         var header = new Border
         {
             Background = NodeHeaderBrush(node.NodePermission),
-            CornerRadius = new CornerRadius(3, 3, 0, 0),
-            Padding = new Thickness(8, 4, 6, 3)
+            CornerRadius = new CornerRadius(2),
+            Padding = new Thickness(6, 2, 5, 2),
+            Opacity = 0.94
         };
         var headerGrid = new Grid();
         headerGrid.ColumnDefinitions.Add(new ColumnDefinition());
@@ -272,7 +294,7 @@ public partial class ResearchEditorWindow : Window
             Text = node.Id,
             Foreground = Brushes.White,
             FontWeight = FontWeights.SemiBold,
-            FontSize = 11,
+            FontSize = 9.5,
             TextTrimming = TextTrimming.CharacterEllipsis,
             VerticalAlignment = VerticalAlignment.Center
         });
@@ -280,63 +302,60 @@ public partial class ResearchEditorWindow : Window
         {
             Text = $"P{node.NodePermission ?? 0}",
             Foreground = new SolidColorBrush(Color.FromRgb(215, 235, 248)),
-            FontSize = 10,
+            FontSize = 9,
             VerticalAlignment = VerticalAlignment.Center
         };
         Grid.SetColumn(permission, 1);
         headerGrid.Children.Add(permission);
         grid.Children.Add(header);
 
-        var body = new StackPanel { Margin = new Thickness(9, 7, 9, 4) };
-        body.Children.Add(new TextBlock
+        var iconHost = new Grid { Margin = new Thickness(10, 4, 10, 0) };
+        var iconSource = LoadResearchAsset(node.Image);
+        if (iconSource is not null)
         {
-            Text = string.IsNullOrWhiteSpace(node.NodeEffectDesc) ? "Research node" : node.NodeEffectDesc,
-            Foreground = new SolidColorBrush(Color.FromRgb(224, 224, 224)),
-            TextWrapping = TextWrapping.Wrap,
-            MaxHeight = 44,
-            TextTrimming = TextTrimming.CharacterEllipsis,
-            FontSize = 11
-        });
-        var effect = _workbook?.FindEffect(node);
-        body.Children.Add(new TextBlock
+            iconHost.Children.Add(new Image
+            {
+                Source = iconSource,
+                Width = 82,
+                Height = 82,
+                Stretch = Stretch.Uniform,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                SnapsToDevicePixels = true,
+                IsHitTestVisible = false
+            });
+        }
+        else
         {
-            Text = effect is null ? "effect: missing" : $"{effect.Type}  {effect.ValueText}",
-            Foreground = effect is null
-                ? new SolidColorBrush(Color.FromRgb(234, 107, 107))
-                : new SolidColorBrush(Color.FromRgb(169, 193, 209)),
-            FontSize = 10,
-            Margin = new Thickness(0, 4, 0, 0),
-            TextTrimming = TextTrimming.CharacterEllipsis
-        });
-        Grid.SetRow(body, 1);
-        grid.Children.Add(body);
+            iconHost.Children.Add(new TextBlock
+            {
+                Text = "?",
+                Foreground = new SolidColorBrush(Color.FromRgb(210, 210, 210)),
+                FontSize = 38,
+                FontWeight = FontWeights.Bold,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+        }
+        Grid.SetRow(iconHost, 1);
+        grid.Children.Add(iconHost);
 
-        var footer = new Grid { Margin = new Thickness(8, 2, 8, 4) };
-        footer.ColumnDefinitions.Add(new ColumnDefinition());
-        footer.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        footer.Children.Add(new TextBlock
+        var count = new TextBlock
         {
-            Text = $"({node.Column}, {node.Row})  step {node.ActiveStep ?? 0}",
-            Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 160)),
-            FontSize = 10,
-            VerticalAlignment = VerticalAlignment.Center
-        });
-        var conditionCount = new TextBlock
-        {
-            Text = $"IN {node.Conditions.Count(value => !string.IsNullOrWhiteSpace(value))}",
-            Foreground = new SolidColorBrush(Color.FromRgb(103, 201, 151)),
-            FontSize = 10,
+            Text = $"×{node.ActiveStep ?? 0}",
+            Foreground = Brushes.White,
+            FontSize = 22,
+            FontWeight = FontWeights.Bold,
+            HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
         };
-        Grid.SetColumn(conditionCount, 1);
-        footer.Children.Add(conditionCount);
-        Grid.SetRow(footer, 2);
-        grid.Children.Add(footer);
+        Grid.SetRow(count, 2);
+        grid.Children.Add(count);
 
         var input = CreatePin(node, isOutput: false);
         var output = CreatePin(node, isOutput: true);
-        grid.Children.Add(input);
-        grid.Children.Add(output);
+        root.Children.Add(input);
+        root.Children.Add(output);
 
         Canvas.SetLeft(card, WorldX(node.Column));
         Canvas.SetTop(card, WorldY(node.Row));
@@ -344,6 +363,95 @@ public partial class ResearchEditorWindow : Window
         _nodeVisuals[node.RowIdentity] = card;
         _inputPins[node.RowIdentity] = input;
         _outputPins[node.RowIdentity] = output;
+    }
+
+    private void RefreshResearchAssetRoot()
+    {
+        _researchAssetCache.Clear();
+        _reportedMissingAssets.Clear();
+        var devRoot = NexusPathResolver.ResolveDefaultDevRoot(NexusPathResolver.LoadSettings());
+        var candidate = string.IsNullOrWhiteSpace(devRoot)
+            ? null
+            : Path.Combine(devRoot, "game", "Resources", "res", "img");
+        _researchImageRoot = candidate is not null && Directory.Exists(candidate) ? candidate : null;
+    }
+
+    private ImageSource? LoadResearchAsset(string? assetKey, bool reportMissing = true)
+    {
+        var key = NormalizeResearchAssetKey(assetKey);
+        if (key is null)
+        {
+            if (reportMissing)
+                ReportMissingAssetOnce(assetKey ?? "(blank)", "연구 노드 image 값이 비어 있거나 올바른 파일명이 아닙니다.");
+            return LoadFallbackAsset();
+        }
+
+        if (_researchAssetCache.TryGetValue(key, out var cached))
+            return cached;
+        if (_researchImageRoot is null)
+        {
+            if (reportMissing)
+                ReportMissingAssetOnce("__image_root__", "DEV의 game\\Resources\\res\\img 경로를 찾지 못했습니다. Preference의 Client Path를 확인하세요.");
+            _researchAssetCache[key] = null;
+            return reportMissing ? LoadFallbackAsset() : null;
+        }
+
+        var path = Path.Combine(_researchImageRoot, key + ".png");
+        var image = LoadBitmap(path);
+        if (image is null && reportMissing)
+            ReportMissingAssetOnce(key, $"연구 노드 아이콘을 찾지 못했습니다: {key}.png");
+        _researchAssetCache[key] = image;
+        return image ?? (reportMissing ? LoadFallbackAsset() : null);
+    }
+
+    private ImageSource? LoadFallbackAsset()
+    {
+        const string fallbackKey = "icon_stat_def";
+        if (_researchAssetCache.TryGetValue(fallbackKey, out var cached))
+            return cached;
+        if (_researchImageRoot is null)
+            return null;
+        var image = LoadBitmap(Path.Combine(_researchImageRoot, fallbackKey + ".png"));
+        _researchAssetCache[fallbackKey] = image;
+        return image;
+    }
+
+    private static string? NormalizeResearchAssetKey(string? assetKey)
+    {
+        var trimmed = assetKey?.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed) || !Same(Path.GetFileName(trimmed), trimmed))
+            return null;
+        var key = Path.GetFileNameWithoutExtension(trimmed);
+        return key.Length > 0 && key.All(character => char.IsLetterOrDigit(character) || character is '_' or '-')
+            ? key
+            : null;
+    }
+
+    private static BitmapImage? LoadBitmap(string path)
+    {
+        if (!File.Exists(path))
+            return null;
+        try
+        {
+            var image = new BitmapImage();
+            image.BeginInit();
+            image.CacheOption = BitmapCacheOption.OnLoad;
+            image.CreateOptions = BitmapCreateOptions.PreservePixelFormat;
+            image.UriSource = new Uri(path, UriKind.Absolute);
+            image.EndInit();
+            image.Freeze();
+            return image;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private void ReportMissingAssetOnce(string key, string message)
+    {
+        if (_reportedMissingAssets.Add(key))
+            Log(ResearchConsoleSeverity.Warning, message);
     }
 
     private Ellipse CreatePin(ResearchNodeRow node, bool isOutput)
@@ -767,6 +875,10 @@ public partial class ResearchEditorWindow
         {
             UndoWithoutRender();
             Log(ResearchConsoleSeverity.Warning, result.Message, target.Node.Id);
+        }
+        else if (!string.IsNullOrWhiteSpace(result.WarningMessage))
+        {
+            Log(ResearchConsoleSeverity.Warning, result.WarningMessage, source.Id);
         }
         RenderGraph();
         PopulateHierarchy();
@@ -1772,6 +1884,26 @@ public partial class ResearchEditorWindow
             WorkspaceSwitchResult.ExportAndSwitch => ExportDirect(),
             _ => false
         };
+    }
+
+    private void ClosePaneButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string tag })
+            return;
+        var menuItem = tag switch
+        {
+            "category" => CategoryPaneMenuItem,
+            "scene" => ScenePaneMenuItem,
+            "hierarchy" => HierarchyPaneMenuItem,
+            "inspector" => InspectorPaneMenuItem,
+            "console" => ConsolePaneMenuItem,
+            _ => null
+        };
+        if (menuItem is null)
+            return;
+        menuItem.IsChecked = false;
+        PaneMenuItem_Click(menuItem, e);
+        e.Handled = true;
     }
 
     private void PaneMenuItem_Click(object sender, RoutedEventArgs e)

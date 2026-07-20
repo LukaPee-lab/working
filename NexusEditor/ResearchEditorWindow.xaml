@@ -105,6 +105,43 @@
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="Margin" Value="9,0"/>
         </Style>
+        <Style x:Key="PanelTabCloseButton" TargetType="Button">
+            <Setter Property="Width" Value="18"/>
+            <Setter Property="MinWidth" Value="18"/>
+            <Setter Property="Height" Value="16"/>
+            <Setter Property="MinHeight" Value="16"/>
+            <Setter Property="Margin" Value="8,0,7,0"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="HorizontalAlignment" Value="Center"/>
+            <Setter Property="ToolTip" Value="Close panel"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Foreground" Value="#b8b8b8"/>
+            <Setter Property="BorderBrush" Value="Transparent"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Chrome" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="1" CornerRadius="8">
+                            <Grid Width="12" Height="12" HorizontalAlignment="Center" VerticalAlignment="Center">
+                                <Path Data="M 3,3 L 9,9 M 9,3 L 3,9" Stroke="{TemplateBinding Foreground}"
+                                      StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/>
+                            </Grid>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="#4a4a4a"/>
+                                <Setter TargetName="Chrome" Property="BorderBrush" Value="#686868"/>
+                                <Setter Property="Foreground" Value="#ffffff"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Chrome" Property="Background" Value="#252525"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style x:Key="FilterToggle" TargetType="RadioButton">
             <Setter Property="Foreground" Value="#cccccc"/>
             <Setter Property="Background" Value="#303030"/>
@@ -198,7 +235,12 @@
 
             <Border x:Name="CategoryPane" Grid.Column="0" Background="{StaticResource PanelBackground}">
                 <DockPanel>
-                    <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top"><TextBlock Text="Category List" Style="{StaticResource PanelTitle}"/></Border>
+                    <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top">
+                        <Grid>
+                            <TextBlock Text="Category List" Style="{StaticResource PanelTitle}"/>
+                            <Button Style="{StaticResource PanelTabCloseButton}" HorizontalAlignment="Right" Tag="category" Click="ClosePaneButton_Click"/>
+                        </Grid>
+                    </Border>
                     <StackPanel DockPanel.Dock="Top" Margin="8">
                         <TextBox x:Name="CategorySearchBox" Height="28" Margin="0,0,0,7" TextChanged="CategorySearchBox_TextChanged" ToolTip="Search category"/>
                         <Button Content="Add Category" Click="AddCategoryButton_Click"/>
@@ -219,7 +261,10 @@
                         <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top">
                             <Grid>
                                 <TextBlock Text="Scene" Style="{StaticResource PanelTitle}"/>
-                                <TextBlock x:Name="SceneStatusText" HorizontalAlignment="Right" Margin="0,0,10,0" VerticalAlignment="Center" Foreground="#9e9e9e"/>
+                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                                    <TextBlock x:Name="SceneStatusText" Margin="0,0,2,0" VerticalAlignment="Center" Foreground="#9e9e9e"/>
+                                    <Button Style="{StaticResource PanelTabCloseButton}" Tag="scene" Click="ClosePaneButton_Click"/>
+                                </StackPanel>
                             </Grid>
                         </Border>
                         <Grid x:Name="SceneViewport" ClipToBounds="True" Focusable="True"
@@ -256,7 +301,12 @@
                 <GridSplitter x:Name="ConsoleSplitter" Grid.Row="1" Height="7" Background="#3a3a3a" ResizeDirection="Rows" DragCompleted="LayoutSplitter_DragCompleted"/>
                 <Border x:Name="ConsolePane" Grid.Row="2" Background="#202020">
                     <DockPanel>
-                        <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top"><TextBlock Text="Console / Validation" Style="{StaticResource PanelTitle}"/></Border>
+                        <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top">
+                            <Grid>
+                                <TextBlock Text="Console / Validation" Style="{StaticResource PanelTitle}"/>
+                                <Button Style="{StaticResource PanelTabCloseButton}" HorizontalAlignment="Right" Tag="console" Click="ClosePaneButton_Click"/>
+                            </Grid>
+                        </Border>
                         <DockPanel DockPanel.Dock="Top" Height="32" Background="#292929">
                             <Button Content="Clear" Width="58" Height="24" Margin="7,4" Click="ClearConsoleButton_Click"/>
                             <TextBox x:Name="ConsoleSearchBox" Height="24" Margin="4" TextChanged="ConsoleSearchBox_TextChanged"/>
@@ -275,14 +325,24 @@
                 </Grid.ColumnDefinitions>
                 <Border x:Name="HierarchyPane" Grid.Column="0" Background="{StaticResource PanelBackground}">
                     <DockPanel>
-                        <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top"><TextBlock Text="Hierarchy" Style="{StaticResource PanelTitle}"/></Border>
+                        <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top">
+                            <Grid>
+                                <TextBlock Text="Hierarchy" Style="{StaticResource PanelTitle}"/>
+                                <Button Style="{StaticResource PanelTabCloseButton}" HorizontalAlignment="Right" Tag="hierarchy" Click="ClosePaneButton_Click"/>
+                            </Grid>
+                        </Border>
                         <TreeView x:Name="HierarchyTree" SelectedItemChanged="HierarchyTree_SelectedItemChanged"/>
                     </DockPanel>
                 </Border>
                 <GridSplitter Grid.Column="1" Width="5" Background="#111111" ResizeDirection="Columns" DragCompleted="LayoutSplitter_DragCompleted"/>
                 <Border x:Name="InspectorPane" Grid.Column="2" Background="{StaticResource PanelBackground}">
                     <DockPanel>
-                        <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top"><TextBlock Text="Inspector" Style="{StaticResource PanelTitle}"/></Border>
+                        <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top">
+                            <Grid>
+                                <TextBlock Text="Inspector" Style="{StaticResource PanelTitle}"/>
+                                <Button Style="{StaticResource PanelTabCloseButton}" HorizontalAlignment="Right" Tag="inspector" Click="ClosePaneButton_Click"/>
+                            </Grid>
+                        </Border>
                         <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                             <StackPanel x:Name="InspectorPanel" Margin="10"/>
                         </ScrollViewer>

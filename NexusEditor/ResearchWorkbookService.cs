@@ -284,6 +284,7 @@ public static class ResearchWorkbookService
                     EffectSheetName, effect.RowIdentity, effect.Id, "id"));
         }
 
+        AddTopologyIssues(issues, context.Nodes, nodesById);
         AddCycleIssues(issues, context.Nodes, nodesById);
         return issues;
     }
@@ -367,6 +368,94 @@ public static class ResearchWorkbookService
             if (prerequisite.Column >= node.Column)
                 issues.Add(Error("condition_non_backward", $"{node.Id}: 선행 조건은 더 앞 column에 있어야 합니다. ({condition})",
                     NodeSheetName, node.RowIdentity, node.Id, "condition_node_1~5"));
+            else if (prerequisite.Column + 1 != node.Column)
+                issues.Add(Error("condition_non_adjacent", $"{node.Id}: 바로 이전 column의 노드만 선행 조건으로 연결할 수 있습니다. ({condition})",
+                    NodeSheetName, node.RowIdentity, node.Id, "condition_node_1~5"));
+        }
+    }
+
+    private static void AddTopologyIssues(
+        List<ResearchValidationIssue> issues,
+        IReadOnlyCollection<ResearchNodeRow> nodes,
+        Dictionary<string, List<ResearchNodeRow>> nodesById)
+    {
+        var outgoing = new Dictionary<string, List<ResearchNodeRow>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var target in nodes)
+        {
+            foreach (var condition in target.Conditions.Where(NotBlank).Distinct(StringComparer.OrdinalIgnoreCase))
+            {
+                if (!nodesById.TryGetValue(condition, out var sourceRows) || sourceRows.Count == 0)
+                    continue;
+                var source = sourceRows[0];
+                if (!Same(source.Category, target.Category) || source.Column + 1 != target.Column)
+                    continue;
+                if (!outgoing.TryGetValue(source.Id, out var targets))
+                {
+                    targets = [];
+                    outgoing[source.Id] = targets;
+                }
+                if (targets.All(candidate => !Same(candidate.RowIdentity, target.RowIdentity)))
+                    targets.Add(target);
+            }
+        }
+
+        var exactMergeTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var source in nodes.Where(node => NotBlank(node.Id)))
+        {
+            if (!outgoing.TryGetValue(source.Id, out var targets))
+                continue;
+            if (targets.Count > 3)
+            {
+                issues.Add(Error("condition_fanout_max3",
+                    $"{source.Id}: 후행 노드가 {targets.Count}개입니다. 연구 구조는 최대 3갈래까지만 편집할 수 있습니다.",
+                    NodeSheetName, source.RowIdentity, source.Id, "condition_node_1~5"));
+                continue;
+            }
+            if (targets.Count != 3)
+                continue;
+
+            HashSet<string>? commonTargets = null;
+            foreach (var child in targets)
+            {
+                var nextIds = outgoing.TryGetValue(child.Id, out var nextNodes)
+                    ? nextNodes.Select(node => node.Id).ToHashSet(StringComparer.OrdinalIgnoreCase)
+                    : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (commonTargets is null)
+                    commonTargets = nextIds;
+                else
+                    commonTargets.IntersectWith(nextIds);
+            }
+
+            var mergeTargetId = commonTargets?.FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(mergeTargetId))
+                exactMergeTargets.Add(mergeTargetId);
+            var shape = string.IsNullOrWhiteSpace(mergeTargetId) ? "1-3 분기" : $"1-3-1 분기 ({mergeTargetId}로 합류)";
+            issues.Add(Warning("condition_branch_1_3_1",
+                $"{source.Id}: {shape} 구조입니다. 현재 시스템 기준은 1-2-1이므로 연결을 확인하세요.",
+                NodeSheetName, source.RowIdentity, source.Id, "condition_node_1~5"));
+        }
+
+        foreach (var target in nodes)
+        {
+            var incomingCount = target.Conditions
+                .Where(NotBlank)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count(condition => nodesById.TryGetValue(condition, out var sourceRows)
+                                    && sourceRows.Count > 0
+                                    && Same(sourceRows[0].Category, target.Category)
+                                    && sourceRows[0].Column + 1 == target.Column);
+            if (incomingCount > 3)
+            {
+                issues.Add(Error("condition_fanin_max3",
+                    $"{target.Id}: 선행 노드가 {incomingCount}개입니다. 연구 구조는 최대 3갈래까지만 편집할 수 있습니다.",
+                    NodeSheetName, target.RowIdentity, target.Id, "condition_node_1~5"));
+            }
+            else if (incomingCount == 3 && !exactMergeTargets.Contains(target.Id))
+            {
+                issues.Add(Warning("condition_merge_3_1",
+                    $"{target.Id}: 3-1 합류 구조입니다. 현재 시스템 기준은 1-2-1이므로 연결을 확인하세요.",
+                    NodeSheetName, target.RowIdentity, target.Id, "condition_node_1~5"));
+            }
         }
     }
 
@@ -1484,8 +1573,20 @@ public static class ResearchWorkbookService
             return ResearchMutationResult.Failed("다른 카테고리의 연구 노드는 연결할 수 없습니다.");
         if (prerequisite.Column >= target.Column)
             return ResearchMutationResult.Failed("선행 조건은 대상보다 앞 column에 있어야 합니다.");
+        if (prerequisite.Column + 1 != target.Column)
+            return ResearchMutationResult.Failed("바로 다음 column의 연구 노드에만 연결할 수 있습니다.");
         if (target.Conditions.Any(condition => Same(condition, prerequisite.Id)))
             return ResearchMutationResult.Failed("이미 연결된 선행 조건입니다.");
+
+        var outgoingCount = context.Nodes.Count(candidate =>
+            Same(candidate.Category, prerequisite.Category)
+            && candidate.Conditions.Any(condition => Same(condition, prerequisite.Id)));
+        if (outgoingCount >= 3)
+            return ResearchMutationResult.Failed("한 연구 노드에서는 최대 3개의 다음 노드로만 연결할 수 있습니다.");
+
+        var incomingCount = target.Conditions.Count(NotBlank);
+        if (incomingCount >= 3)
+            return ResearchMutationResult.Failed("한 연구 노드에는 최대 3개의 선행 노드만 연결할 수 있습니다.");
 
         var index = target.Conditions.ToList().FindIndex(string.IsNullOrWhiteSpace);
         if (index < 0)
@@ -1499,7 +1600,17 @@ public static class ResearchWorkbookService
             return ResearchMutationResult.Failed("이 연결은 순환 구조를 만듭니다.");
         }
 
-        var result = new ResearchMutationResult { Success = true, Message = "선행 조건을 연결했습니다." };
+        var warnings = new List<string>();
+        if (outgoingCount + 1 == 3)
+            warnings.Add($"{prerequisite.Id}: 1-3 분기입니다. 현재 시스템 기준은 1-2-1이므로 구조를 확인하세요.");
+        if (incomingCount + 1 == 3)
+            warnings.Add($"{target.Id}: 3-1 합류입니다. 현재 시스템 기준은 1-2-1이므로 구조를 확인하세요.");
+        var result = new ResearchMutationResult
+        {
+            Success = true,
+            Message = "선행 조건을 연결했습니다.",
+            WarningMessage = string.Join(" ", warnings.Distinct(StringComparer.OrdinalIgnoreCase))
+        };
         result.AffectedRowIdentities.Add(target.RowIdentity);
         return result;
     }
