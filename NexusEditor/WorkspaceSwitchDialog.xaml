@@ -79,7 +79,8 @@
                 BorderBrush="#111111"
                 BorderThickness="0,0,0,1"
                 Padding="24,18">
-            <TextBlock Text="워크스페이스 전환"
+            <TextBlock x:Name="HeaderText"
+                       Text="워크스페이스 전환"
                        FontSize="21"
                        FontWeight="SemiBold"
                        Foreground="#f1f1f1"/>
@@ -106,7 +107,8 @@
                            Foreground="#e6c66d"/>
             </Border>
             <StackPanel Grid.Column="1">
-                <TextBlock Text="저장되지 않은 변경 내용이 있습니다."
+                <TextBlock x:Name="HeadlineText"
+                           Text="저장되지 않은 변경 내용이 있습니다."
                            FontSize="17"
                            FontWeight="SemiBold"
                            Foreground="#ededed"/>
@@ -136,7 +138,8 @@
                         Content="취소"
                         IsCancel="True"
                         Click="CancelButton_Click"/>
-                <Button Grid.Column="2"
+                <Button x:Name="DiscardButton"
+                        Grid.Column="2"
                         Content="변경 내용 무시"
                         Click="DiscardButton_Click"/>
                 <Button x:Name="ExportAndSwitchButton"

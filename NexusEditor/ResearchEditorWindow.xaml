@@ -281,6 +281,7 @@
                 <Separator/>
                 <MenuItem x:Name="CategoryPaneMenuItem" Header="Category List" IsCheckable="True" IsChecked="True" Tag="category" Click="PaneMenuItem_Click"/>
                 <MenuItem x:Name="ScenePaneMenuItem" Header="Scene" IsCheckable="True" IsChecked="True" Tag="scene" Click="PaneMenuItem_Click"/>
+                <MenuItem x:Name="NavigatorPaneMenuItem" Header="Navigator" IsCheckable="True" IsChecked="True" Tag="navigator" Click="PaneMenuItem_Click"/>
                 <MenuItem x:Name="HierarchyPaneMenuItem" Header="Hierarchy" IsCheckable="True" IsChecked="True" Tag="hierarchy" Click="PaneMenuItem_Click"/>
                 <MenuItem x:Name="InspectorPaneMenuItem" Header="Inspector" IsCheckable="True" IsChecked="True" Tag="inspector" Click="PaneMenuItem_Click"/>
                 <MenuItem x:Name="ConsolePaneMenuItem" Header="Console" IsCheckable="True" IsChecked="True" Tag="console" Click="PaneMenuItem_Click"/>
@@ -325,7 +326,7 @@
                 <ColumnDefinition Width="5"/>
                 <ColumnDefinition Width="*" MinWidth="360"/>
                 <ColumnDefinition Width="5"/>
-                <ColumnDefinition x:Name="RightColumn" Width="620" MinWidth="280"/>
+                <ColumnDefinition x:Name="RightColumn" Width="700" MinWidth="550"/>
             </Grid.ColumnDefinitions>
 
             <Border x:Name="CategoryPane" Grid.Column="0" Background="{StaticResource PanelBackground}">
@@ -352,9 +353,9 @@
 
             <Grid Grid.Column="2">
                 <Grid.RowDefinitions>
-                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="*" MinHeight="180"/>
                     <RowDefinition x:Name="ConsoleSplitterRow" Height="7"/>
-                    <RowDefinition x:Name="ConsoleRow" Height="160" MinHeight="72"/>
+                    <RowDefinition x:Name="ConsoleRow" Height="200" MinHeight="130"/>
                 </Grid.RowDefinitions>
                 <Border x:Name="ScenePane" Grid.Row="0" Background="#191919" BorderBrush="#111111" BorderThickness="0,0,1,0">
                     <DockPanel>
@@ -385,14 +386,16 @@
                                         <TranslateTransform x:Name="GraphTranslate"/>
                                     </TransformGroup>
                                 </Canvas.RenderTransform>
-                                <Canvas x:Name="BandCanvas" Width="28000" Height="760" IsHitTestVisible="False"/>
-                                <Canvas x:Name="LinkCanvas" Width="28000" Height="760" Background="Transparent"/>
+                                <Canvas x:Name="BandCanvas" Width="28000" Height="760"/>
+                                <Canvas x:Name="LinkCanvas" Width="28000" Height="760"/>
                                 <Canvas x:Name="NodeCanvas" Width="28000" Height="760"/>
                             </Canvas>
                         </Grid>
                     </DockPanel>
                 </Border>
-                <GridSplitter x:Name="ConsoleSplitter" Grid.Row="1" Height="7" Background="#3a3a3a" ResizeDirection="Rows" DragCompleted="LayoutSplitter_DragCompleted"/>
+                <GridSplitter x:Name="ConsoleSplitter" Grid.Row="1" Height="7" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"
+                              Background="#505050" Cursor="SizeNS" ResizeDirection="Rows" ResizeBehavior="PreviousAndNext"
+                              ShowsPreview="False" DragCompleted="LayoutSplitter_DragCompleted"/>
                 <Border x:Name="ConsolePane" Grid.Row="2" Background="#202020">
                     <DockPanel>
                         <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top">
@@ -418,11 +421,32 @@
             <GridSplitter Grid.Column="3" Width="5" Background="#111111" ResizeDirection="Columns" DragCompleted="LayoutSplitter_DragCompleted"/>
             <Grid x:Name="RightPane" Grid.Column="4">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition x:Name="HierarchyColumn" Width="270" MinWidth="130"/>
+                    <ColumnDefinition x:Name="NavigatorColumn" Width="220" MinWidth="190"/>
                     <ColumnDefinition Width="5"/>
-                    <ColumnDefinition Width="*" MinWidth="150"/>
+                    <ColumnDefinition x:Name="HierarchyColumn" Width="220" MinWidth="130"/>
+                    <ColumnDefinition Width="5"/>
+                    <ColumnDefinition Width="*" MinWidth="180"/>
                 </Grid.ColumnDefinitions>
-                <Border x:Name="HierarchyPane" Grid.Column="0" Background="{StaticResource PanelBackground}">
+                <Border x:Name="NavigatorPane" Grid.Column="0" Background="{StaticResource PanelBackground}">
+                    <DockPanel>
+                        <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top">
+                            <DockPanel LastChildFill="False">
+                                <Border DockPanel.Dock="Left" Style="{StaticResource PanelTitleTab}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="⌖" Style="{StaticResource PanelHeaderIcon}"/>
+                                        <TextBlock Text="Navigator" Style="{StaticResource PanelHeaderText}"/>
+                                        <Button Style="{StaticResource PanelTabCloseButton}" Tag="navigator" Click="ClosePaneButton_Click"/>
+                                    </StackPanel>
+                                </Border>
+                            </DockPanel>
+                        </Border>
+                        <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel x:Name="NavigatorPanel" Margin="10"/>
+                        </ScrollViewer>
+                    </DockPanel>
+                </Border>
+                <GridSplitter x:Name="NavigatorSplitter" Grid.Column="1" Width="5" Background="#111111" ResizeDirection="Columns" DragCompleted="LayoutSplitter_DragCompleted"/>
+                <Border x:Name="HierarchyPane" Grid.Column="2" Background="{StaticResource PanelBackground}">
                     <DockPanel>
                         <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top">
                             <DockPanel LastChildFill="False">
@@ -438,8 +462,8 @@
                         <TreeView x:Name="HierarchyTree" SelectedItemChanged="HierarchyTree_SelectedItemChanged"/>
                     </DockPanel>
                 </Border>
-                <GridSplitter Grid.Column="1" Width="5" Background="#111111" ResizeDirection="Columns" DragCompleted="LayoutSplitter_DragCompleted"/>
-                <Border x:Name="InspectorPane" Grid.Column="2" Background="{StaticResource PanelBackground}">
+                <GridSplitter Grid.Column="3" Width="5" Background="#111111" ResizeDirection="Columns" DragCompleted="LayoutSplitter_DragCompleted"/>
+                <Border x:Name="InspectorPane" Grid.Column="4" Background="{StaticResource PanelBackground}">
                     <DockPanel>
                         <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top">
                             <DockPanel LastChildFill="False">

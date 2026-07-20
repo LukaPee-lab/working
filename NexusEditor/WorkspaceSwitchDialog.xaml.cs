@@ -15,6 +15,19 @@ public partial class WorkspaceSwitchDialog : Window
         }
     }
 
+    private WorkspaceSwitchDialog(string message, bool isProgramExit)
+        : this(message)
+    {
+        if (!isProgramExit)
+            return;
+
+        Title = "프로그램 종료";
+        HeaderText.Text = "프로그램 종료";
+        HeadlineText.Text = "프로그램을 종료하시겠습니까?";
+        DiscardButton.Content = "저장하지 않고 종료";
+        ExportAndSwitchButton.Content = "Export 후 종료";
+    }
+
     public WorkspaceSwitchResult Result { get; private set; } = WorkspaceSwitchResult.Cancel;
 
     public static WorkspaceSwitchResult Request(Window owner, string? message = null)
@@ -22,6 +35,18 @@ public partial class WorkspaceSwitchDialog : Window
         ArgumentNullException.ThrowIfNull(owner);
 
         var dialog = new WorkspaceSwitchDialog(message)
+        {
+            Owner = owner
+        };
+        dialog.ShowDialog();
+        return dialog.Result;
+    }
+
+    public static WorkspaceSwitchResult RequestExit(Window owner, string message)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+
+        var dialog = new WorkspaceSwitchDialog(message, isProgramExit: true)
         {
             Owner = owner
         };

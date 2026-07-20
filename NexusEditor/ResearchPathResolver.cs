@@ -13,9 +13,10 @@ public sealed class ResearchEditorSettings
     public double PanX { get; set; }
     public double PanY { get; set; }
     public double CategoryPaneWidth { get; set; } = 250;
-    public double RightPaneWidth { get; set; } = 620;
-    public double HierarchyPaneWidth { get; set; } = 270;
-    public double ConsoleHeight { get; set; } = 160;
+    public double RightPaneWidth { get; set; } = 700;
+    public double NavigatorPaneWidth { get; set; } = 220;
+    public double HierarchyPaneWidth { get; set; } = 220;
+    public double ConsoleHeight { get; set; } = 200;
     public string LastExportId { get; set; } = ResearchWorkbookService.DefaultResearchExportId;
 }
 

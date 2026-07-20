@@ -380,6 +380,39 @@ public partial class App : Application
             failures.Add("단계 노드 수 3->2 구조 변경 또는 조건 정리 실패");
         }
 
+        var permissionTest = source.DeepClone();
+        var permissionCategoryIndex = permissionTest.Categories.Select(row => row.Index ?? 0).DefaultIfEmpty().Max() + 1;
+        var permissionCategory = ResearchWorkbookService.CreateCategory(permissionTest, "qa_permission", permissionCategoryIndex);
+        for (var column = 401; column <= 404; column++)
+        {
+            var pair = ResearchWorkbookService.CreateNode(permissionTest, permissionCategory.Category, column, 4);
+            pair.Node.Image = "qa_permission_icon";
+            pair.Node.NodePermission = 1;
+            pair.Effect.Type = "cs_add";
+            pair.Effect.Condition = "range=self";
+            pair.Effect.ValueText = "1";
+        }
+        var addPermission = ResearchWorkbookService.TryAddPermissionRegion(permissionTest, permissionCategory.Category);
+        var shiftPermissionLeft = ResearchWorkbookService.TryShiftPermissionBoundary(permissionTest, permissionCategory.Category, 1, -1);
+        var permissionTwoColumns = permissionTest.Nodes
+            .Where(node => node.Category == permissionCategory.Category && node.NodePermission == 2)
+            .Select(node => node.Column)
+            .Distinct()
+            .OrderBy(value => value)
+            .ToList();
+        var shiftPermissionRight = ResearchWorkbookService.TryShiftPermissionBoundary(permissionTest, permissionCategory.Category, 1, 1);
+        var removePermission = ResearchWorkbookService.TryRemovePermissionRegion(permissionTest, permissionCategory.Category);
+        if (!addPermission.Success
+            || !shiftPermissionLeft.Success
+            || !permissionTwoColumns.SequenceEqual(new[] { 403, 404 })
+            || !shiftPermissionRight.Success
+            || !removePermission.Success
+            || permissionTest.Nodes.Where(node => node.Category == permissionCategory.Category)
+                .Any(node => node.NodePermission != 1))
+        {
+            failures.Add("권한 구역 추가/경계 이동/삭제의 node_permission 일괄 변경 실패");
+        }
+
         var test = source.DeepClone();
         var categoryIndex = test.Categories.Select(row => row.Index ?? 0).DefaultIfEmpty().Max() + 1;
         var category = ResearchWorkbookService.CreateCategory(test, "qa_editor", categoryIndex);

@@ -19,9 +19,9 @@ public partial class ResearchEditorWindow : Window
     private const double ConnectorWidth = 124;
     private const double ColumnSpacing = NodeWidth + ConnectorWidth;
     private const double GraphLeft = 86;
-    private const double LaneTop = 112;
+    private const double LaneTop = 138;
     private const double LaneSpacing = 172;
-    private const double GraphHeight = 650;
+    private const double GraphHeight = 690;
     private static readonly int[] StructuredRows = [2, 4, 6];
 
     private readonly Action<WorkspaceMode>? _workspaceSwitch;
@@ -180,9 +180,15 @@ public partial class ResearchEditorWindow : Window
             return;
         }
 
+        var categoryNodes = _workbook.Nodes
+            .Where(node => Same(node.Category, _selectedCategory.Category))
+            .OrderBy(node => node.Column)
+            .ThenBy(node => node.Row)
+            .ToList();
         var nodes = VisibleNodes().ToList();
-        ResizeGraphSurface(nodes);
+        ResizeGraphSurface(categoryNodes);
         DrawStructuredBands(nodes);
+        DrawPermissionRegions(categoryNodes);
         DrawStepHeaders(nodes);
         foreach (var node in nodes)
             CreateNodeVisual(node);
@@ -237,25 +243,126 @@ public partial class ResearchEditorWindow : Window
             BandCanvas.Children.Add(band);
         }
 
-        foreach (var permissionGroup in nodes
-                     .Where(node => node.NodePermission is >= 1 and <= 5)
-                     .GroupBy(node => node.NodePermission!.Value)
-                     .OrderBy(group => group.Min(node => node.Column)))
-        {
-            var minColumn = permissionGroup.Min(node => node.Column);
-            var maxColumn = permissionGroup.Max(node => node.Column);
-            var marker = new Border
+    }
+
+    private void DrawPermissionRegions(IReadOnlyCollection<ResearchNodeRow> nodes)
+    {
+        if (_selectedCategory is null || nodes.Count == 0)
+            return;
+
+        var columns = nodes
+            .GroupBy(node => node.Column)
+            .OrderBy(group => group.Key)
+            .Select(group => new
             {
-                Width = WorldX(maxColumn) - WorldX(minColumn) + NodeWidth,
-                Height = 3,
-                Background = NodeHeaderBrush(permissionGroup.Key),
-                Opacity = 0.72,
-                IsHitTestVisible = false
-            };
-            Canvas.SetLeft(marker, WorldX(minColumn));
-            Canvas.SetTop(marker, 87);
-            BandCanvas.Children.Add(marker);
+                Column = group.Key,
+                Permission = group.GroupBy(node => node.NodePermission ?? 0)
+                    .OrderByDescending(permissionGroup => permissionGroup.Count())
+                    .ThenBy(permissionGroup => permissionGroup.Key)
+                    .First().Key
+            })
+            .ToList();
+        var regions = new List<(int Permission, int FirstColumn, int LastColumn)>();
+        foreach (var column in columns)
+        {
+            if (regions.Count > 0
+                && regions[^1].Permission == column.Permission
+                && regions[^1].LastColumn + 1 == column.Column)
+            {
+                var current = regions[^1];
+                regions[^1] = (current.Permission, current.FirstColumn, column.Column);
+            }
+            else
+            {
+                regions.Add((column.Permission, column.Column, column.Column));
+            }
         }
+
+        for (var index = 0; index < regions.Count; index++)
+        {
+            var region = regions[index];
+            var width = WorldX(region.LastColumn) - WorldX(region.FirstColumn) + NodeWidth;
+            var strip = new Border
+            {
+                Width = width,
+                Height = 32,
+                Background = NodeHeaderBrush(region.Permission),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(96, 96, 96)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(2),
+                Opacity = 0.9
+            };
+            var content = new Grid { Margin = new Thickness(8, 0, 4, 0) };
+            content.ColumnDefinitions.Add(new ColumnDefinition());
+            content.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            content.Children.Add(new TextBlock
+            {
+                Text = region.Permission > 0 ? $"PERMISSION {region.Permission}" : "PERMISSION NOT SET",
+                Foreground = Brushes.White,
+                FontSize = 11,
+                FontWeight = FontWeights.Bold,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+
+            var controls = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            if (index < regions.Count - 1 && regions[index + 1].Permission == region.Permission + 1)
+            {
+                controls.Children.Add(CreatePermissionButton("◀", "현재 구역의 마지막 STEP을 다음 권한 구역으로 옮깁니다.",
+                    () => ChangePermissionBoundary(region.Permission, -1)));
+                controls.Children.Add(CreatePermissionButton("▶", "다음 권한 구역의 첫 STEP을 현재 구역으로 가져옵니다.",
+                    () => ChangePermissionBoundary(region.Permission, 1)));
+            }
+            if (index == regions.Count - 1 && region.Permission > 1)
+            {
+                controls.Children.Add(CreatePermissionButton("−", "마지막 권한 구역을 앞 구역에 합칩니다.", RemovePermissionRegion));
+            }
+            Grid.SetColumn(controls, 1);
+            content.Children.Add(controls);
+            strip.Child = content;
+            Canvas.SetLeft(strip, WorldX(region.FirstColumn));
+            Canvas.SetTop(strip, 8);
+            BandCanvas.Children.Add(strip);
+        }
+
+        var lastColumn = columns.Max(column => column.Column);
+        var addButton = new Button
+        {
+            Content = "+ 권한 구역",
+            Width = 108,
+            Height = 32,
+            Padding = new Thickness(5, 2, 5, 2),
+            FontSize = 10.5,
+            ToolTip = "마지막 권한 구역의 끝 STEP을 떼어 새 권한 구역을 만듭니다."
+        };
+        addButton.Click += (_, _) => AddPermissionRegion();
+        Canvas.SetLeft(addButton, WorldX(lastColumn) + NodeWidth + 12);
+        Canvas.SetTop(addButton, 8);
+        BandCanvas.Children.Add(addButton);
+    }
+
+    private static Button CreatePermissionButton(string text, string toolTip, Action action)
+    {
+        var button = new Button
+        {
+            Content = text,
+            Width = 25,
+            Height = 23,
+            MinHeight = 23,
+            Padding = new Thickness(0),
+            Margin = new Thickness(3, 0, 0, 0),
+            FontSize = 11,
+            ToolTip = toolTip
+        };
+        button.Click += (_, eventArgs) =>
+        {
+            action();
+            eventArgs.Handled = true;
+        };
+        return button;
     }
 
     private void DrawStepHeaders(IReadOnlyCollection<ResearchNodeRow> nodes)
@@ -325,7 +432,7 @@ public partial class ResearchEditorWindow : Window
             root.Children.Add(counter);
 
             Canvas.SetLeft(header, WorldX(column));
-            Canvas.SetTop(header, 20);
+            Canvas.SetTop(header, 48);
             Panel.SetZIndex(header, 20);
             NodeCanvas.Children.Add(header);
         }
@@ -583,7 +690,7 @@ public partial class ResearchEditorWindow : Window
         }
     }
 
-    private Image? CreateResourceConnector(ResearchNodeRow source, ResearchNodeRow target)
+    private FrameworkElement? CreateResourceConnector(ResearchNodeRow source, ResearchNodeRow target)
     {
         if (!_nodeVisuals.ContainsKey(source.RowIdentity) || !_nodeVisuals.ContainsKey(target.RowIdentity))
             return null;
@@ -602,20 +709,118 @@ public partial class ResearchEditorWindow : Window
         if (sourceImage is null)
             return null;
 
-        var height = Math.Max(12, Math.Abs(to.Y - from.Y));
-        var connector = new Image
+        var verticalDistance = Math.Abs(to.Y - from.Y);
+        var width = Math.Max(ConnectorWidth, to.X - from.X);
+        var height = Math.Max(12, verticalDistance + 12);
+        FrameworkElement connector;
+        if (sourceImage is BitmapSource bitmapSource)
         {
-            Source = sourceImage,
-            Width = ConnectorWidth,
+            connector = assetKey == "roadmap_line_s_5"
+                ? CreateHorizontalNineSlice(bitmapSource, width)
+                : CreateBentNineSlice(bitmapSource, assetKey, width, height);
+        }
+        else
+        {
+            connector = new Image
+            {
+                Source = sourceImage,
+                Width = width,
+                Height = height,
+                Stretch = Stretch.Fill,
+                SnapsToDevicePixels = true
+            };
+        }
+        connector.Cursor = Cursors.Hand;
+        connector.ToolTip = $"{source.Id} -> {target.Id}\nRight click to disconnect";
+        Canvas.SetLeft(connector, from.X);
+        Canvas.SetTop(connector, Math.Min(from.Y, to.Y) - 6);
+        return connector;
+    }
+
+    private static FrameworkElement CreateHorizontalNineSlice(BitmapSource source, double width)
+    {
+        var cap = Math.Min(8, Math.Max(1, source.PixelWidth / 3));
+        var grid = new Grid
+        {
+            Width = width,
+            Height = source.PixelHeight,
+            SnapsToDevicePixels = true,
+            UseLayoutRounding = true,
+            ClipToBounds = true
+        };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(cap) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(cap) });
+        AddNineSliceImage(grid, source, new Int32Rect(0, 0, cap, source.PixelHeight), 0, 0);
+        AddNineSliceImage(grid, source, new Int32Rect(cap, 0, source.PixelWidth - cap * 2, source.PixelHeight), 0, 1);
+        AddNineSliceImage(grid, source, new Int32Rect(source.PixelWidth - cap, 0, cap, source.PixelHeight), 0, 2);
+        return grid;
+    }
+
+    private static FrameworkElement CreateBentNineSlice(BitmapSource source, string assetKey, double width, double height)
+    {
+        var longConnector = assetKey.Contains("_l_", StringComparison.OrdinalIgnoreCase);
+        var spineStart = Math.Min(source.PixelWidth - 2, longConnector ? 56 : 49);
+        var spineWidth = Math.Min(source.PixelWidth - spineStart, longConnector ? 12 : 11);
+        var rightWidth = source.PixelWidth - spineStart - spineWidth;
+        var cap = Math.Min(12, Math.Max(1, source.PixelHeight / 3));
+        var middleHeight = source.PixelHeight - cap * 2;
+
+        var grid = new Grid
+        {
+            Width = width,
             Height = height,
+            SnapsToDevicePixels = true,
+            UseLayoutRounding = true,
+            ClipToBounds = true
+        };
+        grid.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = new GridLength(Math.Max(1, spineStart), GridUnitType.Star)
+        });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(spineWidth) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition
+        {
+            Width = new GridLength(Math.Max(1, rightWidth), GridUnitType.Star)
+        });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(cap) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(cap) });
+
+        var xCuts = new[] { 0, spineStart, spineStart + spineWidth, source.PixelWidth };
+        var yCuts = new[] { 0, cap, cap + middleHeight, source.PixelHeight };
+        for (var row = 0; row < 3; row++)
+        {
+            for (var column = 0; column < 3; column++)
+            {
+                var crop = new Int32Rect(
+                    xCuts[column],
+                    yCuts[row],
+                    xCuts[column + 1] - xCuts[column],
+                    yCuts[row + 1] - yCuts[row]);
+                AddNineSliceImage(grid, source, crop, row, column);
+            }
+        }
+        return grid;
+    }
+
+    private static void AddNineSliceImage(Grid grid, BitmapSource source, Int32Rect crop, int row, int column)
+    {
+        if (crop.Width <= 0 || crop.Height <= 0)
+            return;
+        var cropped = new CroppedBitmap(source, crop);
+        cropped.Freeze();
+        var image = new Image
+        {
+            Source = cropped,
             Stretch = Stretch.Fill,
             SnapsToDevicePixels = true,
-            Cursor = Cursors.Hand,
-            ToolTip = $"{source.Id} -> {target.Id}\nRight click to disconnect"
+            IsHitTestVisible = true
         };
-        Canvas.SetLeft(connector, from.X);
-        Canvas.SetTop(connector, Math.Min(from.Y, to.Y) - (height <= 12 ? height / 2 : 0));
-        return connector;
+        RenderOptions.SetBitmapScalingMode(image, BitmapScalingMode.NearestNeighbor);
+        Grid.SetRow(image, row);
+        Grid.SetColumn(image, column);
+        grid.Children.Add(image);
     }
 
     private Point GetInputPoint(ResearchNodeRow node) => new(
@@ -811,6 +1016,46 @@ public partial class ResearchEditorWindow
         UpdateDirtyState();
         Log(ResearchConsoleSeverity.Info, result.Message);
         e.Handled = true;
+    }
+
+    private void ChangePermissionBoundary(int permission, int direction) =>
+        ApplyPermissionMutation(() => ResearchWorkbookService.TryShiftPermissionBoundary(
+            _workbook!, _selectedCategory!.Category, permission, direction));
+
+    private void AddPermissionRegion() =>
+        ApplyPermissionMutation(() => ResearchWorkbookService.TryAddPermissionRegion(
+            _workbook!, _selectedCategory!.Category));
+
+    private void RemovePermissionRegion() =>
+        ApplyPermissionMutation(() => ResearchWorkbookService.TryRemovePermissionRegion(
+            _workbook!, _selectedCategory!.Category));
+
+    private void ApplyPermissionMutation(Func<ResearchMutationResult> mutation)
+    {
+        if (_workbook is null || _selectedCategory is null)
+            return;
+        var category = _selectedCategory.Category;
+        PushUndo();
+        var result = mutation();
+        if (!result.Success)
+        {
+            UndoWithoutRender();
+            Log(ResearchConsoleSeverity.Error, result.Message, category);
+            return;
+        }
+
+        _selectedCategory = _workbook.FindCategory(category);
+        var visibleIdentities = VisibleNodes()
+            .Select(node => node.RowIdentity)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        _selectedNodeIdentities.IntersectWith(visibleIdentities);
+        _primaryNode = _workbook.Nodes.FirstOrDefault(node => _selectedNodeIdentities.Contains(node.RowIdentity));
+        RenderGraph();
+        PopulateHierarchy();
+        RenderInspector();
+        RunValidation(logSuccess: false);
+        UpdateDirtyState();
+        Log(ResearchConsoleSeverity.Info, result.Message, category);
     }
 
     private void Node_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -1318,7 +1563,6 @@ public partial class ResearchEditorWindow
         _primaryNode = node;
         ApplySelectionVisuals();
         RenderInspector();
-        FocusSelectedNode();
     }
 
     private void SelectHierarchyNode(string rowIdentity)
@@ -1354,6 +1598,8 @@ public partial class ResearchEditorWindow
     {
         _suppressInspectorCommit = true;
         InspectorPanel.Children.Clear();
+        NavigatorPanel.Children.Clear();
+        RenderNavigator();
         if (_selectedNodeIdentities.Count > 1)
         {
             AddInspectorTitle($"{_selectedNodeIdentities.Count:N0} nodes selected");
@@ -1373,6 +1619,50 @@ public partial class ResearchEditorWindow
         else
             InspectorPanel.Children.Add(new TextBlock { Text = "Select a category or node", Foreground = Brushes.Gray });
         _suppressInspectorCommit = false;
+    }
+
+    private void RenderNavigator()
+    {
+        if (_selectedNodeIdentities.Count > 1)
+        {
+            AddPanelTitle(NavigatorPanel, $"{_selectedNodeIdentities.Count:N0} nodes");
+            NavigatorPanel.Children.Add(new TextBlock
+            {
+                Text = "노드 하나를 선택하면 자주 쓰는 값을 바로 수정할 수 있습니다.",
+                Foreground = new SolidColorBrush(Color.FromRgb(165, 165, 165)),
+                TextWrapping = TextWrapping.Wrap
+            });
+            return;
+        }
+        if (_primaryNode is not { } node)
+        {
+            AddPanelTitle(NavigatorPanel, "Quick Edit");
+            NavigatorPanel.Children.Add(new TextBlock
+            {
+                Text = "Scene에서 연구 노드를 선택하세요.",
+                Foreground = new SolidColorBrush(Color.FromRgb(150, 150, 150)),
+                TextWrapping = TextWrapping.Wrap
+            });
+            return;
+        }
+
+        AddPanelTitle(NavigatorPanel, "Quick Node");
+        AddReadOnlyField(NavigatorPanel, "selected node", node.Id,
+            "현재 선택한 연구 노드 ID입니다.");
+        AddEditableField(NavigatorPanel, "image", node.Image, value => node.Image = value,
+            "연구 노드에 표시할 이미지 리소스 키입니다.");
+        AddEditableField(NavigatorPanel, "active_item_id", node.ActiveItemId, value => node.ActiveItemId = value,
+            "노드 활성화에 필요한 아이템 ID입니다.");
+        AddEditableField(NavigatorPanel, "active_item_value", node.ActiveItemValue, value =>
+        {
+            node.ActiveItemValue = value;
+            node.TotalRequiredHelper = ResearchWorkbookService.CalculateActiveItemTotal(value);
+        }, "단계별 필요 수량입니다. 여러 값은 세미콜론으로 구분합니다.");
+        AddEditableField(NavigatorPanel, "active_step", node.ActiveStep?.ToString(CultureInfo.InvariantCulture) ?? "", value =>
+            node.ActiveStep = ParseNullableInt(value, "active_step"), "활성화 단계 수입니다.");
+        AddReadOnlyField(NavigatorPanel, "total required",
+            node.TotalRequiredHelper?.ToString("G", CultureInfo.InvariantCulture) ?? "",
+            "active_item_value에 입력한 수량의 합계입니다.");
     }
 
     private void RenderCategoryInspector(ResearchCategoryRow category)
@@ -1606,9 +1896,11 @@ public partial class ResearchEditorWindow
         UpdateDirtyState();
     }
 
-    private void AddInspectorTitle(string title)
+    private void AddInspectorTitle(string title) => AddPanelTitle(InspectorPanel, title);
+
+    private static void AddPanelTitle(Panel panel, string title)
     {
-        InspectorPanel.Children.Add(new TextBlock
+        panel.Children.Add(new TextBlock
         {
             Text = title,
             FontSize = 20,
@@ -1637,9 +1929,12 @@ public partial class ResearchEditorWindow
     }
 
     private void AddReadOnlyField(string label, string value, string help)
+        => AddReadOnlyField(InspectorPanel, label, value, help);
+
+    private void AddReadOnlyField(Panel panel, string label, string value, string help)
     {
-        AddFieldLabel(label, help);
-        InspectorPanel.Children.Add(new TextBox
+        AddFieldLabel(panel, label, help);
+        panel.Children.Add(new TextBox
         {
             Text = value,
             IsReadOnly = true,
@@ -1650,8 +1945,11 @@ public partial class ResearchEditorWindow
     }
 
     private void AddEditableField(string label, string value, Action<string> apply, string help, bool multiline = false)
+        => AddEditableField(InspectorPanel, label, value, apply, help, multiline);
+
+    private void AddEditableField(Panel panel, string label, string value, Action<string> apply, string help, bool multiline = false)
     {
-        AddFieldLabel(label, help);
+        AddFieldLabel(panel, label, help);
         var box = new TextBox
         {
             Text = value,
@@ -1668,10 +1966,13 @@ public partial class ResearchEditorWindow
                 return;
             CommitInspectorEdit(() => apply(box.Text));
         };
-        InspectorPanel.Children.Add(box);
+        panel.Children.Add(box);
     }
 
     private void AddFieldLabel(string label, string help)
+        => AddFieldLabel(InspectorPanel, label, help);
+
+    private void AddFieldLabel(Panel panel, string label, string help)
     {
         var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(0, 0, 0, 3) };
         row.Children.Add(new TextBlock { Text = label, Foreground = new SolidColorBrush(Color.FromRgb(185, 185, 185)) });
@@ -1688,7 +1989,7 @@ public partial class ResearchEditorWindow
         };
         info.Click += (_, _) => ThemedMessageBox.Show(help, label, MessageBoxButton.OK, MessageBoxImage.Information);
         row.Children.Add(info);
-        InspectorPanel.Children.Add(row);
+        panel.Children.Add(row);
     }
 
     private static Button CreateInspectorButton(string text, Brush background) => new()
@@ -1863,6 +2164,7 @@ public partial class ResearchEditorWindow
         {
             "category" => CategoryPaneMenuItem,
             "scene" => ScenePaneMenuItem,
+            "navigator" => NavigatorPaneMenuItem,
             "hierarchy" => HierarchyPaneMenuItem,
             "inspector" => InspectorPaneMenuItem,
             "console" => ConsolePaneMenuItem,
@@ -1889,6 +2191,11 @@ public partial class ResearchEditorWindow
             case "scene":
                 ScenePane.Visibility = item.IsChecked ? Visibility.Visible : Visibility.Collapsed;
                 break;
+            case "navigator":
+                NavigatorColumn.Width = item.IsChecked ? new GridLength(Math.Max(190, _settings.NavigatorPaneWidth)) : new GridLength(0);
+                NavigatorPane.Visibility = item.IsChecked ? Visibility.Visible : Visibility.Collapsed;
+                NavigatorSplitter.Visibility = item.IsChecked ? Visibility.Visible : Visibility.Collapsed;
+                break;
             case "hierarchy":
                 HierarchyColumn.Width = item.IsChecked ? new GridLength(Math.Max(130, _settings.HierarchyPaneWidth)) : new GridLength(0);
                 HierarchyPane.Visibility = item.IsChecked ? Visibility.Visible : Visibility.Collapsed;
@@ -1897,7 +2204,7 @@ public partial class ResearchEditorWindow
                 InspectorPane.Visibility = item.IsChecked ? Visibility.Visible : Visibility.Collapsed;
                 break;
             case "console":
-                ConsoleRow.Height = item.IsChecked ? new GridLength(Math.Max(72, _settings.ConsoleHeight)) : new GridLength(0);
+                ConsoleRow.Height = item.IsChecked ? new GridLength(Math.Clamp(_settings.ConsoleHeight, 130, 520)) : new GridLength(0);
                 ConsolePane.Visibility = item.IsChecked ? Visibility.Visible : Visibility.Collapsed;
                 ConsoleSplitter.Visibility = item.IsChecked ? Visibility.Visible : Visibility.Collapsed;
                 break;
@@ -1910,9 +2217,11 @@ public partial class ResearchEditorWindow
     private void RestoreLayout()
     {
         CategoryColumn.Width = new GridLength(Math.Max(170, _settings.CategoryPaneWidth));
-        RightColumn.Width = new GridLength(Math.Max(280, _settings.RightPaneWidth));
+        NavigatorColumn.Width = new GridLength(Math.Max(190, _settings.NavigatorPaneWidth));
         HierarchyColumn.Width = new GridLength(Math.Max(130, _settings.HierarchyPaneWidth));
-        ConsoleRow.Height = new GridLength(Math.Max(72, _settings.ConsoleHeight));
+        var rightMinimum = NavigatorColumn.Width.Value + HierarchyColumn.Width.Value + 190;
+        RightColumn.Width = new GridLength(Math.Max(rightMinimum, _settings.RightPaneWidth));
+        ConsoleRow.Height = new GridLength(Math.Clamp(_settings.ConsoleHeight, 130, 520));
         GraphScale.ScaleX = GraphScale.ScaleY = Math.Clamp(_settings.Zoom, 0.18, 2.4);
         GraphTranslate.X = _settings.PanX;
         GraphTranslate.Y = _settings.PanY;
@@ -1933,9 +2242,11 @@ public partial class ResearchEditorWindow
             _settings.CategoryPaneWidth = CategoryColumn.ActualWidth;
         if (RightColumn.ActualWidth > 20)
             _settings.RightPaneWidth = RightColumn.ActualWidth;
+        if (NavigatorColumn.ActualWidth > 20)
+            _settings.NavigatorPaneWidth = NavigatorColumn.ActualWidth;
         if (HierarchyColumn.ActualWidth > 20)
             _settings.HierarchyPaneWidth = HierarchyColumn.ActualWidth;
-        if (ConsoleRow.ActualHeight > 20)
+        if (ConsoleRow.ActualHeight >= 130)
             _settings.ConsoleHeight = ConsoleRow.ActualHeight;
         SaveViewSettings();
     }
@@ -1983,9 +2294,26 @@ public partial class ResearchEditorWindow
     private void Window_Closing(object? sender, CancelEventArgs e)
     {
         SaveLayoutSettings();
-        if (_allowClose || !HasUnsavedChanges)
+        if (_allowClose)
             return;
-        var result = WorkspaceSwitchDialog.Request(this, "연구 편집기에 저장하지 않은 변경이 있습니다.");
+
+        if (!HasUnsavedChanges)
+        {
+            if (ThemedMessageBox.Show(
+                    this,
+                    "프로그램을 종료하시겠습니까?",
+                    "프로그램 종료",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question) != MessageBoxResult.Yes)
+            {
+                e.Cancel = true;
+            }
+            return;
+        }
+
+        var result = WorkspaceSwitchDialog.RequestExit(
+            this,
+            "저장하지 않은 연구 변경이 있습니다. 변경 내용을 어떻게 처리할지 선택하세요.");
         if (result == WorkspaceSwitchResult.Cancel)
         {
             e.Cancel = true;

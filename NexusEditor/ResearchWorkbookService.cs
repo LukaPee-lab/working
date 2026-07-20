@@ -245,6 +245,9 @@ public static class ResearchWorkbookService
             if (string.IsNullOrWhiteSpace(node.Image))
                 issues.Add(Error("image_blank", $"{node.Id}: image가 비어 있습니다.",
                     NodeSheetName, node.RowIdentity, node.Id, "image"));
+            if (node.NodePermission is < 1 or > 5)
+                issues.Add(Error("node_permission_range", $"{node.Id}: node_permission은 1~5여야 합니다.",
+                    NodeSheetName, node.RowIdentity, node.Id, "node_permission"));
 
             ValidateNodeFormulas(issues, node);
             ValidateActivationCost(issues, node);
@@ -1745,6 +1748,143 @@ public static class ResearchWorkbookService
             Message = $"STEP {column}을 연구 노드 {desiredCount}개 구조로 변경했습니다."
         };
         result.AffectedRowIdentities.AddRange(affected);
+        return result;
+    }
+
+    public static ResearchMutationResult TryShiftPermissionBoundary(
+        ResearchWorkbookContext context,
+        string category,
+        int permission,
+        int direction)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        if (permission is < 1 or >= 5)
+            return ResearchMutationResult.Failed("조정할 권한 구역 경계를 찾지 못했습니다.");
+        if (direction is not (-1 or 1))
+            return ResearchMutationResult.Failed("권한 구역 이동 방향이 올바르지 않습니다.");
+
+        var candidate = context.DeepClone(includeOriginalSnapshot: false);
+        var categoryNodes = candidate.Nodes
+            .Where(node => Same(node.Category, category))
+            .ToList();
+        var currentColumns = categoryNodes
+            .Where(node => node.NodePermission == permission)
+            .Select(node => node.Column)
+            .Distinct()
+            .OrderBy(value => value)
+            .ToList();
+        var nextColumns = categoryNodes
+            .Where(node => node.NodePermission == permission + 1)
+            .Select(node => node.Column)
+            .Distinct()
+            .OrderBy(value => value)
+            .ToList();
+        if (currentColumns.Count == 0 || nextColumns.Count == 0)
+            return ResearchMutationResult.Failed("서로 붙어 있는 두 권한 구역이 필요합니다.");
+        if (currentColumns.Max() + 1 != nextColumns.Min())
+            return ResearchMutationResult.Failed("권한 구역이 연속된 STEP으로 구성되어 있지 않습니다.");
+
+        int movedColumn;
+        int destinationPermission;
+        if (direction < 0)
+        {
+            if (currentColumns.Count <= 1)
+                return ResearchMutationResult.Failed($"PERMISSION {permission}에는 STEP이 하나뿐이라 더 줄일 수 없습니다.");
+            movedColumn = currentColumns.Max();
+            destinationPermission = permission + 1;
+        }
+        else
+        {
+            if (nextColumns.Count <= 1)
+                return ResearchMutationResult.Failed($"PERMISSION {permission + 1}에는 STEP이 하나뿐이라 더 줄일 수 없습니다.");
+            movedColumn = nextColumns.Min();
+            destinationPermission = permission;
+        }
+
+        var affected = categoryNodes
+            .Where(node => node.Column == movedColumn)
+            .ToList();
+        foreach (var node in affected)
+            node.NodePermission = destinationPermission;
+        context.ReplaceDataFrom(candidate);
+        var result = new ResearchMutationResult
+        {
+            Success = true,
+            Message = $"STEP {movedColumn}을 PERMISSION {destinationPermission} 구역으로 옮겼습니다."
+        };
+        result.AffectedRowIdentities.AddRange(affected.Select(node => node.RowIdentity));
+        return result;
+    }
+
+    public static ResearchMutationResult TryAddPermissionRegion(
+        ResearchWorkbookContext context,
+        string category)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var candidate = context.DeepClone(includeOriginalSnapshot: false);
+        var categoryNodes = candidate.Nodes
+            .Where(node => Same(node.Category, category))
+            .ToList();
+        if (categoryNodes.Count == 0)
+            return ResearchMutationResult.Failed("권한 구역을 추가할 연구 노드가 없습니다.");
+        var maximumPermission = categoryNodes
+            .Select(node => node.NodePermission ?? 0)
+            .DefaultIfEmpty()
+            .Max();
+        if (maximumPermission is < 1 or >= 5)
+            return ResearchMutationResult.Failed("권한 구역은 최대 5개까지 사용할 수 있습니다.");
+        var lastColumns = categoryNodes
+            .Where(node => node.NodePermission == maximumPermission)
+            .Select(node => node.Column)
+            .Distinct()
+            .OrderBy(value => value)
+            .ToList();
+        if (lastColumns.Count <= 1)
+            return ResearchMutationResult.Failed($"PERMISSION {maximumPermission}에 STEP이 두 개 이상 있어야 새 구역을 만들 수 있습니다.");
+
+        var movedColumn = lastColumns[^1];
+        var affected = categoryNodes.Where(node => node.Column == movedColumn).ToList();
+        foreach (var node in affected)
+            node.NodePermission = maximumPermission + 1;
+        context.ReplaceDataFrom(candidate);
+        var result = new ResearchMutationResult
+        {
+            Success = true,
+            Message = $"PERMISSION {maximumPermission + 1} 구역을 만들고 STEP {movedColumn}을 옮겼습니다."
+        };
+        result.AffectedRowIdentities.AddRange(affected.Select(node => node.RowIdentity));
+        return result;
+    }
+
+    public static ResearchMutationResult TryRemovePermissionRegion(
+        ResearchWorkbookContext context,
+        string category)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var candidate = context.DeepClone(includeOriginalSnapshot: false);
+        var categoryNodes = candidate.Nodes
+            .Where(node => Same(node.Category, category))
+            .ToList();
+        var maximumPermission = categoryNodes
+            .Select(node => node.NodePermission ?? 0)
+            .DefaultIfEmpty()
+            .Max();
+        if (maximumPermission <= 1)
+            return ResearchMutationResult.Failed("마지막 PERMISSION 1 구역은 삭제할 수 없습니다.");
+        var affected = categoryNodes
+            .Where(node => node.NodePermission == maximumPermission)
+            .ToList();
+        if (affected.Count == 0)
+            return ResearchMutationResult.Failed("삭제할 권한 구역을 찾지 못했습니다.");
+        foreach (var node in affected)
+            node.NodePermission = maximumPermission - 1;
+        context.ReplaceDataFrom(candidate);
+        var result = new ResearchMutationResult
+        {
+            Success = true,
+            Message = $"PERMISSION {maximumPermission} 구역을 삭제하고 앞 구역에 합쳤습니다."
+        };
+        result.AffectedRowIdentities.AddRange(affected.Select(node => node.RowIdentity));
         return result;
     }
 
