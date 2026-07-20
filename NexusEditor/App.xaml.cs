@@ -336,6 +336,50 @@ public partial class App : Application
         if (ResearchWorkbookService.TryConnectCondition(topologyTest, mergeSources[3].RowIdentity, mergeTarget.RowIdentity).Success)
             failures.Add("연구 노드의 네 번째 선행 연결 차단 실패");
 
+        var structuredTest = source.DeepClone();
+        var structuredCategoryIndex = structuredTest.Categories.Select(row => row.Index ?? 0).DefaultIfEmpty().Max() + 1;
+        var structuredCategory = ResearchWorkbookService.CreateCategory(structuredTest, "qa_structured", structuredCategoryIndex);
+        var structuredStart = ResearchWorkbookService.CreateNode(structuredTest, structuredCategory.Category, 301, 4);
+        var structuredNext = ResearchWorkbookService.CreateNode(structuredTest, structuredCategory.Category, 302, 4);
+        foreach (var pair in new[] { structuredStart, structuredNext })
+        {
+            pair.Node.Image = "qa_node_icon";
+            pair.Effect.Type = "cs_add";
+            pair.Effect.Condition = "range=self";
+            pair.Effect.ValueText = "1";
+        }
+        var expandStructured = ResearchWorkbookService.TrySetColumnNodeCount(
+            structuredTest, structuredCategory.Category, 301, 3);
+        var expandedNodes = structuredTest.Nodes
+            .Where(node => node.Category == structuredCategory.Category && node.Column == 301)
+            .OrderBy(node => node.Row)
+            .ToList();
+        var expandedTarget = structuredTest.Nodes.Single(node =>
+            node.Category == structuredCategory.Category && node.Column == 302);
+        if (!expandStructured.Success
+            || !expandedNodes.Select(node => node.Row).SequenceEqual(new[] { 2, 4, 6 })
+            || expandedTarget.Conditions.Count(value => !string.IsNullOrWhiteSpace(value)) != 3
+            || expandedNodes.Any(node => structuredTest.FindEffect(node) is null))
+        {
+            failures.Add("단계 노드 수 1->3 구조 변경 또는 효과/조건 연동 실패");
+        }
+        var reduceStructured = ResearchWorkbookService.TrySetColumnNodeCount(
+            structuredTest, structuredCategory.Category, 301, 2);
+        var reducedNodes = structuredTest.Nodes
+            .Where(node => node.Category == structuredCategory.Category && node.Column == 301)
+            .OrderBy(node => node.Row)
+            .ToList();
+        expandedTarget = structuredTest.Nodes.Single(node =>
+            node.Category == structuredCategory.Category && node.Column == 302);
+        if (!reduceStructured.Success
+            || !reducedNodes.Select(node => node.Row).SequenceEqual(new[] { 2, 6 })
+            || expandedTarget.Conditions.Count(value => !string.IsNullOrWhiteSpace(value)) != 2
+            || expandedTarget.Conditions.Where(value => !string.IsNullOrWhiteSpace(value))
+                .Any(value => structuredTest.FindNode(value) is null))
+        {
+            failures.Add("단계 노드 수 3->2 구조 변경 또는 조건 정리 실패");
+        }
+
         var test = source.DeepClone();
         var categoryIndex = test.Categories.Select(row => row.Index ?? 0).DefaultIfEmpty().Max() + 1;
         var category = ResearchWorkbookService.CreateCategory(test, "qa_editor", categoryIndex);

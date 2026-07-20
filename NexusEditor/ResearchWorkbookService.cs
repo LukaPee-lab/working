@@ -1615,6 +1615,228 @@ public static class ResearchWorkbookService
         return result;
     }
 
+    public static ResearchMutationResult TrySetColumnNodeCount(
+        ResearchWorkbookContext context,
+        string category,
+        int column,
+        int desiredCount)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        if (column <= 0)
+            return ResearchMutationResult.Failed("column은 1 이상이어야 합니다.");
+        if (desiredCount is < 1 or > 3)
+            return ResearchMutationResult.Failed("한 단계에는 연구 노드를 1~3개만 배치할 수 있습니다.");
+
+        var candidate = context.DeepClone(includeOriginalSnapshot: false);
+        var categoryRow = candidate.FindCategory(category);
+        if (categoryRow is null)
+            return ResearchMutationResult.Failed($"연구 카테고리를 찾지 못했습니다: {category}");
+
+        var existing = candidate.Nodes
+            .Where(node => Same(node.Category, categoryRow.Category) && node.Column == column)
+            .OrderBy(node => node.Row)
+            .ToList();
+        if (existing.Count == 0)
+            return ResearchMutationResult.Failed($"STEP {column}에 기준이 될 연구 노드가 없습니다.");
+
+        var desiredRows = desiredCount switch
+        {
+            1 => new[] { 4 },
+            2 => new[] { 2, 6 },
+            _ => new[] { 2, 4, 6 }
+        };
+        if (existing.Count == desiredCount
+            && existing.Select(node => node.Row).SequenceEqual(desiredRows))
+        {
+            return new ResearchMutationResult
+            {
+                Success = true,
+                Message = $"STEP {column}의 노드 수가 이미 {desiredCount}개입니다."
+            };
+        }
+
+        var templateNode = existing
+            .OrderBy(node => Math.Abs(node.Row - 4))
+            .ThenBy(node => node.Row)
+            .First()
+            .DeepClone();
+        var templateEffect = candidate.FindEffect(existing.First(node => Same(node.RowIdentity, templateNode.RowIdentity)))?.DeepClone();
+        var affected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var survivors = new List<ResearchNodeRow>();
+        foreach (var row in desiredRows)
+        {
+            var exact = existing.FirstOrDefault(node => node.Row == row && !survivors.Contains(node));
+            if (exact is not null)
+                survivors.Add(exact);
+        }
+        foreach (var node in existing)
+        {
+            if (survivors.Count >= desiredCount)
+                break;
+            if (!survivors.Contains(node))
+                survivors.Add(node);
+        }
+
+        foreach (var node in existing.Where(node => !survivors.Contains(node)).ToList())
+        {
+            var deletion = TryDeleteNode(candidate, node.RowIdentity, removeConditionReferences: true);
+            if (!deletion.Success)
+                return deletion;
+            foreach (var identity in deletion.AffectedRowIdentities)
+                affected.Add(identity);
+        }
+
+        var occupiedRows = survivors.Select(node => node.Row).ToHashSet();
+        var missingRows = desiredRows.Where(row => !occupiedRows.Contains(row)).ToList();
+        var movable = survivors.Where(node => !desiredRows.Contains(node.Row)).ToList();
+        var idMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < Math.Min(movable.Count, missingRows.Count); index++)
+        {
+            var node = movable[index];
+            var oldId = node.Id;
+            var newRow = missingRows[index];
+            node.Row = newRow;
+            node.Id = GenerateNodeId(node.ThemeId, node.Category, node.Column, newRow);
+            node.NexusEffectId = GenerateEffectId(node.ThemeId, node.Category, node.Column, newRow);
+            idMap[oldId] = node.Id;
+            affected.Add(node.RowIdentity);
+            if (candidate.FindEffect(node) is { } effect)
+            {
+                effect.Id = node.NexusEffectId;
+                effect.LinkedNodeRowIdentity = node.RowIdentity;
+                effect.Memo = EffectMemoCoordinatePattern.Replace(effect.Memo, $"${{prefix}}{node.Column},{newRow}");
+                affected.Add(effect.RowIdentity);
+            }
+        }
+        if (idMap.Count > 0)
+            CascadeConditionIds(candidate.Nodes, idMap, affected);
+
+        var remainingRows = desiredRows
+            .Where(row => !candidate.Nodes.Any(node => Same(node.Category, categoryRow.Category)
+                                                       && node.Column == column
+                                                       && node.Row == row))
+            .ToList();
+        foreach (var row in remainingRows)
+        {
+            var created = CreateNode(candidate, categoryRow.Category, column, row, templateNode.ExportId, templateNode.ThemeId);
+            CopyNodePayload(templateNode, created.Node);
+            created.Node.Column = column;
+            created.Node.Row = row;
+            created.Node.Id = GenerateNodeId(created.Node.ThemeId, created.Node.Category, column, row);
+            created.Node.NexusEffectId = GenerateEffectId(created.Node.ThemeId, created.Node.Category, column, row);
+            ClearNodeConditions(created.Node);
+            if (templateEffect is not null)
+                CopyEffectPayload(templateEffect, created.Effect, created.Node);
+            affected.Add(created.Node.RowIdentity);
+            affected.Add(created.Effect.RowIdentity);
+        }
+
+        RebuildCanonicalBoundary(candidate, categoryRow.Category, column, affected);
+        RebuildCanonicalBoundary(candidate, categoryRow.Category, column + 1, affected);
+
+        if (HasDuplicateGeneratedKeys(candidate, out var duplicateMessage))
+            return ResearchMutationResult.Failed(duplicateMessage);
+
+        context.ReplaceDataFrom(candidate);
+        var result = new ResearchMutationResult
+        {
+            Success = true,
+            Message = $"STEP {column}을 연구 노드 {desiredCount}개 구조로 변경했습니다."
+        };
+        result.AffectedRowIdentities.AddRange(affected);
+        return result;
+    }
+
+    private static void RebuildCanonicalBoundary(
+        ResearchWorkbookContext context,
+        string category,
+        int targetColumn,
+        ISet<string> affected)
+    {
+        if (targetColumn <= 1)
+            return;
+        var sources = context.Nodes
+            .Where(node => Same(node.Category, category) && node.Column == targetColumn - 1)
+            .OrderBy(node => node.Row)
+            .ToList();
+        var targets = context.Nodes
+            .Where(node => Same(node.Category, category) && node.Column == targetColumn)
+            .OrderBy(node => node.Row)
+            .ToList();
+        if (sources.Count == 0 || targets.Count == 0)
+            return;
+
+        var edges = new HashSet<(string SourceIdentity, string TargetIdentity)>();
+        foreach (var target in targets)
+        {
+            var source = sources
+                .OrderBy(candidate => Math.Abs(candidate.Row - target.Row))
+                .ThenBy(candidate => candidate.Row)
+                .First();
+            edges.Add((source.RowIdentity, target.RowIdentity));
+        }
+        foreach (var source in sources)
+        {
+            if (edges.Any(edge => Same(edge.SourceIdentity, source.RowIdentity)))
+                continue;
+            var target = targets
+                .OrderBy(candidate => Math.Abs(candidate.Row - source.Row))
+                .ThenBy(candidate => edges.Count(edge => Same(edge.TargetIdentity, candidate.RowIdentity)))
+                .ThenBy(candidate => candidate.Row)
+                .First();
+            edges.Add((source.RowIdentity, target.RowIdentity));
+        }
+
+        var sourceByIdentity = sources.ToDictionary(node => node.RowIdentity, StringComparer.OrdinalIgnoreCase);
+        foreach (var target in targets)
+        {
+            ClearNodeConditions(target);
+            var prerequisiteIds = edges
+                .Where(edge => Same(edge.TargetIdentity, target.RowIdentity))
+                .Select(edge => sourceByIdentity[edge.SourceIdentity].Id)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(5)
+                .ToList();
+            for (var index = 0; index < prerequisiteIds.Count; index++)
+                target.SetCondition(index, prerequisiteIds[index]);
+            affected.Add(target.RowIdentity);
+        }
+    }
+
+    private static void ClearNodeConditions(ResearchNodeRow node)
+    {
+        for (var index = 0; index < 5; index++)
+            node.SetCondition(index, "");
+    }
+
+    private static void CopyNodePayload(ResearchNodeRow source, ResearchNodeRow target)
+    {
+        target.ExportId = source.ExportId;
+        target.ThemeId = source.ThemeId;
+        target.Image = source.Image;
+        target.NodePermission = source.NodePermission;
+        target.ActiveItemId = source.ActiveItemId;
+        target.ActiveItemValue = source.ActiveItemValue;
+        target.TotalRequiredHelper = source.TotalRequiredHelper;
+        target.ActiveStep = source.ActiveStep;
+    }
+
+    private static void CopyEffectPayload(ResearchEffectRow source, ResearchEffectRow target, ResearchNodeRow node)
+    {
+        target.Id = node.NexusEffectId;
+        target.ExportId = source.ExportId;
+        target.ParentEffect = source.ParentEffect;
+        target.GroupMemo = source.GroupMemo;
+        target.Memo = EffectMemoCoordinatePattern.Replace(source.Memo, $"${{prefix}}{node.Column},{node.Row}");
+        target.Type = source.Type;
+        target.Condition = source.Condition;
+        target.ValueCell = source.ValueCell.DeepClone();
+        target.TestCell = source.TestCell.DeepClone();
+        target.ExtraCell = source.ExtraCell.DeepClone();
+        target.LinkedNodeRowIdentity = node.RowIdentity;
+    }
+
     public static bool DisconnectCondition(ResearchNodeRow target, string prerequisiteNodeId)
     {
         ArgumentNullException.ThrowIfNull(target);

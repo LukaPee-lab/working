@@ -8,25 +8,24 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
-using System.Windows.Shapes;
 using Path = System.IO.Path;
-using ShapePath = System.Windows.Shapes.Path;
 
 namespace NexusEditor;
 
 public partial class ResearchEditorWindow : Window
 {
-    private const double NodeWidth = 146;
-    private const double NodeHeight = 162;
-    private const double ColumnSpacing = 188;
-    private const double GraphLeft = 110;
-    private const double LaneTop = 78;
-    private const double LaneSpacing = 236;
+    private const double NodeWidth = 128;
+    private const double NodeHeight = 140;
+    private const double ConnectorWidth = 124;
+    private const double ColumnSpacing = NodeWidth + ConnectorWidth;
+    private const double GraphLeft = 86;
+    private const double LaneTop = 112;
+    private const double LaneSpacing = 172;
+    private const double GraphHeight = 650;
+    private static readonly int[] StructuredRows = [2, 4, 6];
 
     private readonly Action<WorkspaceMode>? _workspaceSwitch;
     private readonly Dictionary<string, Border> _nodeVisuals = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, Ellipse> _inputPins = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, Ellipse> _outputPins = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _selectedNodeIdentities = new(StringComparer.OrdinalIgnoreCase);
     private readonly Stack<UndoState> _undoStack = [];
     private readonly List<ResearchConsoleEntry> _consoleEntries = [];
@@ -51,16 +50,6 @@ public partial class ResearchEditorWindow : Window
     private Point _panScreenStart;
     private double _panXStart;
     private double _panYStart;
-    private bool _rightMouseMoved;
-
-    private bool _isNodeDragging;
-    private Point _nodeDragStartWorld;
-    private readonly Dictionary<string, Point> _nodeDragOrigins = new(StringComparer.OrdinalIgnoreCase);
-    private Border? _dragCaptureVisual;
-
-    private bool _isLinkDragging;
-    private ResearchNodeRow? _linkSource;
-    private ShapePath? _temporaryLink;
 
     public ResearchEditorWindow(Action<WorkspaceMode>? workspaceSwitch = null)
     {
@@ -184,8 +173,6 @@ public partial class ResearchEditorWindow : Window
         LinkCanvas.Children.Clear();
         NodeCanvas.Children.Clear();
         _nodeVisuals.Clear();
-        _inputPins.Clear();
-        _outputPins.Clear();
 
         if (_workbook is null || _selectedCategory is null)
         {
@@ -194,7 +181,9 @@ public partial class ResearchEditorWindow : Window
         }
 
         var nodes = VisibleNodes().ToList();
-        DrawPermissionBands(nodes);
+        ResizeGraphSurface(nodes);
+        DrawStructuredBands(nodes);
+        DrawStepHeaders(nodes);
         foreach (var node in nodes)
             CreateNodeVisual(node);
         DrawAllLinks();
@@ -203,41 +192,163 @@ public partial class ResearchEditorWindow : Window
         var allCount = _workbook.Nodes.Count(node => Same(node.Category, _selectedCategory.Category));
         SceneStatusText.Text = $"{_selectedCategory.Category} / {nodes.Count:N0} of {allCount:N0} nodes / Wheel: Zoom / RMB: Pan";
         if (fitGraph)
-            Dispatcher.BeginInvoke(FitAll);
+            Dispatcher.BeginInvoke(FitOpeningView);
     }
 
-    private void DrawPermissionBands(IReadOnlyCollection<ResearchNodeRow> nodes)
+    private void ResizeGraphSurface(IReadOnlyCollection<ResearchNodeRow> nodes)
     {
-        for (var permission = 1; permission <= 5; permission++)
+        var maxColumn = nodes.Select(node => node.Column).DefaultIfEmpty(4).Max();
+        var width = Math.Max(1600, WorldX(maxColumn) + NodeWidth + 120);
+        GraphCanvas.Width = width;
+        GraphCanvas.Height = GraphHeight;
+        BandCanvas.Width = width;
+        BandCanvas.Height = GraphHeight;
+        LinkCanvas.Width = width;
+        LinkCanvas.Height = GraphHeight;
+        NodeCanvas.Width = width;
+        NodeCanvas.Height = GraphHeight;
+    }
+
+    private void DrawStructuredBands(IReadOnlyCollection<ResearchNodeRow> nodes)
+    {
+        for (var laneIndex = 0; laneIndex < StructuredRows.Length; laneIndex++)
         {
-            var group = nodes.Where(node => node.NodePermission == permission).ToList();
-            if (group.Count == 0)
-                continue;
-            var minColumn = group.Min(node => node.Column);
-            var maxColumn = group.Max(node => node.Column);
-            var left = WorldX(minColumn) - 28;
-            var width = WorldX(maxColumn) - left + NodeWidth + 56;
             var band = new Border
             {
-                Width = width,
-                Height = 1010,
-                Background = new SolidColorBrush(Color.FromArgb(permission % 2 == 0 ? (byte)18 : (byte)10, 70, 145, 200)),
-                BorderBrush = new SolidColorBrush(Color.FromArgb(70, 70, 145, 200)),
-                BorderThickness = new Thickness(1),
+                Width = GraphCanvas.Width,
+                Height = NodeHeight + 18,
+                Background = new SolidColorBrush(laneIndex % 2 == 0
+                    ? Color.FromRgb(30, 30, 30)
+                    : Color.FromRgb(27, 27, 27)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(43, 43, 43)),
+                BorderThickness = new Thickness(0, 1, 0, 1),
                 IsHitTestVisible = false,
                 Child = new TextBlock
                 {
-                    Text = $"PERMISSION {permission}",
-                    Foreground = new SolidColorBrush(Color.FromArgb(140, 135, 196, 235)),
-                    FontSize = 16,
+                    Text = $"SLOT {laneIndex + 1}  /  row {StructuredRows[laneIndex]}",
+                    Foreground = new SolidColorBrush(Color.FromRgb(104, 104, 104)),
+                    FontSize = 11,
                     FontWeight = FontWeights.SemiBold,
-                    Margin = new Thickness(12, 8, 0, 0)
+                    Margin = new Thickness(14, 7, 0, 0)
                 }
             };
-            Canvas.SetLeft(band, left);
-            Canvas.SetTop(band, 30);
+            Canvas.SetLeft(band, 0);
+            Canvas.SetTop(band, WorldY(StructuredRows[laneIndex]) - 9);
             BandCanvas.Children.Add(band);
         }
+
+        foreach (var permissionGroup in nodes
+                     .Where(node => node.NodePermission is >= 1 and <= 5)
+                     .GroupBy(node => node.NodePermission!.Value)
+                     .OrderBy(group => group.Min(node => node.Column)))
+        {
+            var minColumn = permissionGroup.Min(node => node.Column);
+            var maxColumn = permissionGroup.Max(node => node.Column);
+            var marker = new Border
+            {
+                Width = WorldX(maxColumn) - WorldX(minColumn) + NodeWidth,
+                Height = 3,
+                Background = NodeHeaderBrush(permissionGroup.Key),
+                Opacity = 0.72,
+                IsHitTestVisible = false
+            };
+            Canvas.SetLeft(marker, WorldX(minColumn));
+            Canvas.SetTop(marker, 87);
+            BandCanvas.Children.Add(marker);
+        }
+    }
+
+    private void DrawStepHeaders(IReadOnlyCollection<ResearchNodeRow> nodes)
+    {
+        foreach (var columnGroup in nodes.GroupBy(node => node.Column).OrderBy(group => group.Key))
+        {
+            var column = columnGroup.Key;
+            var count = columnGroup.Count();
+            var permission = columnGroup.Select(node => node.NodePermission).FirstOrDefault(value => value is not null) ?? 0;
+            var header = new Border
+            {
+                Width = NodeWidth,
+                Height = 58,
+                Background = new SolidColorBrush(Color.FromRgb(42, 42, 42)),
+                BorderBrush = new SolidColorBrush(Color.FromRgb(73, 73, 73)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(2),
+                Tag = column
+            };
+            var root = new Grid { Margin = new Thickness(6, 4, 6, 5) };
+            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(22) });
+            root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+            header.Child = root;
+
+            var label = new Grid();
+            label.ColumnDefinitions.Add(new ColumnDefinition());
+            label.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            label.Children.Add(new TextBlock
+            {
+                Text = $"STEP {column:000}",
+                Foreground = new SolidColorBrush(Color.FromRgb(190, 210, 224)),
+                FontSize = 10.5,
+                FontWeight = FontWeights.SemiBold,
+                VerticalAlignment = VerticalAlignment.Center
+            });
+            var permissionText = new TextBlock
+            {
+                Text = $"P{permission}",
+                Foreground = new SolidColorBrush(Color.FromRgb(138, 138, 138)),
+                FontSize = 9.5,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            Grid.SetColumn(permissionText, 1);
+            label.Children.Add(permissionText);
+            root.Children.Add(label);
+
+            var counter = new Grid { Margin = new Thickness(0, 2, 0, 0) };
+            counter.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(28) });
+            counter.ColumnDefinitions.Add(new ColumnDefinition());
+            counter.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(28) });
+            counter.Children.Add(CreateStepCountButton("-", column, -1, count > 1));
+            var countText = new TextBlock
+            {
+                Text = $"{count} NODES",
+                Foreground = Brushes.White,
+                FontSize = 10.5,
+                FontWeight = FontWeights.Bold,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            Grid.SetColumn(countText, 1);
+            counter.Children.Add(countText);
+            var increase = CreateStepCountButton("+", column, 1, count < 3);
+            Grid.SetColumn(increase, 2);
+            counter.Children.Add(increase);
+            Grid.SetRow(counter, 1);
+            root.Children.Add(counter);
+
+            Canvas.SetLeft(header, WorldX(column));
+            Canvas.SetTop(header, 20);
+            Panel.SetZIndex(header, 20);
+            NodeCanvas.Children.Add(header);
+        }
+    }
+
+    private Button CreateStepCountButton(string text, int column, int delta, bool enabled)
+    {
+        var button = new Button
+        {
+            Content = text,
+            Tag = (column, delta),
+            IsEnabled = enabled,
+            Width = 26,
+            Height = 22,
+            MinHeight = 22,
+            Padding = new Thickness(0),
+            Margin = new Thickness(1),
+            FontSize = 13,
+            FontWeight = FontWeights.Bold,
+            ToolTip = delta > 0 ? "Add one node to this step" : "Remove one node from this step"
+        };
+        button.Click += StepCountButton_Click;
+        return button;
     }
 
     private void CreateNodeVisual(ResearchNodeRow node)
@@ -254,8 +365,6 @@ public partial class ResearchEditorWindow : Window
             ToolTip = $"{node.Id}\n{node.NodeEffectDesc}\nimage: {node.Image}\nactive_step: {node.ActiveStep ?? 0}"
         };
         card.MouseLeftButtonDown += Node_MouseLeftButtonDown;
-        card.MouseMove += Node_MouseMove;
-        card.MouseLeftButtonUp += Node_MouseLeftButtonUp;
 
         var root = new Grid();
         card.Child = root;
@@ -271,10 +380,10 @@ public partial class ResearchEditorWindow : Window
             });
         }
 
-        var grid = new Grid { Margin = new Thickness(7, 6, 7, 7) };
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(23) });
+        var grid = new Grid { Margin = new Thickness(6, 5, 6, 5) };
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(21) });
         grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(34) });
+        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(27) });
         Panel.SetZIndex(grid, 1);
         root.Children.Add(grid);
 
@@ -316,8 +425,8 @@ public partial class ResearchEditorWindow : Window
             iconHost.Children.Add(new Image
             {
                 Source = iconSource,
-                Width = 82,
-                Height = 82,
+                Width = 76,
+                Height = 76,
                 Stretch = Stretch.Uniform,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center,
@@ -342,27 +451,21 @@ public partial class ResearchEditorWindow : Window
 
         var count = new TextBlock
         {
-            Text = $"×{node.ActiveStep ?? 0}",
+            Text = $"x{node.ActiveStep ?? 0}",
             Foreground = Brushes.White,
-            FontSize = 22,
+            FontSize = 20,
             FontWeight = FontWeights.Bold,
             HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 0, 1)
         };
         Grid.SetRow(count, 2);
         grid.Children.Add(count);
-
-        var input = CreatePin(node, isOutput: false);
-        var output = CreatePin(node, isOutput: true);
-        root.Children.Add(input);
-        root.Children.Add(output);
 
         Canvas.SetLeft(card, WorldX(node.Column));
         Canvas.SetTop(card, WorldY(node.Row));
         NodeCanvas.Children.Add(card);
         _nodeVisuals[node.RowIdentity] = card;
-        _inputPins[node.RowIdentity] = input;
-        _outputPins[node.RowIdentity] = output;
     }
 
     private void RefreshResearchAssetRoot()
@@ -454,30 +557,6 @@ public partial class ResearchEditorWindow : Window
             Log(ResearchConsoleSeverity.Warning, message);
     }
 
-    private Ellipse CreatePin(ResearchNodeRow node, bool isOutput)
-    {
-        var pin = new Ellipse
-        {
-            Width = 14,
-            Height = 14,
-            Fill = isOutput
-                ? new SolidColorBrush(Color.FromRgb(81, 199, 137))
-                : new SolidColorBrush(Color.FromRgb(216, 226, 255)),
-            Stroke = new SolidColorBrush(Color.FromRgb(20, 20, 20)),
-            StrokeThickness = 1.5,
-            HorizontalAlignment = isOutput ? HorizontalAlignment.Right : HorizontalAlignment.Left,
-            VerticalAlignment = VerticalAlignment.Center,
-            Margin = isOutput ? new Thickness(0, 0, -7, 0) : new Thickness(-7, 0, 0, 0),
-            Tag = new ResearchPinTag(node, isOutput),
-            Cursor = isOutput ? Cursors.Cross : Cursors.Arrow,
-            ToolTip = isOutput ? "Drag to another node input" : "Condition input"
-        };
-        Panel.SetZIndex(pin, 10);
-        if (isOutput)
-            pin.MouseLeftButtonDown += OutputPin_MouseLeftButtonDown;
-        return pin;
-    }
-
     private void DrawAllLinks()
     {
         if (_workbook is null)
@@ -490,67 +569,53 @@ public partial class ResearchEditorWindow : Window
             {
                 if (!visible.TryGetValue(sourceId, out var source))
                     continue;
-                var path = CreateLinkPath(source, target, temporary: false);
-                path.Tag = new ResearchLinkTag(source.Id, target.RowIdentity);
+                var connector = CreateResourceConnector(source, target);
+                if (connector is null)
+                    continue;
+                connector.Tag = new ResearchLinkTag(source.Id, target.RowIdentity);
                 var menu = new ContextMenu();
                 var disconnect = new MenuItem { Header = "Disconnect condition" };
                 disconnect.Click += (_, _) => DisconnectLink(source, target);
                 menu.Items.Add(disconnect);
-                path.ContextMenu = menu;
-                LinkCanvas.Children.Add(path);
+                connector.ContextMenu = menu;
+                LinkCanvas.Children.Add(connector);
             }
         }
     }
 
-    private ShapePath CreateLinkPath(ResearchNodeRow source, ResearchNodeRow target, bool temporary)
+    private Image? CreateResourceConnector(ResearchNodeRow source, ResearchNodeRow target)
     {
+        if (!_nodeVisuals.ContainsKey(source.RowIdentity) || !_nodeVisuals.ContainsKey(target.RowIdentity))
+            return null;
         var from = GetOutputPoint(source);
         var to = GetInputPoint(target);
-        return new ShapePath
+        var rowDistance = Math.Abs(Array.IndexOf(StructuredRows, source.Row) - Array.IndexOf(StructuredRows, target.Row));
+        var assetKey = to.Y switch
         {
-            Data = BuildOrthogonalGeometry(from, to),
-            Stroke = temporary
-                ? new SolidColorBrush(Color.FromArgb(190, 242, 210, 91))
-                : new SolidColorBrush(Color.FromRgb(101, 210, 149)),
-            StrokeThickness = temporary ? 2.4 : 2.0,
-            Fill = Brushes.Transparent,
-            Cursor = Cursors.Hand,
-            ToolTip = temporary ? null : $"{source.Id} -> {target.Id}\nRight click to disconnect"
+            _ when Math.Abs(to.Y - from.Y) < 1 => "roadmap_line_s_5",
+            _ when to.Y > from.Y && rowDistance <= 1 => "roadmap_line_s_1",
+            _ when to.Y < from.Y && rowDistance <= 1 => "roadmap_line_s_2",
+            _ when to.Y > from.Y => "roadmap_line_l_2",
+            _ => "roadmap_line_l_1"
         };
-    }
+        var sourceImage = LoadResearchAsset(assetKey, reportMissing: true);
+        if (sourceImage is null)
+            return null;
 
-    private static Geometry BuildOrthogonalGeometry(Point from, Point to)
-    {
-        const double radius = 12;
-        var geometry = new StreamGeometry();
-        using var context = geometry.Open();
-        context.BeginFigure(from, false, false);
-
-        if (to.X >= from.X + 48)
+        var height = Math.Max(12, Math.Abs(to.Y - from.Y));
+        var connector = new Image
         {
-            var middle = (from.X + to.X) / 2;
-            var direction = Math.Sign(to.Y - from.Y);
-            var r = Math.Min(radius, Math.Abs(to.Y - from.Y) / 2);
-            context.LineTo(new Point(middle - r, from.Y), true, false);
-            if (r > 0)
-                context.ArcTo(new Point(middle, from.Y + direction * r), new Size(r, r), 0, false, direction > 0 ? SweepDirection.Clockwise : SweepDirection.Counterclockwise, true, false);
-            context.LineTo(new Point(middle, to.Y - direction * r), true, false);
-            if (r > 0)
-                context.ArcTo(new Point(middle + r, to.Y), new Size(r, r), 0, false, direction > 0 ? SweepDirection.Counterclockwise : SweepDirection.Clockwise, true, false);
-            context.LineTo(to, true, false);
-        }
-        else
-        {
-            var routeX = Math.Max(from.X, to.X) + 44;
-            var routeY = Math.Min(from.Y, to.Y) - 42;
-            context.LineTo(new Point(routeX, from.Y), true, false);
-            context.LineTo(new Point(routeX, routeY), true, false);
-            context.LineTo(new Point(to.X - 34, routeY), true, false);
-            context.LineTo(new Point(to.X - 34, to.Y), true, false);
-            context.LineTo(to, true, false);
-        }
-        geometry.Freeze();
-        return geometry;
+            Source = sourceImage,
+            Width = ConnectorWidth,
+            Height = height,
+            Stretch = Stretch.Fill,
+            SnapsToDevicePixels = true,
+            Cursor = Cursors.Hand,
+            ToolTip = $"{source.Id} -> {target.Id}\nRight click to disconnect"
+        };
+        Canvas.SetLeft(connector, from.X);
+        Canvas.SetTop(connector, Math.Min(from.Y, to.Y) - (height <= 12 ? height / 2 : 0));
+        return connector;
     }
 
     private Point GetInputPoint(ResearchNodeRow node) => new(
@@ -573,34 +638,8 @@ public partial class ResearchEditorWindow : Window
         return LaneTop + Math.Max(0, (row - lanes[0]) / step) * LaneSpacing;
     }
 
-    private int NearestLane(double top)
-    {
-        var choices = GetLaneChoices();
-        return choices.MinBy(row => Math.Abs(WorldY(row) - top));
-    }
-
     private int[] GetLaneChoices()
-    {
-        var categoryRows = _workbook?.Nodes
-            .Where(node => _selectedCategory is not null && Same(node.Category, _selectedCategory.Category))
-            .Select(node => node.Row)
-            .Distinct()
-            .OrderBy(row => row)
-            .ToArray() ?? [];
-        if (categoryRows.Length >= 2)
-            return categoryRows;
-
-        var commonRows = _workbook?.Nodes
-            .Where(node => node.Row > 0)
-            .GroupBy(node => node.Row)
-            .OrderByDescending(group => group.Count())
-            .ThenBy(group => group.Key)
-            .Take(3)
-            .Select(group => group.Key)
-            .OrderBy(row => row)
-            .ToArray() ?? [];
-        return commonRows.Length > 0 ? commonRows : [3, 5, 7];
-    }
+        => StructuredRows;
 
     private static Brush NodeHeaderBrush(int? permission)
     {
@@ -619,7 +658,6 @@ public partial class ResearchEditorWindow : Window
     private static bool Same(string? left, string? right) =>
         string.Equals(left?.Trim(), right?.Trim(), StringComparison.OrdinalIgnoreCase);
 
-    private sealed record ResearchPinTag(ResearchNodeRow Node, bool IsOutput);
     private sealed record ResearchLinkTag(string SourceNodeId, string TargetRowIdentity);
     private sealed record UndoState(ResearchWorkbookContext Workbook, string? Category, string[] SelectedNodeIds);
     private sealed record ResearchNodeClipboardItem(ResearchNodeRow Node, ResearchEffectRow? Effect);
@@ -739,13 +777,46 @@ public partial class ResearchEditorWindow
         }
     }
 
+    private void StepCountButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_workbook is null || _selectedCategory is null
+            || sender is not Button { Tag: ValueTuple<int, int> change })
+            return;
+
+        var category = _selectedCategory.Category;
+        var currentCount = _workbook.Nodes.Count(node => Same(node.Category, category) && node.Column == change.Item1);
+        var desiredCount = Math.Clamp(currentCount + change.Item2, 1, 3);
+        if (desiredCount == currentCount)
+            return;
+
+        PushUndo();
+        var result = ResearchWorkbookService.TrySetColumnNodeCount(
+            _workbook, category, change.Item1, desiredCount);
+        if (!result.Success)
+        {
+            UndoWithoutRender();
+            Log(ResearchConsoleSeverity.Error, result.Message);
+            return;
+        }
+
+        _selectedCategory = _workbook.FindCategory(category);
+        var liveIdentities = _workbook.Nodes.Select(node => node.RowIdentity)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        _selectedNodeIdentities.IntersectWith(liveIdentities);
+        _primaryNode = _workbook.Nodes.FirstOrDefault(node => _selectedNodeIdentities.Contains(node.RowIdentity));
+        RenderGraph();
+        PopulateHierarchy();
+        RenderInspector();
+        RunValidation(logSuccess: false);
+        UpdateDirtyState();
+        Log(ResearchConsoleSeverity.Info, result.Message);
+        e.Handled = true;
+    }
+
     private void Node_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (sender is not Border { Tag: ResearchNodeRow node } card)
             return;
-        if (e.OriginalSource is Ellipse)
-            return;
-
         SceneViewport.Focus();
         if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
         {
@@ -762,146 +833,7 @@ public partial class ResearchEditorWindow
         ApplySelectionVisuals();
         RenderInspector();
         SelectHierarchyNode(node.RowIdentity);
-
-        if (_primaryNode is null)
-            return;
-        _isNodeDragging = true;
-        _nodeDragStartWorld = e.GetPosition(NodeCanvas);
-        _nodeDragOrigins.Clear();
-        foreach (var identity in _selectedNodeIdentities)
-        {
-            if (!_nodeVisuals.TryGetValue(identity, out var visual))
-                continue;
-            _nodeDragOrigins[identity] = new Point(Canvas.GetLeft(visual), Canvas.GetTop(visual));
-        }
-        _dragCaptureVisual = card;
-        card.CaptureMouse();
         e.Handled = true;
-    }
-
-    private void Node_MouseMove(object sender, MouseEventArgs e)
-    {
-        if (!_isNodeDragging || e.LeftButton != MouseButtonState.Pressed)
-            return;
-        var current = e.GetPosition(NodeCanvas);
-        var delta = current - _nodeDragStartWorld;
-        foreach (var (identity, origin) in _nodeDragOrigins)
-        {
-            if (!_nodeVisuals.TryGetValue(identity, out var visual))
-                continue;
-            Canvas.SetLeft(visual, Math.Max(10, origin.X + delta.X));
-            Canvas.SetTop(visual, Math.Clamp(origin.Y + delta.Y, 35, GraphCanvas.Height - NodeHeight - 20));
-        }
-        DrawAllLinks();
-        e.Handled = true;
-    }
-
-    private void Node_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
-    {
-        if (!_isNodeDragging)
-            return;
-        _dragCaptureVisual?.ReleaseMouseCapture();
-        _dragCaptureVisual = null;
-        _isNodeDragging = false;
-
-        if (_workbook is null || _primaryNode is null || !_nodeVisuals.TryGetValue(_primaryNode.RowIdentity, out var primaryVisual))
-            return;
-        var origin = _nodeDragOrigins.GetValueOrDefault(_primaryNode.RowIdentity);
-        var currentLeft = Canvas.GetLeft(primaryVisual);
-        var currentTop = Canvas.GetTop(primaryVisual);
-        var oldColumn = _primaryNode.Column;
-        var oldRow = _primaryNode.Row;
-        var newColumn = Math.Max(1, (int)Math.Round((currentLeft - GraphLeft) / ColumnSpacing) + 1);
-        var newRow = NearestLane(currentTop);
-        var deltaColumn = newColumn - oldColumn;
-        var deltaRow = newRow - oldRow;
-        if (Math.Abs(currentLeft - origin.X) < 1 && Math.Abs(currentTop - origin.Y) < 1 || deltaColumn == 0 && deltaRow == 0)
-        {
-            RenderGraph();
-            return;
-        }
-
-        PushUndo();
-        var moveResult = ResearchWorkbookService.TryMoveNodes(
-            _workbook, _selectedNodeIdentities, deltaColumn, deltaRow);
-        if (!moveResult.Success)
-        {
-            UndoWithoutRender();
-            Log(ResearchConsoleSeverity.Warning, moveResult.Message, _primaryNode.Id);
-        }
-        RenderGraph();
-        PopulateHierarchy();
-        RenderInspector();
-        UpdateDirtyState();
-        e.Handled = true;
-    }
-
-    private void OutputPin_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
-    {
-        if (sender is not Ellipse { Tag: ResearchPinTag { IsOutput: true } pin })
-            return;
-        _isLinkDragging = true;
-        _linkSource = pin.Node;
-        _temporaryLink = new ShapePath
-        {
-            Stroke = new SolidColorBrush(Color.FromRgb(241, 205, 82)),
-            StrokeThickness = 2.4,
-            Fill = Brushes.Transparent,
-            IsHitTestVisible = false
-        };
-        LinkCanvas.Children.Add(_temporaryLink);
-        SceneViewport.CaptureMouse();
-        UpdateTemporaryLink(e.GetPosition(GraphCanvas));
-        e.Handled = true;
-    }
-
-    private void SceneViewport_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
-    {
-        if (!_isLinkDragging)
-            return;
-        var hit = SceneViewport.InputHitTest(e.GetPosition(SceneViewport)) as DependencyObject;
-        var input = FindInputPin(hit) ?? FindNearestInputPin(e.GetPosition(SceneViewport));
-        var source = _linkSource;
-        EndLinkDrag();
-        if (_workbook is null || source is null || input?.Tag is not ResearchPinTag { IsOutput: false } target)
-        {
-            Log(ResearchConsoleSeverity.Warning, "연결할 노드의 왼쪽 INPUT 핀에 선을 놓으세요.");
-            return;
-        }
-
-        PushUndo();
-        var result = ResearchWorkbookService.TryConnectCondition(_workbook, source.RowIdentity, target.Node.RowIdentity);
-        if (!result.Success)
-        {
-            UndoWithoutRender();
-            Log(ResearchConsoleSeverity.Warning, result.Message, target.Node.Id);
-        }
-        else if (!string.IsNullOrWhiteSpace(result.WarningMessage))
-        {
-            Log(ResearchConsoleSeverity.Warning, result.WarningMessage, source.Id);
-        }
-        RenderGraph();
-        PopulateHierarchy();
-        RenderInspector();
-        UpdateDirtyState();
-        e.Handled = true;
-    }
-
-    private void UpdateTemporaryLink(Point worldPoint)
-    {
-        if (_temporaryLink is null || _linkSource is null || !_nodeVisuals.ContainsKey(_linkSource.RowIdentity))
-            return;
-        _temporaryLink.Data = BuildOrthogonalGeometry(GetOutputPoint(_linkSource), worldPoint);
-    }
-
-    private void EndLinkDrag()
-    {
-        SceneViewport.ReleaseMouseCapture();
-        if (_temporaryLink is not null)
-            LinkCanvas.Children.Remove(_temporaryLink);
-        _temporaryLink = null;
-        _linkSource = null;
-        _isLinkDragging = false;
     }
 
     private void DisconnectLink(ResearchNodeRow source, ResearchNodeRow target)
@@ -937,7 +869,6 @@ public partial class ResearchEditorWindow
     private void SceneViewport_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
     {
         _isPanning = true;
-        _rightMouseMoved = false;
         _panScreenStart = e.GetPosition(SceneViewport);
         _panXStart = GraphTranslate.X;
         _panYStart = GraphTranslate.Y;
@@ -952,24 +883,15 @@ public partial class ResearchEditorWindow
         _isPanning = false;
         SceneViewport.ReleaseMouseCapture();
         SaveViewSettings();
-        if (!_rightMouseMoved)
-            OpenSceneContextMenu(e.GetPosition(NodeCanvas));
         e.Handled = true;
     }
 
     private void SceneViewport_MouseMove(object sender, MouseEventArgs e)
     {
-        if (_isLinkDragging)
-        {
-            UpdateTemporaryLink(e.GetPosition(GraphCanvas));
-            return;
-        }
         if (!_isPanning || e.RightButton != MouseButtonState.Pressed)
             return;
         var current = e.GetPosition(SceneViewport);
         var delta = current - _panScreenStart;
-        if (Math.Abs(delta.X) + Math.Abs(delta.Y) > 3)
-            _rightMouseMoved = true;
         GraphTranslate.X = _panXStart + delta.X;
         GraphTranslate.Y = _panYStart + delta.Y;
         e.Handled = true;
@@ -977,49 +899,13 @@ public partial class ResearchEditorWindow
 
     private void SceneViewport_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.OriginalSource is Border or Ellipse or TextBlock)
+        if (e.OriginalSource is Border or TextBlock or Image or Button)
             return;
         _selectedNodeIdentities.Clear();
         _primaryNode = null;
         ApplySelectionVisuals();
         RenderInspector();
         e.Handled = true;
-    }
-
-    private void OpenSceneContextMenu(Point worldPoint)
-    {
-        var menu = new ContextMenu();
-        var add = new MenuItem { Header = "Add research node" };
-        add.Click += (_, _) => AddNodeAt(worldPoint);
-        menu.Items.Add(add);
-        menu.IsOpen = true;
-    }
-
-    private void AddNodeAt(Point worldPoint)
-    {
-        if (_workbook is null || _selectedCategory is null)
-            return;
-        var column = Math.Max(1, (int)Math.Round((worldPoint.X - GraphLeft) / ColumnSpacing) + 1);
-        var row = NearestLane(worldPoint.Y);
-        while (_workbook.Nodes.Any(node => Same(node.Category, _selectedCategory.Category) && node.Column == column && node.Row == row))
-            column++;
-        PushUndo();
-        try
-        {
-            var created = ResearchWorkbookService.CreateNode(_workbook, _selectedCategory.Category, column, row);
-            _selectedNodeIdentities.Clear();
-            _selectedNodeIdentities.Add(created.Node.RowIdentity);
-            _primaryNode = created.Node;
-            RenderGraph();
-            PopulateHierarchy();
-            RenderInspector();
-            UpdateDirtyState();
-        }
-        catch (Exception ex)
-        {
-            UndoWithoutRender();
-            Log(ResearchConsoleSeverity.Error, ex.Message);
-        }
     }
 
     private void ApplySelectionVisuals()
@@ -1034,17 +920,31 @@ public partial class ResearchEditorWindow
         }
     }
 
+    private void FitOpeningView()
+    {
+        var nodes = VisibleNodes().ToList();
+        if (nodes.Count == 0 || SceneViewport.ActualWidth < 20 || SceneViewport.ActualHeight < 20)
+            return;
+        var firstColumn = nodes.Min(node => node.Column);
+        FitNodes(nodes.Where(node => node.Column <= firstColumn + 3).ToList(), maxScale: 1.0);
+    }
+
     private void FitAll()
     {
         var nodes = VisibleNodes().ToList();
         if (nodes.Count == 0 || SceneViewport.ActualWidth < 20 || SceneViewport.ActualHeight < 20)
             return;
+        FitNodes(nodes, maxScale: 1.25);
+    }
+
+    private void FitNodes(IReadOnlyCollection<ResearchNodeRow> nodes, double maxScale)
+    {
         var left = nodes.Min(node => WorldX(node.Column));
         var right = nodes.Max(node => WorldX(node.Column)) + NodeWidth;
-        var top = nodes.Min(node => WorldY(node.Row));
+        var top = 16d;
         var bottom = nodes.Max(node => WorldY(node.Row)) + NodeHeight;
         var scale = Math.Clamp(Math.Min((SceneViewport.ActualWidth - 70) / Math.Max(1, right - left),
-                                        (SceneViewport.ActualHeight - 70) / Math.Max(1, bottom - top)), 0.18, 1.25);
+                                        (SceneViewport.ActualHeight - 70) / Math.Max(1, bottom - top)), 0.18, maxScale);
         GraphScale.ScaleX = GraphScale.ScaleY = scale;
         GraphTranslate.X = (SceneViewport.ActualWidth - (right - left) * scale) / 2 - left * scale;
         GraphTranslate.Y = (SceneViewport.ActualHeight - (bottom - top) * scale) / 2 - top * scale;
@@ -1062,45 +962,6 @@ public partial class ResearchEditorWindow
         return null;
     }
 
-    private static Ellipse? FindInputPin(DependencyObject? current)
-    {
-        while (current is not null)
-        {
-            if (current is Ellipse { Tag: ResearchPinTag { IsOutput: false } } pin)
-                return pin;
-            current = VisualTreeHelper.GetParent(current);
-        }
-        return null;
-    }
-
-    private Ellipse? FindNearestInputPin(Point viewportPoint)
-    {
-        const double snapRadius = 24;
-        Ellipse? nearest = null;
-        var nearestDistanceSquared = snapRadius * snapRadius;
-        foreach (var pin in _inputPins.Values)
-        {
-            if (!pin.IsVisible)
-                continue;
-            try
-            {
-                var origin = pin.TransformToAncestor(SceneViewport).Transform(new Point(0, 0));
-                var center = new Point(origin.X + pin.ActualWidth / 2, origin.Y + pin.ActualHeight / 2);
-                var dx = center.X - viewportPoint.X;
-                var dy = center.Y - viewportPoint.Y;
-                var distanceSquared = dx * dx + dy * dy;
-                if (distanceSquared > nearestDistanceSquared)
-                    continue;
-                nearestDistanceSquared = distanceSquared;
-                nearest = pin;
-            }
-            catch (InvalidOperationException)
-            {
-                // The graph may have been rebuilt between mouse events.
-            }
-        }
-        return nearest;
-    }
 }
 
 public partial class ResearchEditorWindow
@@ -1417,13 +1278,22 @@ public partial class ResearchEditorWindow
                 IsExpanded = true
             };
             root.Items.Add(permission);
-            foreach (var node in permissionGroup.OrderBy(node => node.Column).ThenBy(node => node.Row))
+            foreach (var stepGroup in permissionGroup.GroupBy(node => node.Column).OrderBy(group => group.Key))
             {
-                permission.Items.Add(new TreeViewItem
+                var step = new TreeViewItem
                 {
-                    Header = $"[{node.Column},{node.Row}] {node.Id}",
-                    Tag = node
-                });
+                    Header = $"STEP {stepGroup.Key:000}  ({stepGroup.Count()} nodes)",
+                    IsExpanded = stepGroup.Key == permissionGroup.Min(node => node.Column)
+                };
+                permission.Items.Add(step);
+                foreach (var node in stepGroup.OrderBy(node => node.Row))
+                {
+                    step.Items.Add(new TreeViewItem
+                    {
+                        Header = $"row {node.Row}  {node.Id}",
+                        Tag = node
+                    });
+                }
             }
         }
     }
@@ -1454,15 +1324,30 @@ public partial class ResearchEditorWindow
     private void SelectHierarchyNode(string rowIdentity)
     {
         foreach (var root in HierarchyTree.Items.OfType<TreeViewItem>())
-        foreach (var permission in root.Items.OfType<TreeViewItem>())
-        foreach (var item in permission.Items.OfType<TreeViewItem>())
+        {
+            if (SelectHierarchyNodeRecursive(root, rowIdentity))
+                return;
+        }
+    }
+
+    private static bool SelectHierarchyNodeRecursive(TreeViewItem parent, string rowIdentity)
+    {
+        foreach (var item in parent.Items.OfType<TreeViewItem>())
         {
             if (item.Tag is ResearchNodeRow node && Same(node.RowIdentity, rowIdentity))
             {
                 item.IsSelected = true;
-                return;
+                item.BringIntoView();
+                return true;
+            }
+            if (SelectHierarchyNodeRecursive(item, rowIdentity))
+            {
+                item.IsExpanded = true;
+                parent.IsExpanded = true;
+                return true;
             }
         }
+        return false;
     }
 
     private void RenderInspector()
@@ -1474,7 +1359,7 @@ public partial class ResearchEditorWindow
             AddInspectorTitle($"{_selectedNodeIdentities.Count:N0} nodes selected");
             InspectorPanel.Children.Add(new TextBlock
             {
-                Text = "Delete로 함께 삭제하거나 노드를 끌어 같은 간격으로 이동할 수 있습니다.",
+                Text = "Delete로 선택한 노드를 함께 삭제할 수 있습니다. 배치는 STEP 상단의 노드 수 버튼으로 조정합니다.",
                 Foreground = new SolidColorBrush(Color.FromRgb(165, 165, 165)),
                 TextWrapping = TextWrapping.Wrap
             });
@@ -1556,28 +1441,11 @@ public partial class ResearchEditorWindow
             "active_item_value의 합계를 계산하는 보조 칼럼입니다.");
         AddEditableField("active_step", node.ActiveStep?.ToString(CultureInfo.InvariantCulture) ?? "", value =>
             node.ActiveStep = ParseNullableInt(value, "active_step"), "활성화 단계 수입니다.");
-        AddEditableField("column", node.Column.ToString(CultureInfo.InvariantCulture), value =>
-        {
-            var column = ParseRequiredInt(value, "column");
-            EnsureMutation(ResearchWorkbookService.TryMoveNode(_workbook!, node.RowIdentity, column, node.Row));
-            RefreshSelectedObjects(null, node.RowIdentity);
-        }, "그래프의 X 위치입니다. 이동하면 노드 및 효과 ID와 모든 참조가 함께 바뀝니다.");
-        AddEditableField("row", node.Row.ToString(CultureInfo.InvariantCulture), value =>
-        {
-            var row = ParseRequiredInt(value, "row");
-            EnsureMutation(ResearchWorkbookService.TryMoveNode(_workbook!, node.RowIdentity, node.Column, row));
-            RefreshSelectedObjects(null, node.RowIdentity);
-        }, $"그래프의 Y lane입니다. 현재 DB lane은 {string.Join(", ", GetLaneChoices())}입니다.");
-
-        for (var index = 0; index < 5; index++)
-        {
-            var conditionIndex = index;
-            AddEditableField($"condition_node_{index + 1}", node.Conditions[index], value =>
-            {
-                node.SetCondition(conditionIndex, value);
-                EnsureNoConditionErrors(node);
-            }, "이 노드보다 앞서 열려 있어야 하는 연구 노드 ID입니다. 최대 5개입니다.");
-        }
+        AddReadOnlyField("column / STEP", node.Column.ToString(CultureInfo.InvariantCulture),
+            "Scene 상단 STEP 번호입니다. STEP의 +/- 버튼으로 구조를 조정합니다.");
+        AddReadOnlyField("row / SLOT", node.Row.ToString(CultureInfo.InvariantCulture),
+            $"Scene의 고정 슬롯입니다. 사용할 수 있는 row는 {string.Join(", ", StructuredRows)}입니다.");
+        RenderPreviousStepConditions(node);
         AddReadOnlyField("nexus_effect_id", node.NexusEffectId, "대응 nexus_effect ID이며 노드 좌표에 따라 자동 생성됩니다.");
 
         var effect = _workbook?.FindEffect(node);
@@ -1602,6 +1470,107 @@ public partial class ResearchEditorWindow
         var delete = CreateInspectorButton("Delete Node", new SolidColorBrush(Color.FromRgb(118, 48, 52)));
         delete.Click += (_, _) => DeleteSelectedNodes();
         InspectorPanel.Children.Add(delete);
+    }
+
+    private void RenderPreviousStepConditions(ResearchNodeRow node)
+    {
+        AddInspectorSection("Previous STEP Conditions");
+        if (_workbook is null || node.Column <= 1)
+        {
+            InspectorPanel.Children.Add(new TextBlock
+            {
+                Text = "첫 STEP은 선행 조건이 없습니다.",
+                Foreground = new SolidColorBrush(Color.FromRgb(150, 150, 150)),
+                Margin = new Thickness(0, 0, 0, 8)
+            });
+            return;
+        }
+
+        var previousNodes = _workbook.Nodes
+            .Where(candidate => Same(candidate.Category, node.Category) && candidate.Column == node.Column - 1)
+            .OrderBy(candidate => candidate.Row)
+            .ToList();
+        if (previousNodes.Count == 0)
+        {
+            InspectorPanel.Children.Add(new TextBlock
+            {
+                Text = "바로 전 STEP에 연결할 노드가 없습니다.",
+                Foreground = new SolidColorBrush(Color.FromRgb(235, 105, 105)),
+                Margin = new Thickness(0, 0, 0, 8)
+            });
+            return;
+        }
+
+        foreach (var prerequisite in previousNodes)
+        {
+            var checkBox = new CheckBox
+            {
+                Content = $"row {prerequisite.Row}  {prerequisite.Id}",
+                IsChecked = node.Conditions.Any(value => Same(value, prerequisite.Id)),
+                Foreground = new SolidColorBrush(Color.FromRgb(218, 218, 218)),
+                Margin = new Thickness(2, 3, 0, 5),
+                Padding = new Thickness(3),
+                ToolTip = "체크하면 이 노드를 선행 조건으로 연결합니다."
+            };
+            checkBox.Checked += (_, _) => SetPreviousStepCondition(node.RowIdentity, prerequisite.RowIdentity, connect: true);
+            checkBox.Unchecked += (_, _) => SetPreviousStepCondition(node.RowIdentity, prerequisite.RowIdentity, connect: false);
+            InspectorPanel.Children.Add(checkBox);
+        }
+
+        var previousIds = previousNodes.Select(candidate => candidate.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var unresolved = node.Conditions
+            .Where(value => !string.IsNullOrWhiteSpace(value) && !previousIds.Contains(value))
+            .ToList();
+        if (unresolved.Count > 0)
+        {
+            InspectorPanel.Children.Add(new TextBlock
+            {
+                Text = $"다른 STEP을 참조하는 기존 값: {string.Join(", ", unresolved)}",
+                Foreground = new SolidColorBrush(Color.FromRgb(235, 177, 92)),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(2, 5, 0, 7)
+            });
+        }
+    }
+
+    private void SetPreviousStepCondition(string targetIdentity, string prerequisiteIdentity, bool connect)
+    {
+        if (_workbook is null || _suppressInspectorCommit)
+            return;
+        var target = _workbook.Nodes.FirstOrDefault(node => Same(node.RowIdentity, targetIdentity));
+        var prerequisite = _workbook.Nodes.FirstOrDefault(node => Same(node.RowIdentity, prerequisiteIdentity));
+        if (target is null || prerequisite is null)
+            return;
+
+        PushUndo();
+        ResearchMutationResult result;
+        if (connect)
+        {
+            result = ResearchWorkbookService.TryConnectCondition(_workbook, prerequisite.RowIdentity, target.RowIdentity);
+        }
+        else
+        {
+            var changed = ResearchWorkbookService.DisconnectCondition(target, prerequisite.Id);
+            result = changed
+                ? new ResearchMutationResult { Success = true, Message = "선행 조건 연결을 해제했습니다." }
+                : ResearchMutationResult.Failed("해제할 선행 조건 연결이 없습니다.");
+        }
+
+        if (!result.Success)
+        {
+            UndoWithoutRender();
+            Log(ResearchConsoleSeverity.Warning, result.Message, target.Id);
+        }
+        else if (!string.IsNullOrWhiteSpace(result.WarningMessage))
+        {
+            Log(ResearchConsoleSeverity.Warning, result.WarningMessage, target.Id);
+        }
+        RenderGraph();
+        PopulateHierarchy();
+        _primaryNode = _workbook.Nodes.FirstOrDefault(node => Same(node.RowIdentity, targetIdentity));
+        RenderInspector();
+        UpdateDirtyState();
     }
 
     private void RenderEffectInspector(ResearchEffectRow effect)

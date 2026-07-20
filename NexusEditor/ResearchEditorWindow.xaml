@@ -95,22 +95,40 @@
             </Style.Triggers>
         </Style>
         <Style x:Key="PanelHeader" TargetType="Border">
-            <Setter Property="Height" Value="28"/>
-            <Setter Property="Background" Value="#2d2d2d"/>
+            <Setter Property="Height" Value="30"/>
+            <Setter Property="Background" Value="#2b2b2b"/>
             <Setter Property="BorderBrush" Value="#111111"/>
             <Setter Property="BorderThickness" Value="0,0,0,1"/>
         </Style>
-        <Style x:Key="PanelTitle" TargetType="TextBlock">
+        <Style x:Key="PanelTitleTab" TargetType="Border">
+            <Setter Property="Height" Value="24"/>
+            <Setter Property="MinWidth" Value="86"/>
+            <Setter Property="Margin" Value="4,4,0,0"/>
+            <Setter Property="Padding" Value="8,0,10,0"/>
+            <Setter Property="VerticalAlignment" Value="Bottom"/>
+            <Setter Property="Background" Value="#333333"/>
+            <Setter Property="BorderBrush" Value="#151515"/>
+            <Setter Property="BorderThickness" Value="1,1,1,0"/>
+        </Style>
+        <Style x:Key="PanelHeaderIcon" TargetType="TextBlock">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Margin" Value="0,0,5,0"/>
+            <Setter Property="Foreground" Value="#a8a8a8"/>
+            <Setter Property="FontFamily" Value="Segoe UI Symbol"/>
+            <Setter Property="FontSize" Value="11"/>
+        </Style>
+        <Style x:Key="PanelHeaderText" TargetType="TextBlock">
             <Setter Property="FontWeight" Value="SemiBold"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
-            <Setter Property="Margin" Value="9,0"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Foreground" Value="#dedede"/>
         </Style>
         <Style x:Key="PanelTabCloseButton" TargetType="Button">
             <Setter Property="Width" Value="18"/>
             <Setter Property="MinWidth" Value="18"/>
             <Setter Property="Height" Value="16"/>
             <Setter Property="MinHeight" Value="16"/>
-            <Setter Property="Margin" Value="8,0,7,0"/>
+            <Setter Property="Margin" Value="8,0,0,0"/>
             <Setter Property="Padding" Value="0"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="HorizontalAlignment" Value="Center"/>
@@ -141,6 +159,83 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+        </Style>
+        <Style x:Key="ScrollBarTrackButton" TargetType="{x:Type RepeatButton}">
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type RepeatButton}">
+                        <Border Background="Transparent"/>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <Style x:Key="UnityScrollThumb" TargetType="{x:Type Thumb}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Thumb}">
+                        <Border x:Name="ThumbChrome" Background="#5b5b5b" BorderBrush="#6b6b6b"
+                                BorderThickness="1" CornerRadius="4"/>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="ThumbChrome" Property="Background" Value="#6f6f6f"/>
+                                <Setter TargetName="ThumbChrome" Property="BorderBrush" Value="#808080"/>
+                            </Trigger>
+                            <Trigger Property="IsDragging" Value="True">
+                                <Setter TargetName="ThumbChrome" Property="Background" Value="#7d7d7d"/>
+                                <Setter TargetName="ThumbChrome" Property="BorderBrush" Value="#9a9a9a"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+        <ControlTemplate x:Key="VerticalUnityScrollBar" TargetType="{x:Type ScrollBar}">
+            <Grid Width="18" Background="#2a2a2a">
+                <Border Background="#303030" BorderBrush="#1a1a1a" BorderThickness="1"/>
+                <Track x:Name="PART_Track" Orientation="Vertical" IsDirectionReversed="True"
+                       Minimum="{TemplateBinding Minimum}" Maximum="{TemplateBinding Maximum}"
+                       Value="{Binding Value, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                       ViewportSize="{TemplateBinding ViewportSize}" Margin="3,2">
+                    <Track.DecreaseRepeatButton>
+                        <RepeatButton Command="{x:Static ScrollBar.PageUpCommand}" Style="{StaticResource ScrollBarTrackButton}"/>
+                    </Track.DecreaseRepeatButton>
+                    <Track.Thumb><Thumb Style="{StaticResource UnityScrollThumb}" MinHeight="34"/></Track.Thumb>
+                    <Track.IncreaseRepeatButton>
+                        <RepeatButton Command="{x:Static ScrollBar.PageDownCommand}" Style="{StaticResource ScrollBarTrackButton}"/>
+                    </Track.IncreaseRepeatButton>
+                </Track>
+            </Grid>
+        </ControlTemplate>
+        <ControlTemplate x:Key="HorizontalUnityScrollBar" TargetType="{x:Type ScrollBar}">
+            <Grid Height="18" Background="#2a2a2a">
+                <Border Background="#303030" BorderBrush="#1a1a1a" BorderThickness="1"/>
+                <Track x:Name="PART_Track" Orientation="Horizontal"
+                       Minimum="{TemplateBinding Minimum}" Maximum="{TemplateBinding Maximum}"
+                       Value="{Binding Value, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                       ViewportSize="{TemplateBinding ViewportSize}" Margin="2,3">
+                    <Track.DecreaseRepeatButton>
+                        <RepeatButton Command="{x:Static ScrollBar.PageLeftCommand}" Style="{StaticResource ScrollBarTrackButton}"/>
+                    </Track.DecreaseRepeatButton>
+                    <Track.Thumb><Thumb Style="{StaticResource UnityScrollThumb}" MinWidth="34"/></Track.Thumb>
+                    <Track.IncreaseRepeatButton>
+                        <RepeatButton Command="{x:Static ScrollBar.PageRightCommand}" Style="{StaticResource ScrollBarTrackButton}"/>
+                    </Track.IncreaseRepeatButton>
+                </Track>
+            </Grid>
+        </ControlTemplate>
+        <Style TargetType="{x:Type ScrollBar}">
+            <Setter Property="Background" Value="#2a2a2a"/>
+            <Setter Property="Width" Value="18"/>
+            <Setter Property="Height" Value="Auto"/>
+            <Setter Property="Template" Value="{StaticResource VerticalUnityScrollBar}"/>
+            <Style.Triggers>
+                <Trigger Property="Orientation" Value="Horizontal">
+                    <Setter Property="Width" Value="Auto"/>
+                    <Setter Property="Height" Value="18"/>
+                    <Setter Property="Template" Value="{StaticResource HorizontalUnityScrollBar}"/>
+                </Trigger>
+            </Style.Triggers>
         </Style>
         <Style x:Key="FilterToggle" TargetType="RadioButton">
             <Setter Property="Foreground" Value="#cccccc"/>
@@ -236,10 +331,15 @@
             <Border x:Name="CategoryPane" Grid.Column="0" Background="{StaticResource PanelBackground}">
                 <DockPanel>
                     <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top">
-                        <Grid>
-                            <TextBlock Text="Category List" Style="{StaticResource PanelTitle}"/>
-                            <Button Style="{StaticResource PanelTabCloseButton}" HorizontalAlignment="Right" Tag="category" Click="ClosePaneButton_Click"/>
-                        </Grid>
+                        <DockPanel LastChildFill="False">
+                            <Border DockPanel.Dock="Left" Style="{StaticResource PanelTitleTab}">
+                                <StackPanel Orientation="Horizontal">
+                                    <TextBlock Text="▤" Style="{StaticResource PanelHeaderIcon}"/>
+                                    <TextBlock Text="Category List" Style="{StaticResource PanelHeaderText}"/>
+                                    <Button Style="{StaticResource PanelTabCloseButton}" Tag="category" Click="ClosePaneButton_Click"/>
+                                </StackPanel>
+                            </Border>
+                        </DockPanel>
                     </Border>
                     <StackPanel DockPanel.Dock="Top" Margin="8">
                         <TextBox x:Name="CategorySearchBox" Height="28" Margin="0,0,0,7" TextChanged="CategorySearchBox_TextChanged" ToolTip="Search category"/>
@@ -259,41 +359,35 @@
                 <Border x:Name="ScenePane" Grid.Row="0" Background="#191919" BorderBrush="#111111" BorderThickness="0,0,1,0">
                     <DockPanel>
                         <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top">
-                            <Grid>
-                                <TextBlock Text="Scene" Style="{StaticResource PanelTitle}"/>
-                                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                                    <TextBlock x:Name="SceneStatusText" Margin="0,0,2,0" VerticalAlignment="Center" Foreground="#9e9e9e"/>
-                                    <Button Style="{StaticResource PanelTabCloseButton}" Tag="scene" Click="ClosePaneButton_Click"/>
-                                </StackPanel>
-                            </Grid>
+                            <DockPanel LastChildFill="False">
+                                <TextBlock x:Name="SceneStatusText" DockPanel.Dock="Right" Margin="8,0,8,0"
+                                           VerticalAlignment="Center" Foreground="#9e9e9e"/>
+                                <Border DockPanel.Dock="Left" Style="{StaticResource PanelTitleTab}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="#" Style="{StaticResource PanelHeaderIcon}"/>
+                                        <TextBlock Text="Scene" Style="{StaticResource PanelHeaderText}"/>
+                                        <Button Style="{StaticResource PanelTabCloseButton}" Tag="scene" Click="ClosePaneButton_Click"/>
+                                    </StackPanel>
+                                </Border>
+                            </DockPanel>
                         </Border>
                         <Grid x:Name="SceneViewport" ClipToBounds="True" Focusable="True"
                               MouseWheel="SceneViewport_MouseWheel"
                               MouseRightButtonDown="SceneViewport_MouseRightButtonDown"
                               MouseRightButtonUp="SceneViewport_MouseRightButtonUp"
                               MouseMove="SceneViewport_MouseMove"
-                              MouseLeftButtonDown="SceneViewport_MouseLeftButtonDown"
-                              MouseLeftButtonUp="SceneViewport_MouseLeftButtonUp">
-                            <Grid.Background>
-                                <DrawingBrush TileMode="Tile" Viewport="0,0,24,24" ViewportUnits="Absolute">
-                                    <DrawingBrush.Drawing>
-                                        <GeometryDrawing Brush="#1b1b1b">
-                                            <GeometryDrawing.Pen><Pen Brush="#2d2d2d" Thickness="1"/></GeometryDrawing.Pen>
-                                            <GeometryDrawing.Geometry><RectangleGeometry Rect="0,0,24,24"/></GeometryDrawing.Geometry>
-                                        </GeometryDrawing>
-                                    </DrawingBrush.Drawing>
-                                </DrawingBrush>
-                            </Grid.Background>
-                            <Canvas x:Name="GraphCanvas" Width="22400" Height="1120" HorizontalAlignment="Left" VerticalAlignment="Top">
+                              MouseLeftButtonDown="SceneViewport_MouseLeftButtonDown">
+                            <Grid.Background><SolidColorBrush Color="#1a1a1a"/></Grid.Background>
+                            <Canvas x:Name="GraphCanvas" Width="28000" Height="760" HorizontalAlignment="Left" VerticalAlignment="Top">
                                 <Canvas.RenderTransform>
                                     <TransformGroup>
                                         <ScaleTransform x:Name="GraphScale" ScaleX="1" ScaleY="1"/>
                                         <TranslateTransform x:Name="GraphTranslate"/>
                                     </TransformGroup>
                                 </Canvas.RenderTransform>
-                                <Canvas x:Name="BandCanvas" Width="22400" Height="1120" IsHitTestVisible="False"/>
-                                <Canvas x:Name="LinkCanvas" Width="22400" Height="1120" Background="Transparent"/>
-                                <Canvas x:Name="NodeCanvas" Width="22400" Height="1120"/>
+                                <Canvas x:Name="BandCanvas" Width="28000" Height="760" IsHitTestVisible="False"/>
+                                <Canvas x:Name="LinkCanvas" Width="28000" Height="760" Background="Transparent"/>
+                                <Canvas x:Name="NodeCanvas" Width="28000" Height="760"/>
                             </Canvas>
                         </Grid>
                     </DockPanel>
@@ -302,10 +396,15 @@
                 <Border x:Name="ConsolePane" Grid.Row="2" Background="#202020">
                     <DockPanel>
                         <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top">
-                            <Grid>
-                                <TextBlock Text="Console / Validation" Style="{StaticResource PanelTitle}"/>
-                                <Button Style="{StaticResource PanelTabCloseButton}" HorizontalAlignment="Right" Tag="console" Click="ClosePaneButton_Click"/>
-                            </Grid>
+                            <DockPanel LastChildFill="False">
+                                <Border DockPanel.Dock="Left" Style="{StaticResource PanelTitleTab}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="!" Style="{StaticResource PanelHeaderIcon}"/>
+                                        <TextBlock Text="Console / Validation" Style="{StaticResource PanelHeaderText}"/>
+                                        <Button Style="{StaticResource PanelTabCloseButton}" Tag="console" Click="ClosePaneButton_Click"/>
+                                    </StackPanel>
+                                </Border>
+                            </DockPanel>
                         </Border>
                         <DockPanel DockPanel.Dock="Top" Height="32" Background="#292929">
                             <Button Content="Clear" Width="58" Height="24" Margin="7,4" Click="ClearConsoleButton_Click"/>
@@ -326,10 +425,15 @@
                 <Border x:Name="HierarchyPane" Grid.Column="0" Background="{StaticResource PanelBackground}">
                     <DockPanel>
                         <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top">
-                            <Grid>
-                                <TextBlock Text="Hierarchy" Style="{StaticResource PanelTitle}"/>
-                                <Button Style="{StaticResource PanelTabCloseButton}" HorizontalAlignment="Right" Tag="hierarchy" Click="ClosePaneButton_Click"/>
-                            </Grid>
+                            <DockPanel LastChildFill="False">
+                                <Border DockPanel.Dock="Left" Style="{StaticResource PanelTitleTab}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="☷" Style="{StaticResource PanelHeaderIcon}"/>
+                                        <TextBlock Text="Hierarchy" Style="{StaticResource PanelHeaderText}"/>
+                                        <Button Style="{StaticResource PanelTabCloseButton}" Tag="hierarchy" Click="ClosePaneButton_Click"/>
+                                    </StackPanel>
+                                </Border>
+                            </DockPanel>
                         </Border>
                         <TreeView x:Name="HierarchyTree" SelectedItemChanged="HierarchyTree_SelectedItemChanged"/>
                     </DockPanel>
@@ -338,10 +442,15 @@
                 <Border x:Name="InspectorPane" Grid.Column="2" Background="{StaticResource PanelBackground}">
                     <DockPanel>
                         <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top">
-                            <Grid>
-                                <TextBlock Text="Inspector" Style="{StaticResource PanelTitle}"/>
-                                <Button Style="{StaticResource PanelTabCloseButton}" HorizontalAlignment="Right" Tag="inspector" Click="ClosePaneButton_Click"/>
-                            </Grid>
+                            <DockPanel LastChildFill="False">
+                                <Border DockPanel.Dock="Left" Style="{StaticResource PanelTitleTab}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Text="i" Style="{StaticResource PanelHeaderIcon}"/>
+                                        <TextBlock Text="Inspector" Style="{StaticResource PanelHeaderText}"/>
+                                        <Button Style="{StaticResource PanelTabCloseButton}" Tag="inspector" Click="ClosePaneButton_Click"/>
+                                    </StackPanel>
+                                </Border>
+                            </DockPanel>
                         </Border>
                         <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
                             <StackPanel x:Name="InspectorPanel" Margin="10"/>
