@@ -10,16 +10,18 @@ public sealed class PreferencesWindow : Window
 {
     private readonly TextBox _dbPathBox;
     private readonly TextBox _clientPathBox;
+    private readonly TextBox _soundCachePathBox;
     private readonly TextBlock _validationText;
 
     public string DbTablePath { get; private set; } = "";
     public string ClientPath { get; private set; } = "";
+    public string SoundCachePath { get; private set; } = "";
 
-    public PreferencesWindow(string? dbTablePath, string? clientPath)
+    public PreferencesWindow(string? dbTablePath, string? clientPath, string? soundCachePath)
     {
         Title = "Preferences";
         Width = 760;
-        Height = 390;
+        Height = 500;
         MinWidth = 640;
         MinHeight = 340;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
@@ -36,13 +38,12 @@ public sealed class PreferencesWindow : Window
         {
             Background = Brush(43, 43, 43),
             Foreground = Brush(225, 225, 225),
-            BorderBrush = Brush(75, 75, 75)
+            BorderBrush = Brush(75, 75, 75),
+            ItemContainerStyle = CreateTabItemStyle()
         };
         var assetTab = new TabItem
         {
-            Header = "Asset Path",
-            Background = Brush(52, 52, 52),
-            Foreground = Brush(230, 230, 230)
+            Header = "Asset Path"
         };
         tabs.Items.Add(assetTab);
         root.Children.Add(tabs);
@@ -68,6 +69,12 @@ public sealed class PreferencesWindow : Window
             clientPath ?? "",
             "Epic Seven dev 폴더 또는 그 상위 repos 폴더. 배경 이미지는 game\\Resources\\res\\nexus에서 읽습니다.",
             BrowseClientPath);
+        _soundCachePathBox = AddPathRow(
+            assetPanel,
+            "Sound Cache Path",
+            soundCachePath ?? "",
+            "WAV 미리듣기 캐시 전용 폴더입니다. DEV/SVN 밖의 로컬 폴더나 Z: 같은 별도 드라이브를 지정하세요.",
+            BrowseSoundCachePath);
 
         _validationText = new TextBlock
         {
@@ -93,6 +100,42 @@ public sealed class PreferencesWindow : Window
         footer.Children.Add(save);
 
         Content = root;
+    }
+
+    private static Style CreateTabItemStyle()
+    {
+        var style = new Style(typeof(TabItem));
+        style.Setters.Add(new Setter(Control.BackgroundProperty, Brush(47, 47, 47)));
+        style.Setters.Add(new Setter(Control.ForegroundProperty, Brush(188, 188, 188)));
+        style.Setters.Add(new Setter(Control.BorderBrushProperty, Brush(70, 70, 70)));
+        style.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(14, 7, 14, 7)));
+        style.Setters.Add(new Setter(Control.FontWeightProperty, FontWeights.SemiBold));
+
+        var template = new ControlTemplate(typeof(TabItem));
+        var border = new FrameworkElementFactory(typeof(Border));
+        border.Name = "Chrome";
+        border.SetValue(Border.BackgroundProperty, new TemplateBindingExtension(Control.BackgroundProperty));
+        border.SetValue(Border.BorderBrushProperty, new TemplateBindingExtension(Control.BorderBrushProperty));
+        border.SetValue(Border.BorderThicknessProperty, new Thickness(1, 1, 1, 0));
+        var content = new FrameworkElementFactory(typeof(ContentPresenter));
+        content.SetValue(ContentPresenter.ContentSourceProperty, "Header");
+        content.SetValue(FrameworkElement.MarginProperty, new TemplateBindingExtension(Control.PaddingProperty));
+        content.SetValue(ContentPresenter.HorizontalAlignmentProperty, HorizontalAlignment.Center);
+        content.SetValue(ContentPresenter.VerticalAlignmentProperty, VerticalAlignment.Center);
+        border.AppendChild(content);
+        template.VisualTree = border;
+
+        var hover = new Trigger { Property = UIElement.IsMouseOverProperty, Value = true };
+        hover.Setters.Add(new Setter(Control.BackgroundProperty, Brush(58, 58, 58)));
+        hover.Setters.Add(new Setter(Control.ForegroundProperty, Brush(230, 230, 230)));
+        template.Triggers.Add(hover);
+        var selected = new Trigger { Property = TabItem.IsSelectedProperty, Value = true };
+        selected.Setters.Add(new Setter(Control.BackgroundProperty, Brush(67, 67, 67)));
+        selected.Setters.Add(new Setter(Control.ForegroundProperty, Brushes.White));
+        selected.Setters.Add(new Setter(Control.BorderBrushProperty, Brush(96, 96, 96)));
+        template.Triggers.Add(selected);
+        style.Setters.Add(new Setter(Control.TemplateProperty, template));
+        return style;
     }
 
     private static TextBox AddPathRow(
@@ -172,6 +215,21 @@ public sealed class PreferencesWindow : Window
             _clientPathBox.Text = dialog.FolderName;
     }
 
+    private void BrowseSoundCachePath(object sender, RoutedEventArgs e)
+    {
+        var current = _soundCachePathBox.Text.Trim().Trim('"');
+        var dialog = new OpenFolderDialog
+        {
+            Title = "DEV/SVN 밖의 사운드 캐시 폴더를 선택하세요",
+            InitialDirectory = Directory.Exists(current)
+                ? current
+                : Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            Multiselect = false
+        };
+        if (dialog.ShowDialog(this) == true)
+            _soundCachePathBox.Text = dialog.FolderName;
+    }
+
     private void SaveAndClose()
     {
         var dbPath = NexusPathResolver.ResolveEventWorkbookSelection(_dbPathBox.Text);
@@ -188,10 +246,43 @@ public sealed class PreferencesWindow : Window
             return;
         }
 
+        string soundCachePath;
+        try
+        {
+            var requestedCachePath = _soundCachePathBox.Text.Trim().Trim('"');
+            if (string.IsNullOrWhiteSpace(requestedCachePath))
+                throw new InvalidOperationException();
+            soundCachePath = Path.GetFullPath(requestedCachePath);
+            var repositoryRoot = string.Equals(Path.GetFileName(Path.GetDirectoryName(clientPath)), "repos", StringComparison.OrdinalIgnoreCase)
+                ? Path.GetDirectoryName(clientPath)
+                : null;
+            if (IsSameOrDescendant(soundCachePath, clientPath)
+                || (!string.IsNullOrWhiteSpace(repositoryRoot) && IsSameOrDescendant(soundCachePath, repositoryRoot)))
+            {
+                _validationText.Text = "Sound Cache Path는 DEV/SVN 폴더 밖에 지정해야 합니다.";
+                return;
+            }
+            Directory.CreateDirectory(soundCachePath);
+        }
+        catch
+        {
+            _validationText.Text = "Sound Cache Path를 만들 수 없습니다.";
+            return;
+        }
+
         DbTablePath = dbPath;
         ClientPath = clientPath;
+        SoundCachePath = soundCachePath;
         DialogResult = true;
         Close();
+    }
+
+    private static bool IsSameOrDescendant(string candidate, string root)
+    {
+        var normalizedCandidate = Path.GetFullPath(candidate).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var normalizedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return string.Equals(normalizedCandidate, normalizedRoot, StringComparison.OrdinalIgnoreCase)
+               || normalizedCandidate.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 
     private static Button CreateButton(string text, double width) => new()

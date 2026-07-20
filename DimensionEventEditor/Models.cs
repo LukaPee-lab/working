@@ -47,6 +47,7 @@ public sealed class EventChoiceRow
     public string Memo { get; set; } = "";
     public string ExportId { get; set; } = EventWorkbookService.DefaultEventExportId;
     public string GroupId { get; set; } = "";
+    public string ClickSound { get; set; } = "";
     public int Seq { get; set; } = 1;
     public string ChoiceTextTid { get; set; } = "";
     public string CostType { get; set; } = "none";
@@ -212,6 +213,8 @@ public sealed class AppSettings
     public string? PlayerExePath { get; set; }
     public string? BackgroundImageRoot { get; set; }
     public string? LastBackgroundImagePath { get; set; }
+    public string? SoundCacheRoot { get; set; }
+    public string? SoundCacheMode { get; set; }
     public double LeftPaneWidth { get; set; } = 250;
     public double RightPaneWidth { get; set; } = 640;
     public double HierarchyPaneWidth { get; set; } = 270;

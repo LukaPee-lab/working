@@ -13,6 +13,7 @@
 - 여러 선택지 branch가 같은 Reward 노드에 연결될 수 있습니다. 나중에 연결한 branch는 같은 reward type/amount와 reward 이후 경로를 사용합니다.
 - Reward 노드의 출력은 다음 장면 또는 Exit 장면으로 연결합니다.
 - `background`는 자동 기본값을 넣지 않습니다. 비어 있으면 validation error로 표시합니다.
+- `background`에 섞인 Zero-Width Space 같은 보이지 않는 문자는 로드, 직접 입력, Export 시 자동 제거합니다.
 
 ## 프로젝트 구성
 
@@ -24,7 +25,10 @@
 - `EventInfoWindow.cs`: Tools > Event info 분석 창
 - `ThemedMessageBox.cs`: Unity 스타일 확인 팝업
 - `BackgroundImagePickerWindow.cs`: background 이미지 선택
+- `ClickSoundCatalogService.cs`: DEV 전체 FMOD bank 색인, 경로 추론, 외부 WAV 캐시
+- `ClickSoundPickerWindow.cs`: click_sound 검색, 미리듣기, 선택
 - `NexusPathResolver.cs`: DB, 플레이어, 설정 경로 탐색
+- `Tools/vgmstream/`: 선택한 bank subsong을 WAV로 디코딩하는 배포 도구
 - `Assets/`: 앱 아이콘과 스플래시 리소스
 
 ## 실행 환경
@@ -62,7 +66,7 @@ Start-Process .\bin\Release\net10.0-windows\DimensionEventEditor.exe
 3. `D:\repos\design\DB\alpha`
 4. `%USERPROFILE%\repos\design\DB\alpha`
 
-상단 `Preference`의 `Asset Path` 탭에서 `DB Table Path`와 `Client Path`를 직접 설정할 수 있습니다. `DB Table Path`는 엑셀 파일 또는 해당 파일이 있는 폴더를 받을 수 있으며, 저장하면 즉시 새 DB를 로드합니다. 설정값은 로컬 settings에 저장됩니다.
+상단 `Preference`의 `Asset Path` 탭에서 `DB Table Path`, `Client Path`, `Sound Cache Path`를 직접 설정할 수 있습니다. `DB Table Path`는 엑셀 파일 또는 해당 파일이 있는 폴더를 받을 수 있으며, 저장하면 즉시 새 DB를 로드합니다. `Sound Cache Path`는 DEV/SVN 밖의 폴더만 사용하며, 설정값은 로컬 settings에 저장됩니다.
 
 배포 폴더의 `Data` 폴더는 자동 탐색 순서에 넣지 않습니다. DB 폴더가 우선입니다.
 
@@ -109,6 +113,7 @@ Start-Process .\bin\Release\net10.0-windows\DimensionEventEditor.exe
 - `memo`: 선택지 문구
 - `export_id`: 기본값 `manmo2429_175126`
 - `group_id`: 소속 장면 ID
+- `click_sound`: 선택지를 눌렀을 때 재생할 FMOD event 경로
 - `seq`: 선택지 표시 순서
 - `choice_text`: 선택지 TID
 - `cost_type`, `cost_amount`: 선택 비용
@@ -117,6 +122,13 @@ Start-Process .\bin\Release\net10.0-windows\DimensionEventEditor.exe
 - `success_next_group_id`: T 결과 다음 장면
 - `fail_reward_type`, `fail_reward_amount`: F 결과 보상
 - `fail_next_group_id`: F 결과 다음 장면
+
+### `텍스트`
+
+- 에디터에서는 문장 안의 줄바꿈을 실제 줄바꿈으로 표시합니다.
+- Export할 때 `Text` 컬럼의 실제 줄바꿈은 리터럴 `\n`으로 저장합니다.
+- 다시 불러올 때 `Text` 컬럼의 리터럴 `\n`은 실제 줄바꿈으로 복원합니다.
+- 이 변환은 `텍스트.Text` 컬럼에만 적용하며 DB 테이블의 memo 셀은 그대로 유지합니다.
 
 ## 노드 모델
 
@@ -157,6 +169,7 @@ Battle은 장면 노드 하나로 표현됩니다.
 - `stage_id`가 필요합니다.
 - Battle 장면에는 T/F 출력 핀이 항상 표시됩니다.
 - Battle 결과는 `{battle_group_id}_battle_result` hidden choice row에 저장됩니다.
+- Battle T 성공 보상은 선택 사항이며, 보상이 없어도 경고하지 않습니다.
 - Battle 진입 전에는 반드시 도망/회피 선택지가 있어야 합니다.
 - 우클릭 메뉴에는 Battle 노드 추가가 없습니다.
 
@@ -286,6 +299,21 @@ Battle은 장면 노드 하나로 표현됩니다.
 - Inspector 하단에 background preview가 표시됩니다.
 - 이미지가 없으면 `Preview not found`로 표시됩니다.
 - `background`가 비어 있으면 자동으로 기본 배경을 넣지 않고 validation error를 표시합니다.
+- `background`의 Unicode format 문자(U+200B 등)는 로드 직후 제거되어 Export Preview 변경 내역에 표시되며, 저장 직전에도 다시 정리합니다.
+
+## 선택지 클릭 사운드
+
+선택지 Inspector의 `click_sound`는 직접 입력하거나 오른쪽 picker 버튼으로 선택할 수 있습니다.
+
+- `{DevRoot}\game\Resources\res\sound` 아래의 모든 `.bank`를 재귀 탐색합니다. UI/SFX/보이스/BGM/언어 bank를 별도로 제외하지 않습니다.
+- bank 내부 FSB5 이름 테이블에서 `stream name`, `bank`, `subsong`을 색인합니다.
+- FMOD 경로는 `master.strings.bank`, DB 텍스트, 스토리 CSD, bank 종류를 함께 사용해 추론합니다. 경로를 추론하지 못한 항목도 stream 이름으로 남아 검색, 미리듣기, 선택할 수 있습니다.
+- picker에서 FMOD 경로, stream 이름, bank 이름을 검색할 수 있습니다. Space 또는 `Play`로 미리듣고 `Select`로 `click_sound`에 넣습니다.
+- 실제 미리듣기는 `vgmstream-cli.exe -s {subsong}`으로 선택한 음원만 WAV로 디코딩합니다.
+- WAV와 sound catalog는 `Sound Cache Path`에 저장합니다. DEV, SVN, DB 폴더에는 생성하지 않습니다.
+- 기본 캐시 위치는 `%LOCALAPPDATA%\SuperCreative\DimensionEventEditor\SoundCache`이며, Preference에서 Z 드라이브 같은 외부 위치로 바꿀 수 있습니다.
+- 첫 실행에서 전체 WAV를 미리 만들지 묻습니다. `예`는 스플래시 화면에서 전체 추출 후 에디터를 열고, `아니요`는 각 음원을 처음 재생할 때만 캐시합니다.
+- bank 크기나 수정 시간이 바뀌면 해당 음원의 캐시 키가 달라져 새 WAV를 생성합니다.
 
 ## QA와 검증
 
@@ -305,11 +333,19 @@ QA reload errors: 0
 최근 release 검증 기준:
 
 ```text
-50 events / 367 groups / 397 choices
+50 events / 365 groups / 381 choices
 QA diff entries: 0
 QA reload errors: 0
 Round-trip diff entries: 0
 ```
+
+전체 FMOD 색인과 디코더 확인:
+
+```powershell
+dotnet .\bin\Release\net10.0-windows\DimensionEventEditor.dll --sound-probe "D:\repos\dev" "$env:TEMP\DimensionEventEditorSoundProbe" --decode-first
+```
+
+현재 DEV 검증 결과는 62개 bank에서 96,469개 sound를 색인했고, 첫 항목 WAV 디코딩까지 성공했습니다. 두 번째 catalog 로드는 외부 색인을 재사용합니다.
 
 스킬 패키지의 검증 스크립트:
 

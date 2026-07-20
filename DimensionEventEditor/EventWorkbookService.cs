@@ -20,6 +20,9 @@ public static class EventWorkbookService
     public const string DefaultTextExportId = "251023.lbh9517_142227";
     public const string BattleResultChoiceSuffix = "_battle_result";
 
+    private static readonly Regex InvisibleFormatCharacters = new(@"\p{Cf}", RegexOptions.Compiled);
+    private static readonly Regex NonStandardWhitespaceCharacters = new(@"[\p{Z}\t\r\n\f\v]", RegexOptions.Compiled);
+
     private static readonly string[] EventInfoSheetNames =
     [
         "이벤트별 요약",
@@ -127,8 +130,6 @@ public static class EventWorkbookService
                 var resultChoice = FindBattleResultChoice(workbook, group);
                 if (resultChoice is null)
                     issues.Add(Error($"{group.Id}: battle 결과용 선택지 row가 없습니다. ({BattleResultChoiceId(group.Id)})"));
-                else if (Same(resultChoice.SuccessRewardType, "none"))
-                    issues.Add(Warning($"{group.Id}: battle 성공 보상이 없습니다."));
             }
             if (!Same(group.NextAction, "battle") && NotBlank(group.StageId))
                 issues.Add(Warning($"{group.Id}: stage_id가 있지만 next_action이 battle이 아닙니다. ({group.NextAction})"));
@@ -202,6 +203,7 @@ public static class EventWorkbookService
 
     public static List<DiffEntry> BuildDiff(EventWorkbook edited)
     {
+        NormalizeBackgroundKeys(edited);
         NormalizeExitTerminals(edited);
         var original = File.Exists(edited.SourcePath) ? Load(edited.SourcePath, normalizeExitTerminals: false) : new EventWorkbook();
         var diff = new List<DiffEntry>();
@@ -297,6 +299,7 @@ public static class EventWorkbookService
 
     public static void SaveAs(EventWorkbook model, string outputPath, bool createBackup, string? textExportId = null)
     {
+        NormalizeBackgroundKeys(model);
         NormalizeExitTerminals(model);
 
         if (createBackup && File.Exists(outputPath))
@@ -317,6 +320,31 @@ public static class EventWorkbookService
         ArrangeWorksheetsForExport(workbook);
         workbook.SaveAs(outputPath);
         FixWorksheetDimensions(outputPath, model);
+    }
+
+    public static int NormalizeBackgroundKeys(EventWorkbook workbook)
+    {
+        var changed = 0;
+        foreach (var group in workbook.Groups)
+        {
+            var sanitized = SanitizeBackgroundKey(group.Background);
+            if (string.Equals(group.Background, sanitized, StringComparison.Ordinal))
+                continue;
+
+            group.Background = sanitized;
+            changed++;
+        }
+        return changed;
+    }
+
+    public static string SanitizeBackgroundKey(string? value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return "";
+
+        var sanitized = InvisibleFormatCharacters.Replace(value, "");
+        sanitized = NonStandardWhitespaceCharacters.Replace(sanitized, " ");
+        return sanitized.Trim();
     }
 
     public static int NormalizeExitTerminals(EventWorkbook workbook)
@@ -1558,28 +1586,30 @@ public static class EventWorkbookService
 
     private static void LoadChoices(IXLWorksheet ws, EventWorkbook model)
     {
+        var columns = ChoiceColumns(ws);
         for (var row = 4; row <= LastRow(ws); row++)
         {
-            var id = Cell(ws, row, 1);
-            if (Blank(id) && !HasDataInColumns(ws, row, 2, 15))
+            var id = Cell(ws, row, columns["id"]);
+            if (Blank(id) && !HasDataInColumns(ws, row, 2, columns.Values.Max()))
                 continue;
             model.Choices.Add(new EventChoiceRow
             {
                 Id = id,
-                Memo = Cell(ws, row, 2),
-                ExportId = Default(Cell(ws, row, 3), DefaultEventExportId),
-                GroupId = Cell(ws, row, 4),
-                Seq = Int(Cell(ws, row, 5), 1),
-                ChoiceTextTid = Cell(ws, row, 6),
-                CostType = Default(Cell(ws, row, 7), "none"),
-                CostAmount = ParseUtil.NullableInt(Cell(ws, row, 8)),
-                SuccessRate = ParseUtil.NullableInt(Cell(ws, row, 9)),
-                SuccessRewardType = Default(Cell(ws, row, 10), "none"),
-                SuccessRewardAmount = ParseUtil.NullableInt(Cell(ws, row, 11)),
-                SuccessNextGroupId = Cell(ws, row, 12),
-                FailRewardType = Default(Cell(ws, row, 13), "none"),
-                FailRewardAmount = ParseUtil.NullableInt(Cell(ws, row, 14)),
-                FailNextGroupId = Cell(ws, row, 15)
+                Memo = Cell(ws, row, columns["memo"]),
+                ExportId = Default(Cell(ws, row, columns["export_id"]), DefaultEventExportId),
+                GroupId = Cell(ws, row, columns["group_id"]),
+                ClickSound = Cell(ws, row, columns["click_sound"]),
+                Seq = Int(Cell(ws, row, columns["seq"]), 1),
+                ChoiceTextTid = Cell(ws, row, columns["choice_text"]),
+                CostType = Default(Cell(ws, row, columns["cost_type"]), "none"),
+                CostAmount = ParseUtil.NullableInt(Cell(ws, row, columns["cost_amount"])),
+                SuccessRate = ParseUtil.NullableInt(Cell(ws, row, columns["success_rate"])),
+                SuccessRewardType = Default(Cell(ws, row, columns["success_reward_type"]), "none"),
+                SuccessRewardAmount = ParseUtil.NullableInt(Cell(ws, row, columns["success_reward_amount"])),
+                SuccessNextGroupId = Cell(ws, row, columns["success_next_group_id"]),
+                FailRewardType = Default(Cell(ws, row, columns["fail_reward_type"]), "none"),
+                FailRewardAmount = ParseUtil.NullableInt(Cell(ws, row, columns["fail_reward_amount"])),
+                FailNextGroupId = Cell(ws, row, columns["fail_next_group_id"])
             });
         }
     }
@@ -1603,7 +1633,7 @@ public static class EventWorkbookService
         for (var row = 2; row <= LastRow(ws); row++)
         {
             var tid = Cell(ws, row, tidCol);
-            var text = Cell(ws, row, textCol);
+            var text = DecodeTextSheetNewlines(Cell(ws, row, textCol));
             var comment = Cell(ws, row, commentCol);
             var exportId = Cell(ws, row, exportIdCol);
             if (Blank(tid))
@@ -1738,25 +1768,27 @@ public static class EventWorkbookService
     private static void WriteChoices(IXLWorksheet ws, EventWorkbook model)
     {
         EnsureChoiceHeaders(ws);
+        var columns = ChoiceColumns(ws);
         ClearData(ws, 4);
         var row = 4;
         foreach (var c in model.Choices.OrderBy(c => c.GroupId).ThenBy(c => c.Seq).ThenBy(c => c.Id))
         {
-            ws.Cell(row, 1).Value = c.Id;
-            ws.Cell(row, 2).Value = c.Memo;
-            ws.Cell(row, 3).Value = c.ExportId;
-            ws.Cell(row, 4).Value = c.GroupId;
-            ws.Cell(row, 5).Value = c.Seq;
-            ws.Cell(row, 6).Value = c.ChoiceTextTid;
-            ws.Cell(row, 7).Value = c.CostType;
-            SetNullable(ws.Cell(row, 8), c.CostAmount);
-            SetNullable(ws.Cell(row, 9), c.SuccessRate);
-            ws.Cell(row, 10).Value = c.SuccessRewardType;
-            SetNullable(ws.Cell(row, 11), c.SuccessRewardAmount);
-            ws.Cell(row, 12).Value = c.SuccessNextGroupId;
-            ws.Cell(row, 13).Value = c.FailRewardType;
-            SetNullable(ws.Cell(row, 14), c.FailRewardAmount);
-            ws.Cell(row, 15).Value = c.FailNextGroupId;
+            ws.Cell(row, columns["id"]).Value = c.Id;
+            ws.Cell(row, columns["memo"]).Value = c.Memo;
+            ws.Cell(row, columns["export_id"]).Value = c.ExportId;
+            ws.Cell(row, columns["group_id"]).Value = c.GroupId;
+            ws.Cell(row, columns["click_sound"]).Value = c.ClickSound;
+            ws.Cell(row, columns["seq"]).Value = c.Seq;
+            ws.Cell(row, columns["choice_text"]).Value = c.ChoiceTextTid;
+            ws.Cell(row, columns["cost_type"]).Value = c.CostType;
+            SetNullable(ws.Cell(row, columns["cost_amount"]), c.CostAmount);
+            SetNullable(ws.Cell(row, columns["success_rate"]), c.SuccessRate);
+            ws.Cell(row, columns["success_reward_type"]).Value = c.SuccessRewardType;
+            SetNullable(ws.Cell(row, columns["success_reward_amount"]), c.SuccessRewardAmount);
+            ws.Cell(row, columns["success_next_group_id"]).Value = c.SuccessNextGroupId;
+            ws.Cell(row, columns["fail_reward_type"]).Value = c.FailRewardType;
+            SetNullable(ws.Cell(row, columns["fail_reward_amount"]), c.FailRewardAmount);
+            ws.Cell(row, columns["fail_next_group_id"]).Value = c.FailNextGroupId;
             row++;
         }
     }
@@ -1789,11 +1821,19 @@ public static class EventWorkbookService
                 tidToRow[entry.Tid] = row;
             }
             ws.Cell(row, 1).Value = entry.Tid;
-            ws.Cell(row, 2).Value = entry.Text;
+            ws.Cell(row, 2).Value = EncodeTextSheetNewlines(entry.Text);
             ws.Cell(row, 3).Value = entry.Comment;
             ws.Cell(row, 4).Value = entry.ExportId;
         }
     }
+
+    private static string DecodeTextSheetNewlines(string value) =>
+        value.Replace("\\n", "\n", StringComparison.Ordinal);
+
+    private static string EncodeTextSheetNewlines(string value) =>
+        value.Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Replace("\n", "\\n", StringComparison.Ordinal);
 
     private static void WriteEventInfoSheets(XLWorkbook workbook, EventWorkbook model)
     {
@@ -2005,7 +2045,7 @@ public static class EventWorkbookService
             .ToDictionary(g => g.Key, g =>
             {
                 var c = g.Last();
-                return string.Join("|", c.Memo, c.GroupId, c.Seq, c.ChoiceTextTid, c.CostType, c.CostAmount, c.SuccessRate, c.SuccessRewardType, c.SuccessRewardAmount, c.SuccessNextGroupId, c.FailRewardType, c.FailRewardAmount, c.FailNextGroupId);
+                return string.Join("|", c.Memo, c.GroupId, c.ClickSound, c.Seq, c.ChoiceTextTid, c.CostType, c.CostAmount, c.SuccessRate, c.SuccessRewardType, c.SuccessRewardAmount, c.SuccessNextGroupId, c.FailRewardType, c.FailRewardAmount, c.FailNextGroupId);
             }, StringComparer.OrdinalIgnoreCase);
 
     private static Dictionary<string, string> SnapshotText(IEnumerable<TextEntry> entries) =>
@@ -2130,6 +2170,7 @@ public static class EventWorkbookService
         Memo = source.Memo,
         ExportId = source.ExportId,
         GroupId = source.GroupId,
+        ClickSound = source.ClickSound,
         Seq = source.Seq,
         ChoiceTextTid = source.ChoiceTextTid,
         CostType = source.CostType,
@@ -2184,6 +2225,7 @@ public static class EventWorkbookService
         target.Memo = source.Memo;
         target.ExportId = source.ExportId;
         target.GroupId = source.GroupId;
+        target.ClickSound = source.ClickSound;
         target.Seq = source.Seq;
         target.ChoiceTextTid = source.ChoiceTextTid;
         target.CostType = source.CostType;
@@ -2295,20 +2337,58 @@ public static class EventWorkbookService
 
     private static void EnsureChoiceHeaders(IXLWorksheet ws)
     {
+        var hasClickSound = Enumerable.Range(1, Math.Max(1, ws.LastColumnUsed()?.ColumnNumber() ?? 1))
+            .Any(column => Same(Cell(ws, 3, column), "click_sound"));
+        if (!hasClickSound)
+        {
+            ws.Column(5).InsertColumnsBefore(1);
+            ws.Cell(1, 5).Value = Cell(ws, 1, 4);
+        }
         ws.Cell(3, 1).Value = "id";
         ws.Cell(3, 3).Value = "export_id";
         ws.Cell(3, 4).Value = "group_id";
-        ws.Cell(3, 5).Value = "seq";
-        ws.Cell(3, 6).Value = "choice_text";
-        ws.Cell(3, 7).Value = "cost_type";
-        ws.Cell(3, 8).Value = "cost_amount";
-        ws.Cell(3, 9).Value = "success_rate";
-        ws.Cell(3, 10).Value = "success_reward_type";
-        ws.Cell(3, 11).Value = "success_reward_amount";
-        ws.Cell(3, 12).Value = "success_next_group_id";
-        ws.Cell(3, 13).Value = "fail_reward_type";
-        ws.Cell(3, 14).Value = "fail_reward_amount";
-        ws.Cell(3, 15).Value = "fail_next_group_id";
+        ws.Cell(3, 5).Value = "click_sound";
+        ws.Cell(3, 6).Value = "seq";
+        ws.Cell(3, 7).Value = "choice_text";
+        ws.Cell(3, 8).Value = "cost_type";
+        ws.Cell(3, 9).Value = "cost_amount";
+        ws.Cell(3, 10).Value = "success_rate";
+        ws.Cell(3, 11).Value = "success_reward_type";
+        ws.Cell(3, 12).Value = "success_reward_amount";
+        ws.Cell(3, 13).Value = "success_next_group_id";
+        ws.Cell(3, 14).Value = "fail_reward_type";
+        ws.Cell(3, 15).Value = "fail_reward_amount";
+        ws.Cell(3, 16).Value = "fail_next_group_id";
+    }
+
+    private static Dictionary<string, int> ChoiceColumns(IXLWorksheet ws)
+    {
+        var columns = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["memo"] = 2
+        };
+        var lastColumn = Math.Max(16, ws.LastColumnUsed()?.ColumnNumber() ?? 16);
+        for (var column = 1; column <= lastColumn; column++)
+        {
+            var header = Cell(ws, 3, column);
+            if (NotBlank(header))
+                columns[header] = column;
+        }
+
+        // Old workbooks do not have click_sound. Point it at an empty virtual column so
+        // seq and every following value are still read from their original headers.
+        columns.TryAdd("click_sound", lastColumn + 1);
+
+        var defaults = new[]
+        {
+            "id", "memo", "export_id", "group_id", "click_sound", "seq", "choice_text",
+            "cost_type", "cost_amount", "success_rate", "success_reward_type",
+            "success_reward_amount", "success_next_group_id", "fail_reward_type",
+            "fail_reward_amount", "fail_next_group_id"
+        };
+        for (var index = 0; index < defaults.Length; index++)
+            columns.TryAdd(defaults[index], index + 1);
+        return columns;
     }
 
     private static void ClearData(IXLWorksheet ws, int startRow)

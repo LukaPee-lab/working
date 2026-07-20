@@ -181,6 +181,17 @@ public static class NexusPathResolver
     public static string GetBackgroundImageRoot(string devRoot)
         => Path.Combine(devRoot, RelativeBackgroundImagePath);
 
+    public static string ResolveSoundCacheRoot(AppSettings settings)
+    {
+        if (!string.IsNullOrWhiteSpace(settings.SoundCacheRoot))
+        {
+            try { return Path.GetFullPath(settings.SoundCacheRoot.Trim().Trim('"')); }
+            catch { }
+        }
+        return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "SuperCreative", "DimensionEventEditor", "SoundCache");
+    }
+
     private static IEnumerable<string> PlayerExeCandidates(AppSettings settings)
     {
         var appDir = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);

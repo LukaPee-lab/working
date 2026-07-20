@@ -209,6 +209,7 @@ public partial class MainWindow : Window
             _isLoadingWorkbook = true;
             busy = ShowBusy(status);
             var workbook = await Task.Run(() => EventWorkbookService.Load(path));
+            var sanitizedBackgroundCount = EventWorkbookService.NormalizeBackgroundKeys(workbook);
             _workbook = workbook;
             _settings.EventWorkbookPath = path;
             _settings.ReposRoot = FindReposRoot(path);
@@ -237,6 +238,8 @@ public partial class MainWindow : Window
                 BuildEventInspector();
             }
             Log($"로드 완료: {IoPath.GetFileName(path)} / {_workbook.Events.Count} events / {_workbook.Groups.Count} groups / {_workbook.Choices.Count} choices / {path}");
+            if (sanitizedBackgroundCount > 0)
+                Log($"background의 보이지 않는 문자 {sanitizedBackgroundCount}건을 제거했습니다. Export Preview에서 변경 내용을 확인하세요.");
         }
         catch (Exception ex)
         {
@@ -381,7 +384,8 @@ public partial class MainWindow : Window
     {
         var currentDbPath = _settings.EventWorkbookPath ?? _workbook?.SourcePath;
         var currentDevRoot = NexusPathResolver.ResolveDefaultDevRoot(_settings) ?? _settings.DevRoot;
-        var dialog = new PreferencesWindow(currentDbPath, currentDevRoot)
+        var currentSoundCacheRoot = NexusPathResolver.ResolveSoundCacheRoot(_settings);
+        var dialog = new PreferencesWindow(currentDbPath, currentDevRoot, currentSoundCacheRoot)
         {
             Owner = this
         };
@@ -392,6 +396,10 @@ public partial class MainWindow : Window
         _settings.EventWorkbookPath = dialog.DbTablePath;
         _settings.ReposRoot = FindReposRoot(dialog.DbTablePath);
         _settings.DevRoot = dialog.ClientPath;
+        var soundCacheChanged = !string.Equals(_settings.SoundCacheRoot, dialog.SoundCachePath, StringComparison.OrdinalIgnoreCase);
+        _settings.SoundCacheRoot = dialog.SoundCachePath;
+        if (soundCacheChanged)
+            _settings.SoundCacheMode = null;
         _settings.BackgroundImageRoot = NexusPathResolver.GetBackgroundImageRoot(dialog.ClientPath);
         if (!string.IsNullOrWhiteSpace(_settings.LastBackgroundImagePath)
             && !_settings.LastBackgroundImagePath.StartsWith(_settings.BackgroundImageRoot, StringComparison.OrdinalIgnoreCase))
@@ -3819,6 +3827,7 @@ public partial class MainWindow : Window
         AddText("ID", choice.Id, v => choice.Id = v, readOnly: true);
         AddText("메모/선택지 문구", choice.Memo, v => { choice.Memo = v; DrawGraph(); });
         AddText("choice_text TID", choice.ChoiceTextTid, v => choice.ChoiceTextTid = v);
+        AddClickSoundText(choice);
         AddText("seq", choice.Seq.ToString(), v => choice.Seq = ParseUtil.NullableInt(v) ?? choice.Seq);
         AddText("비용 타입 cost_type", choice.CostType, v => choice.CostType = string.IsNullOrWhiteSpace(v) ? "none" : v);
         AddText("비용 수량 cost_amount", choice.CostAmount?.ToString() ?? "", v => choice.CostAmount = ParseUtil.NullableInt(v));
@@ -3926,7 +3935,51 @@ public partial class MainWindow : Window
         {
             group.Background = v;
             afterChanged?.Invoke();
-        }, trailingElement: picker);
+        }, trailingElement: picker, normalizer: EventWorkbookService.SanitizeBackgroundKey);
+    }
+
+    private void AddClickSoundText(EventChoiceRow choice)
+    {
+        TextEditHandle? handle = null;
+        var picker = new Button
+        {
+            Content = "◎",
+            Width = 30,
+            Height = 28,
+            MinHeight = 28,
+            Padding = new Thickness(0),
+            Margin = new Thickness(6, 0, 0, 0),
+            ToolTip = "FMOD click_sound 선택 및 미리듣기",
+            FontSize = 14,
+            FontWeight = FontWeights.Bold
+        };
+        picker.Click += (_, _) =>
+        {
+            if (handle is null)
+                return;
+            var devRoot = NexusPathResolver.ResolveDefaultDevRoot(_settings);
+            if (devRoot is null)
+            {
+                ShowPreferences();
+                devRoot = NexusPathResolver.ResolveDefaultDevRoot(_settings);
+            }
+            if (devRoot is null)
+                return;
+
+            var cacheRoot = NexusPathResolver.ResolveSoundCacheRoot(_settings);
+            _settings.DevRoot = devRoot;
+            _settings.SoundCacheRoot = cacheRoot;
+            NexusPathResolver.SaveSettings(_settings);
+            var dialog = new ClickSoundPickerWindow(devRoot, cacheRoot, handle.Box.Text)
+            {
+                Owner = this
+            };
+            if (dialog.ShowDialog() == true && dialog.SelectedClickSound is not null)
+                handle.Apply(dialog.SelectedClickSound, true);
+        };
+
+        handle = AddTextEditor("click_sound", choice.ClickSound, value => choice.ClickSound = value,
+            trailingElement: picker);
     }
 
     private Action AddBackgroundPreview(ChoiceGroupRow group)
@@ -4072,7 +4125,7 @@ public partial class MainWindow : Window
 
     private static string NormalizeBackgroundKey(string background)
     {
-        var key = background.Trim().Trim('"');
+        var key = EventWorkbookService.SanitizeBackgroundKey(background).Trim('"');
         return key;
     }
 
@@ -4095,7 +4148,13 @@ public partial class MainWindow : Window
         }
     }
 
-    private TextEditHandle AddTextEditor(string label, string value, Action<string> setter, bool readOnly = false, UIElement? trailingElement = null)
+    private TextEditHandle AddTextEditor(
+        string label,
+        string value,
+        Action<string> setter,
+        bool readOnly = false,
+        UIElement? trailingElement = null,
+        Func<string, string>? normalizer = null)
     {
         var header = new StackPanel
         {
@@ -4135,7 +4194,7 @@ public partial class MainWindow : Window
         {
             if (readOnly)
                 return;
-            var next = raw.Trim();
+            var next = normalizer?.Invoke(raw.Trim()) ?? raw.Trim();
             if (string.Equals(current, next, StringComparison.Ordinal))
                 return;
             if (pushUndo)
@@ -4218,7 +4277,7 @@ public partial class MainWindow : Window
         {
             "event_name", "first_group_id", "floor_restriction", "diff_restriction",
             "situation_text", "next_action", "background", "npc_id", "stage_id",
-            "choice_text", "cost_type", "cost_amount", "success_rate",
+            "choice_text", "click_sound", "cost_type", "cost_amount", "success_rate",
             "success_reward_type", "success_reward_amount", "success_next_group_id",
             "fail_reward_type", "fail_reward_amount", "fail_next_group_id",
             "rarity", "weight", "seq"
@@ -4730,8 +4789,6 @@ public partial class MainWindow : Window
                 }
                 else
                 {
-                    if (string.Equals(result.SuccessRewardType, "none", StringComparison.OrdinalIgnoreCase))
-                        issues.Add(FlowWarning($"{group.Id}: Battle T 성공 보상이 없습니다."));
                     EnqueueBattleBranch(result, "T", result.SuccessNextGroupId);
                     EnqueueBattleBranch(result, "F", result.FailNextGroupId);
                 }
@@ -5175,6 +5232,7 @@ public partial class MainWindow : Window
         Memo = source.Memo,
         ExportId = source.ExportId,
         GroupId = source.GroupId,
+        ClickSound = source.ClickSound,
         Seq = source.Seq,
         ChoiceTextTid = source.ChoiceTextTid,
         CostType = source.CostType,

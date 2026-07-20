@@ -8,6 +8,7 @@ namespace DimensionEventEditor;
 public sealed class SplashWindow : Window
 {
     private readonly TextBlock _status;
+    private readonly ProgressBar _progress;
 
     public SplashWindow(string status)
     {
@@ -33,7 +34,7 @@ public sealed class SplashWindow : Window
         };
         imageFrame.Children.Add(image);
 
-        var progress = new ProgressBar
+        _progress = new ProgressBar
         {
             Height = 7,
             Minimum = 0,
@@ -45,7 +46,7 @@ public sealed class SplashWindow : Window
             BorderThickness = new Thickness(0),
             VerticalAlignment = VerticalAlignment.Bottom
         };
-        imageFrame.Children.Add(progress);
+        imageFrame.Children.Add(_progress);
         Grid.SetRow(imageFrame, 0);
         root.Children.Add(imageFrame);
 
@@ -116,4 +117,11 @@ public sealed class SplashWindow : Window
     }
 
     public void SetStatus(string status) => _status.Text = status;
+
+    public void SetProgress(int value, int maximum)
+    {
+        _progress.IsIndeterminate = maximum <= 0;
+        _progress.Maximum = Math.Max(1, maximum);
+        _progress.Value = Math.Clamp(value, 0, Math.Max(1, maximum));
+    }
 }

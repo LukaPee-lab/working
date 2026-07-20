@@ -5,6 +5,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         mc:Ignorable="d"
         Title="Dimension Exploration Event Editor" Height="920" Width="1540"
+        Icon="Assets/AppIcon.ico"
         Background="#1b1b1b" Foreground="#d8d8d8"
         WindowState="Maximized"
         PreviewKeyDown="Window_PreviewKeyDown"
