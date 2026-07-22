@@ -27,7 +27,6 @@ public partial class NexusHubWindow : Window
         ArgumentNullException.ThrowIfNull(researchEditor);
 
         InitializeComponent();
-        WindowState = WindowState.Maximized;
 
         _onWorkspaceSelected = onWorkspaceSelected;
         ApplyCardState(EventCardButton, EventStatusIndicator, EventStatusText, eventEditor);
