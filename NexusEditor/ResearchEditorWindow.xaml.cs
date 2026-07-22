@@ -3545,7 +3545,7 @@ public partial class ResearchEditorWindow
         }
         if (e.Key is Key.Delete or Key.Back)
         {
-            DeleteSelectedNodes();
+            DeleteCurrentSelection();
             e.Handled = true;
         }
         else if (e.Key == Key.F)
@@ -3793,16 +3793,48 @@ public partial class ResearchEditorWindow
             category);
     }
 
-    private void DeleteSelectedNodes()
+    private void DeleteCurrentSelection()
     {
-        if (_workbook is null || _selectedNodeIdentities.Count == 0)
+        if (_workbook is null)
             return;
-        if (ThemedMessageBox.Show($"선택한 연구 노드 {_selectedNodeIdentities.Count:N0}개를 삭제할까요? 참조 중인 조건선도 함께 제거됩니다.",
+
+        if (_selectedNodeIdentities.Count > 0)
+        {
+            DeleteSelectedNodes();
+            return;
+        }
+
+        if (_selectedStepColumns.Count == 0)
+            return;
+
+        var identities = VisibleNodes()
+            .Where(node => _selectedStepColumns.Contains(node.Column))
+            .Select(node => node.RowIdentity)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (identities.Length == 0)
+            return;
+
+        DeleteNodes(
+            identities,
+            $"선택한 STEP {_selectedStepColumns.Count:N0}개의 연구 노드 {identities.Length:N0}개를 삭제할까요? 참조 중인 조건선도 함께 제거됩니다.");
+    }
+
+    private void DeleteSelectedNodes() =>
+        DeleteNodes(
+            _selectedNodeIdentities.ToArray(),
+            $"선택한 연구 노드 {_selectedNodeIdentities.Count:N0}개를 삭제할까요? 참조 중인 조건선도 함께 제거됩니다.");
+
+    private void DeleteNodes(IReadOnlyCollection<string> identities, string confirmation)
+    {
+        if (_workbook is null || identities.Count == 0)
+            return;
+        if (ThemedMessageBox.Show(confirmation,
                 "연구 노드 삭제", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
             return;
         CloseQuickNodePopup();
         PushUndo();
-        foreach (var identity in _selectedNodeIdentities.ToArray())
+        foreach (var identity in identities)
         {
             var result = ResearchWorkbookService.TryDeleteNode(_workbook, identity, removeConditionReferences: true);
             if (!result.Success)
@@ -3813,6 +3845,7 @@ public partial class ResearchEditorWindow
             }
         }
         _selectedNodeIdentities.Clear();
+        _selectedStepColumns.Clear();
         _primaryNode = null;
         RenderGraph();
         ScheduleHierarchyRefresh();
