@@ -408,39 +408,101 @@
                                    Focusable="True"
                                    Placement="Right"
                                    StaysOpen="True">
-                                <Border Width="310"
+                                <Border Width="370"
+                                        MaxHeight="760"
                                         Margin="10"
                                         Padding="11"
                                         Background="#2a2a2a"
                                         BorderBrush="#d6b94f"
                                         BorderThickness="1.5"
                                         CornerRadius="4">
-                                    <StackPanel>
-                                        <Grid Margin="0,0,0,9">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*"/>
-                                                <ColumnDefinition Width="Auto"/>
-                                            </Grid.ColumnDefinitions>
-                                            <StackPanel>
-                                                <TextBlock Text="빠른 노드 편집" FontSize="14" FontWeight="SemiBold" Foreground="#f1d56a"/>
-                                                <TextBlock x:Name="QuickNodeIdText" Margin="0,2,0,0" Foreground="#8bc8f1"
-                                                           FontSize="10.5" TextTrimming="CharacterEllipsis"/>
-                                            </StackPanel>
-                                            <Button Grid.Column="1" Style="{StaticResource PanelTabCloseButton}"
-                                                    ToolTip="닫기" Click="QuickNodeCloseButton_Click"/>
-                                        </Grid>
+                                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                                  HorizontalScrollBarVisibility="Disabled">
+                                        <StackPanel>
+                                            <Grid Margin="0,0,0,9">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel>
+                                                    <TextBlock Text="빠른 노드 편집" FontSize="14" FontWeight="SemiBold" Foreground="#f1d56a"/>
+                                                    <TextBlock x:Name="QuickNodeIdText" Margin="0,2,0,0" Foreground="#8bc8f1"
+                                                               FontSize="10.5" TextTrimming="CharacterEllipsis"/>
+                                                </StackPanel>
+                                                <Button Grid.Column="1" Style="{StaticResource PanelTabCloseButton}"
+                                                        ToolTip="닫기" Click="QuickNodeCloseButton_Click"/>
+                                            </Grid>
 
-                                        <TextBlock Text="image" Foreground="#bdbdbd" Margin="0,0,0,3"/>
-                                        <TextBox x:Name="QuickNodeImageBox" Margin="0,0,0,8"/>
-                                        <TextBlock Text="active_item_id" Foreground="#bdbdbd" Margin="0,0,0,3"/>
-                                        <TextBox x:Name="QuickNodeActiveItemBox" Margin="0,0,0,8"/>
-                                        <TextBlock Text="active_item_value" Foreground="#bdbdbd" Margin="0,0,0,3"/>
-                                        <TextBox x:Name="QuickNodeActiveValueBox" Margin="0,0,0,8"/>
-                                        <TextBlock Text="active_step" Foreground="#bdbdbd" Margin="0,0,0,3"/>
-                                        <TextBox x:Name="QuickNodeActiveStepBox" Margin="0,0,0,8"/>
-                                        <TextBlock x:Name="QuickNodeTotalText" Foreground="#999999" Margin="0,0,0,8"/>
-                                        <Button Content="적용" Height="30" Click="QuickNodeApplyButton_Click"/>
-                                    </StackPanel>
+                                            <Grid Margin="0,0,0,11">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <RadioButton x:Name="QuickNodeSettingsTab"
+                                                             Grid.Column="0"
+                                                             GroupName="QuickEditorTabs"
+                                                             Style="{StaticResource FilterToggle}"
+                                                             Margin="0"
+                                                             Content="노드 설정"
+                                                             IsChecked="True"
+                                                             Click="QuickEditorTab_Click"/>
+                                                <RadioButton x:Name="QuickEffectSettingsTab"
+                                                             Grid.Column="1"
+                                                             GroupName="QuickEditorTabs"
+                                                             Style="{StaticResource FilterToggle}"
+                                                             Margin="3,0,0,0"
+                                                             Content="효과 설정"
+                                                             Click="QuickEditorTab_Click"/>
+                                            </Grid>
+
+                                            <StackPanel x:Name="QuickNodeSettingsPanel">
+                                                <TextBlock Text="image" Foreground="#bdbdbd" Margin="0,0,0,3"/>
+                                                <TextBox x:Name="QuickNodeImageBox" Margin="0,0,0,8"/>
+                                                <TextBlock Text="active_item_id" Foreground="#bdbdbd" Margin="0,0,0,3"/>
+                                                <TextBox x:Name="QuickNodeActiveItemBox" Margin="0,0,0,8"/>
+                                                <TextBlock Text="active_item_value" Foreground="#bdbdbd" Margin="0,0,0,3"/>
+                                                <TextBox x:Name="QuickNodeActiveValueBox" Margin="0,0,0,8"/>
+                                                <TextBlock Text="active_step" Foreground="#bdbdbd" Margin="0,0,0,3"/>
+                                                <TextBox x:Name="QuickNodeActiveStepBox" Margin="0,0,0,8"/>
+                                                <TextBlock x:Name="QuickNodeTotalText" Foreground="#999999" Margin="0,0,0,8"/>
+                                            </StackPanel>
+
+                                            <StackPanel x:Name="QuickEffectSettingsPanel" Visibility="Collapsed">
+                                                <StackPanel x:Name="QuickEffectMissingPanel" Visibility="Collapsed">
+                                                    <TextBlock Text="연결된 nexus_effect 행이 없습니다."
+                                                               Foreground="#eb6969" TextWrapping="Wrap" Margin="0,2,0,8"/>
+                                                    <Button Content="효과 행 생성" Height="30" Margin="0,0,0,8"
+                                                            Click="QuickEffectCreateButton_Click"/>
+                                                </StackPanel>
+                                                <StackPanel x:Name="QuickEffectFieldsPanel">
+                                                    <TextBlock Text="effect id" Foreground="#bdbdbd" Margin="0,0,0,3"/>
+                                                    <TextBox x:Name="QuickEffectIdBox" IsReadOnly="True" Margin="0,0,0,8"/>
+                                                    <TextBlock Text="effect export_id" Foreground="#bdbdbd" Margin="0,0,0,3"/>
+                                                    <TextBox x:Name="QuickEffectExportIdBox" Margin="0,0,0,8"/>
+                                                    <TextBlock Text="parent_effect" Foreground="#bdbdbd" Margin="0,0,0,3"/>
+                                                    <TextBox x:Name="QuickEffectParentEffectBox" Margin="0,0,0,8"/>
+                                                    <TextBlock Text="group memo" Foreground="#bdbdbd" Margin="0,0,0,3"/>
+                                                    <TextBox x:Name="QuickEffectGroupMemoBox" Margin="0,0,0,8"/>
+                                                    <TextBlock Text="memo" Foreground="#bdbdbd" Margin="0,0,0,3"/>
+                                                    <TextBox x:Name="QuickEffectMemoBox" Height="58" AcceptsReturn="True"
+                                                             TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Margin="0,0,0,8"/>
+                                                    <TextBlock Text="type" Foreground="#bdbdbd" Margin="0,0,0,3"/>
+                                                    <TextBox x:Name="QuickEffectTypeBox" Margin="0,0,0,8"/>
+                                                    <TextBlock Text="condition" Foreground="#bdbdbd" Margin="0,0,0,3"/>
+                                                    <TextBox x:Name="QuickEffectConditionBox" Margin="0,0,0,8"/>
+                                                    <TextBlock Text="value" Foreground="#bdbdbd" Margin="0,0,0,3"/>
+                                                    <TextBox x:Name="QuickEffectValueBox" Margin="0,0,0,8"/>
+                                                    <TextBlock Text="effect column 9" Foreground="#bdbdbd" Margin="0,0,0,3"/>
+                                                    <TextBox x:Name="QuickEffectTestBox" Margin="0,0,0,8"/>
+                                                    <TextBlock Text="effect column 10" Foreground="#bdbdbd" Margin="0,0,0,3"/>
+                                                    <TextBox x:Name="QuickEffectExtraBox" Margin="0,0,0,8"/>
+                                                </StackPanel>
+                                            </StackPanel>
+
+                                            <Button x:Name="QuickEditorApplyButton" Content="적용" Height="30"
+                                                    Click="QuickNodeApplyButton_Click"/>
+                                        </StackPanel>
+                                    </ScrollViewer>
                                 </Border>
                             </Popup>
                         </Grid>

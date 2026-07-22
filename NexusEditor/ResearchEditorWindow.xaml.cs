@@ -72,6 +72,7 @@ public partial class ResearchEditorWindow : Window
     private bool _allowClose;
     private int _permissionFilter;
     private bool _quickNodePopupRequested;
+    private bool _quickEditorShowsEffect;
     private bool _updatingPermissionFilters;
 
     private bool _isPanning;
@@ -1851,24 +1852,62 @@ public partial class ResearchEditorWindow
 
     private void ShowQuickNodePopup(ResearchNodeRow node, Border card)
     {
+        if (QuickNodePopup.Tag is not string previousIdentity || !Same(previousIdentity, node.RowIdentity))
+            _quickEditorShowsEffect = false;
         _quickNodePopupRequested = true;
         QuickNodePopup.IsOpen = false;
         QuickNodePopup.Tag = node.RowIdentity;
         QuickNodePopup.PlacementTarget = card;
 
         var cardPosition = card.TranslatePoint(new Point(0, 0), SceneViewport);
-        var placeRight = cardPosition.X + NodeWidth + 340 <= SceneViewport.ActualWidth;
+        var placeRight = cardPosition.X + NodeWidth + 400 <= SceneViewport.ActualWidth;
         QuickNodePopup.Placement = placeRight ? PlacementMode.Right : PlacementMode.Left;
         QuickNodePopup.HorizontalOffset = placeRight ? 8 : -8;
         QuickNodePopup.VerticalOffset = -6;
 
+        PopulateQuickEditorFields(node);
+        UpdateQuickEditorTab();
+        QuickNodePopup.IsOpen = true;
+    }
+
+    private void PopulateQuickEditorFields(ResearchNodeRow node)
+    {
         QuickNodeIdText.Text = node.Id;
         QuickNodeImageBox.Text = node.Image;
         QuickNodeActiveItemBox.Text = node.ActiveItemId;
         QuickNodeActiveValueBox.Text = node.ActiveItemValue;
         QuickNodeActiveStepBox.Text = node.ActiveStep?.ToString(CultureInfo.InvariantCulture) ?? "";
         QuickNodeTotalText.Text = $"필요 수량 합계: {node.TotalRequiredHelper?.ToString("G", CultureInfo.InvariantCulture) ?? "0"}";
-        QuickNodePopup.IsOpen = true;
+        PopulateQuickEffectFields(node);
+    }
+
+    private void PopulateQuickEffectFields(ResearchNodeRow node)
+    {
+        var effect = _workbook?.FindEffect(node);
+        var hasEffect = effect is not null;
+        QuickEffectMissingPanel.Visibility = hasEffect ? Visibility.Collapsed : Visibility.Visible;
+        QuickEffectFieldsPanel.Visibility = hasEffect ? Visibility.Visible : Visibility.Collapsed;
+
+        QuickEffectIdBox.Text = effect?.Id ?? "";
+        QuickEffectExportIdBox.Text = effect?.ExportId ?? "";
+        QuickEffectParentEffectBox.Text = effect?.ParentEffect ?? "";
+        QuickEffectGroupMemoBox.Text = effect?.GroupMemo ?? "";
+        QuickEffectMemoBox.Text = effect?.Memo ?? "";
+        QuickEffectTypeBox.Text = effect?.Type ?? "";
+        QuickEffectConditionBox.Text = effect?.Condition ?? "";
+        QuickEffectValueBox.Text = effect?.ValueText ?? "";
+        QuickEffectTestBox.Text = effect?.Test ?? "";
+        QuickEffectExtraBox.Text = effect?.Extra ?? "";
+    }
+
+    private void UpdateQuickEditorTab()
+    {
+        QuickNodeSettingsTab.IsChecked = !_quickEditorShowsEffect;
+        QuickEffectSettingsTab.IsChecked = _quickEditorShowsEffect;
+        QuickNodeSettingsPanel.Visibility = _quickEditorShowsEffect ? Visibility.Collapsed : Visibility.Visible;
+        QuickEffectSettingsPanel.Visibility = _quickEditorShowsEffect ? Visibility.Visible : Visibility.Collapsed;
+        QuickEditorApplyButton.IsEnabled = !_quickEditorShowsEffect
+                                           || QuickEffectFieldsPanel.Visibility == Visibility.Visible;
     }
 
     private void RefreshQuickNodePopup()
@@ -1909,12 +1948,41 @@ public partial class ResearchEditorWindow
         QuickNodePopup.PlacementTarget = null;
         QuickNodePopup.Tag = null;
         if (clearRequest)
+        {
             _quickNodePopupRequested = false;
+            _quickEditorShowsEffect = false;
+        }
     }
 
     private void QuickNodeCloseButton_Click(object sender, RoutedEventArgs e)
     {
         CloseQuickNodePopup();
+        e.Handled = true;
+    }
+
+    private void QuickEditorTab_Click(object sender, RoutedEventArgs e)
+    {
+        _quickEditorShowsEffect = ReferenceEquals(sender, QuickEffectSettingsTab);
+        UpdateQuickEditorTab();
+        e.Handled = true;
+    }
+
+    private void QuickEffectCreateButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_workbook is null || QuickNodePopup.Tag is not string rowIdentity)
+            return;
+        var node = _workbook.Nodes.FirstOrDefault(candidate => Same(candidate.RowIdentity, rowIdentity));
+        if (node is null)
+        {
+            CloseQuickNodePopup();
+            return;
+        }
+
+        CreateMissingEffect(node);
+        PopulateQuickEffectFields(node);
+        UpdateQuickEditorTab();
+        ScheduleValidation();
+        Log(ResearchConsoleSeverity.Info, $"연결 효과 행을 생성했습니다: {node.NexusEffectId}", node.Id);
         e.Handled = true;
     }
 
@@ -1926,6 +1994,12 @@ public partial class ResearchEditorWindow
         if (node is null)
         {
             CloseQuickNodePopup();
+            return;
+        }
+
+        if (_quickEditorShowsEffect)
+        {
+            ApplyQuickEffect(node, e);
             return;
         }
 
@@ -1970,6 +2044,61 @@ public partial class ResearchEditorWindow
         ScheduleValidation();
         UpdateDirtyState();
         Log(ResearchConsoleSeverity.Info, $"빠른 노드 편집을 적용했습니다: {node.Id}", node.Id);
+        e.Handled = true;
+    }
+
+    private void ApplyQuickEffect(ResearchNodeRow node, RoutedEventArgs e)
+    {
+        if (_workbook?.FindEffect(node) is not { } effect)
+        {
+            ThemedMessageBox.Show("연결된 nexus_effect 행이 없습니다. 먼저 효과 행을 생성해 주세요.",
+                "빠른 효과 편집", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var exportId = QuickEffectExportIdBox.Text.Trim();
+        var parentEffect = QuickEffectParentEffectBox.Text.Trim();
+        var groupMemo = QuickEffectGroupMemoBox.Text.Trim();
+        var memo = QuickEffectMemoBox.Text.Trim();
+        var type = QuickEffectTypeBox.Text.Trim();
+        var condition = QuickEffectConditionBox.Text.Trim();
+        var value = QuickEffectValueBox.Text.Trim();
+        var test = QuickEffectTestBox.Text.Trim();
+        var extra = QuickEffectExtraBox.Text.Trim();
+
+        if (string.Equals(effect.ExportId, exportId, StringComparison.Ordinal)
+            && string.Equals(effect.ParentEffect, parentEffect, StringComparison.Ordinal)
+            && string.Equals(effect.GroupMemo, groupMemo, StringComparison.Ordinal)
+            && string.Equals(effect.Memo, memo, StringComparison.Ordinal)
+            && string.Equals(effect.Type, type, StringComparison.Ordinal)
+            && string.Equals(effect.Condition, condition, StringComparison.Ordinal)
+            && string.Equals(effect.ValueText, value, StringComparison.Ordinal)
+            && string.Equals(effect.Test, test, StringComparison.Ordinal)
+            && string.Equals(effect.Extra, extra, StringComparison.Ordinal))
+        {
+            CloseQuickNodePopup();
+            return;
+        }
+
+        PushUndo();
+        effect.ExportId = exportId;
+        effect.ParentEffect = parentEffect;
+        effect.GroupMemo = groupMemo;
+        effect.Memo = memo;
+        effect.Type = type;
+        effect.Condition = condition;
+        effect.ValueText = value;
+        effect.Test = test;
+        effect.Extra = extra;
+        _primaryNode = node;
+        _selectedNodeIdentities.Clear();
+        _selectedNodeIdentities.Add(node.RowIdentity);
+        _quickNodePopupRequested = true;
+        PopulateQuickEffectFields(node);
+        RenderInspector();
+        ScheduleValidation();
+        UpdateDirtyState();
+        Log(ResearchConsoleSeverity.Info, $"빠른 효과 편집을 적용했습니다: {effect.Id}", node.Id);
         e.Handled = true;
     }
 
