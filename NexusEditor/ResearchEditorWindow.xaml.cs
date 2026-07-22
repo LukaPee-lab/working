@@ -73,6 +73,7 @@ public partial class ResearchEditorWindow : Window
     private int _permissionFilter;
     private bool _quickNodePopupRequested;
     private bool _quickEditorShowsEffect;
+    private bool _suppressQuickEffectMemoSync;
     private bool _updatingPermissionFilters;
 
     private bool _isPanning;
@@ -83,12 +84,11 @@ public partial class ResearchEditorWindow : Window
     private ResearchNodeRow? _pendingContextNode;
     private Border? _pendingContextCard;
     private ResearchPinTag? _pendingContextPin;
+    private ResearchSlotTag? _pendingContextSlot;
+    private Border? _pendingContextSlotVisual;
     private string? _linkDragSourceIdentity;
     private ShapePath? _linkPreviewPath;
     private DispatcherOperation? _pendingHierarchyRefresh;
-    private ResearchSlotTag? _pendingEmptySlot;
-    private Point _pendingEmptySlotStartScreen;
-    private bool _pendingEmptySlotAdditive;
     private string? _pendingNodeDragAnchorIdentity;
     private readonly Dictionary<string, int> _pendingNodeDragRows = new(StringComparer.OrdinalIgnoreCase);
     private Point _pendingNodeDragStartScreen;
@@ -780,7 +780,7 @@ public partial class ResearchEditorWindow : Window
                     BorderThickness = new Thickness(1),
                     CornerRadius = new CornerRadius(3),
                     Tag = new ResearchSlotTag(column, row),
-                    ToolTip = $"STEP {column:000} / row {row}: 좌클릭하여 연구 노드 추가 / 드래그하여 STEP 선택",
+                    ToolTip = $"STEP {column:000} / row {row}: 우클릭하여 연구 노드 추가 / 좌클릭 드래그하여 STEP 선택",
                     Child = hint
                 };
                 slot.MouseEnter += (_, _) =>
@@ -796,6 +796,7 @@ public partial class ResearchEditorWindow : Window
                     hint.Opacity = 0;
                 };
                 slot.MouseLeftButtonDown += EmptySlot_MouseLeftButtonDown;
+                slot.MouseRightButtonDown += EmptySlot_MouseRightButtonDown;
                 Canvas.SetLeft(slot, WorldX(column));
                 Canvas.SetTop(slot, WorldY(row));
                 Panel.SetZIndex(slot, 4);
@@ -1483,11 +1484,24 @@ public partial class ResearchEditorWindow
 
         SceneViewport.Focus();
         CloseQuickNodePopup();
-        _pendingEmptySlot = slot;
-        _pendingEmptySlotStartScreen = e.GetPosition(SceneViewport);
-        _pendingEmptySlotAdditive = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
-        SceneViewport.CaptureMouse();
+        BeginStepMarqueeSelection(
+            e.GetPosition(SceneViewport),
+            slot.Column,
+            (Keyboard.Modifiers & ModifierKeys.Control) != 0);
         e.Handled = true;
+    }
+
+    private void EmptySlot_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not Border { Tag: ResearchSlotTag slot } visual
+            || e.ChangedButton != MouseButton.Right)
+            return;
+
+        _pendingContextPin = null;
+        _pendingContextNode = null;
+        _pendingContextCard = null;
+        _pendingContextSlot = slot;
+        _pendingContextSlotVisual = visual;
     }
 
     private void CreateNodeAtSlot(int column, int row)
@@ -1659,7 +1673,13 @@ public partial class ResearchEditorWindow
     private void Pin_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (sender is Ellipse { Tag: ResearchPinTag pin })
+        {
+            _pendingContextNode = null;
+            _pendingContextCard = null;
+            _pendingContextSlot = null;
+            _pendingContextSlotVisual = null;
             _pendingContextPin = pin;
+        }
     }
 
     private void Node_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
@@ -1667,6 +1687,9 @@ public partial class ResearchEditorWindow
         if (sender is not Border { Tag: ResearchNodeRow node } card)
             return;
 
+        _pendingContextPin = null;
+        _pendingContextSlot = null;
+        _pendingContextSlotVisual = null;
         _pendingContextNode = node;
         _pendingContextCard = card;
     }
@@ -1695,6 +1718,16 @@ public partial class ResearchEditorWindow
         delete.Click += (_, _) => DeleteSelectedNodes();
         menu.Items.Add(delete);
         card.ContextMenu = menu;
+        menu.IsOpen = true;
+    }
+
+    private void ShowEmptySlotContextMenu(ResearchSlotTag slot, Border visual)
+    {
+        var menu = new ContextMenu { Placement = PlacementMode.MousePoint };
+        var add = new MenuItem { Header = "연구 노드 추가" };
+        add.Click += (_, _) => CreateNodeAtSlot(slot.Column, slot.Row);
+        menu.Items.Add(add);
+        visual.ContextMenu = menu;
         menu.IsOpen = true;
     }
 
@@ -1888,16 +1921,49 @@ public partial class ResearchEditorWindow
         QuickEffectMissingPanel.Visibility = hasEffect ? Visibility.Collapsed : Visibility.Visible;
         QuickEffectFieldsPanel.Visibility = hasEffect ? Visibility.Visible : Visibility.Collapsed;
 
-        QuickEffectIdBox.Text = effect?.Id ?? "";
-        QuickEffectExportIdBox.Text = effect?.ExportId ?? "";
-        QuickEffectParentEffectBox.Text = effect?.ParentEffect ?? "";
-        QuickEffectGroupMemoBox.Text = effect?.GroupMemo ?? "";
-        QuickEffectMemoBox.Text = effect?.Memo ?? "";
-        QuickEffectTypeBox.Text = effect?.Type ?? "";
-        QuickEffectConditionBox.Text = effect?.Condition ?? "";
-        QuickEffectValueBox.Text = effect?.ValueText ?? "";
-        QuickEffectTestBox.Text = effect?.Test ?? "";
-        QuickEffectExtraBox.Text = effect?.Extra ?? "";
+        _suppressQuickEffectMemoSync = true;
+        try
+        {
+            QuickEffectIdBox.Text = effect?.Id ?? "";
+            QuickEffectExportIdBox.Text = effect?.ExportId ?? "";
+            QuickEffectParentEffectBox.Text = effect?.ParentEffect ?? "";
+            QuickEffectGroupMemoBox.Text = effect?.GroupMemo ?? "";
+            QuickEffectMemoBox.Text = effect is null
+                ? ""
+                : string.IsNullOrWhiteSpace(effect.Memo) && _workbook is not null
+                    ? ResearchWorkbookService.GenerateEffectMemo(
+                        _workbook, node, effect.Type, effect.Condition, effect.ValueText, effect)
+                    : effect.Memo;
+            QuickEffectTypeBox.Text = effect?.Type ?? "";
+            QuickEffectConditionBox.Text = effect?.Condition ?? "";
+            QuickEffectValueBox.Text = effect?.ValueText ?? "";
+            QuickEffectTestBox.Text = effect?.Test ?? "";
+            QuickEffectExtraBox.Text = effect?.Extra ?? "";
+        }
+        finally
+        {
+            _suppressQuickEffectMemoSync = false;
+        }
+    }
+
+    private void QuickEffectDefinition_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_suppressQuickEffectMemoSync
+            || _workbook is null
+            || QuickNodePopup.Tag is not string rowIdentity)
+            return;
+
+        var node = _workbook.Nodes.FirstOrDefault(candidate => Same(candidate.RowIdentity, rowIdentity));
+        if (node is null || _workbook.FindEffect(node) is not { } effect)
+            return;
+
+        QuickEffectMemoBox.Text = ResearchWorkbookService.GenerateEffectMemo(
+            _workbook,
+            node,
+            QuickEffectTypeBox.Text,
+            QuickEffectConditionBox.Text,
+            QuickEffectValueBox.Text,
+            effect);
     }
 
     private void UpdateQuickEditorTab()
@@ -2059,10 +2125,11 @@ public partial class ResearchEditorWindow
         var exportId = QuickEffectExportIdBox.Text.Trim();
         var parentEffect = QuickEffectParentEffectBox.Text.Trim();
         var groupMemo = QuickEffectGroupMemoBox.Text.Trim();
-        var memo = QuickEffectMemoBox.Text.Trim();
         var type = QuickEffectTypeBox.Text.Trim();
         var condition = QuickEffectConditionBox.Text.Trim();
         var value = QuickEffectValueBox.Text.Trim();
+        var memo = ResearchWorkbookService.GenerateEffectMemo(
+            _workbook, node, type, condition, value, effect);
         var test = QuickEffectTestBox.Text.Trim();
         var extra = QuickEffectExtraBox.Text.Trim();
 
@@ -2153,11 +2220,15 @@ public partial class ResearchEditorWindow
         var contextPin = _pendingContextPin;
         var contextNode = _pendingContextNode;
         var contextCard = _pendingContextCard;
+        var contextSlot = _pendingContextSlot;
+        var contextSlotVisual = _pendingContextSlotVisual;
         _isPanning = false;
         _panGestureMoved = false;
         _pendingContextPin = null;
         _pendingContextNode = null;
         _pendingContextCard = null;
+        _pendingContextSlot = null;
+        _pendingContextSlotVisual = null;
         if (SceneViewport.IsMouseCaptured)
             SceneViewport.ReleaseMouseCapture();
         if (wasDrag)
@@ -2166,6 +2237,8 @@ public partial class ResearchEditorWindow
             ShowPinContextMenu(contextPin);
         else if (contextNode is not null && contextCard is not null)
             ShowNodeContextMenu(contextNode, contextCard);
+        else if (contextSlot is not null && contextSlotVisual is not null)
+            ShowEmptySlotContextMenu(contextSlot, contextSlotVisual);
         e.Handled = true;
     }
 
@@ -2213,22 +2286,6 @@ public partial class ResearchEditorWindow
             {
                 _pendingNodeDragDeltaRow = deltaRow;
                 PreviewNodeRowDrag(deltaRow);
-            }
-            e.Handled = true;
-            return;
-        }
-        if (_pendingEmptySlot is not null && e.LeftButton == MouseButtonState.Pressed)
-        {
-            var slotCurrent = e.GetPosition(SceneViewport);
-            if (HasExceededDragThreshold(_pendingEmptySlotStartScreen, slotCurrent))
-            {
-                var slot = _pendingEmptySlot;
-                _pendingEmptySlot = null;
-                BeginStepMarqueeSelection(
-                    _pendingEmptySlotStartScreen,
-                    slot.Column,
-                    _pendingEmptySlotAdditive);
-                UpdateStepMarqueeSelection(slotCurrent);
             }
             e.Handled = true;
             return;
@@ -2340,16 +2397,6 @@ public partial class ResearchEditorWindow
             e.Handled = true;
             return;
         }
-        if (_pendingEmptySlot is not null)
-        {
-            var slot = _pendingEmptySlot;
-            _pendingEmptySlot = null;
-            if (SceneViewport.IsMouseCaptured)
-                SceneViewport.ReleaseMouseCapture();
-            CreateNodeAtSlot(slot.Column, slot.Row);
-            e.Handled = true;
-            return;
-        }
         if (!_isStepMarqueeSelecting)
             return;
 
@@ -2383,7 +2430,6 @@ public partial class ResearchEditorWindow
         CancelLinkDrag(releaseCapture: false);
         CancelNodeRowDrag(restorePreview: true, releaseCapture: false);
         CancelRightPointerGesture(releaseCapture: false);
-        _pendingEmptySlot = null;
         if (_isStepMarqueeSelecting)
         {
             _isStepMarqueeSelecting = false;
@@ -2474,6 +2520,8 @@ public partial class ResearchEditorWindow
         _pendingContextPin = null;
         _pendingContextNode = null;
         _pendingContextCard = null;
+        _pendingContextSlot = null;
+        _pendingContextSlotVisual = null;
         if (releaseCapture && SceneViewport.IsMouseCaptured)
             SceneViewport.ReleaseMouseCapture();
     }
@@ -3434,7 +3482,8 @@ public partial class ResearchEditorWindow
         effect.Id = node.NexusEffectId;
         effect.ExportId = node.ExportId;
         effect.GroupMemo = $"연구 {node.Category}";
-        effect.Memo = $"연구 노드 효과 ({node.Category}/node {node.Column},{node.Row})";
+        effect.Memo = ResearchWorkbookService.GenerateEffectMemo(
+            _workbook, node, effect.Type, effect.Condition, effect.ValueText, effect);
         _workbook.Effects.Add(effect);
         RenderInspector();
         UpdateDirtyState();

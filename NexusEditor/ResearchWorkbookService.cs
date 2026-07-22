@@ -32,9 +32,29 @@ public static class ResearchWorkbookService
     private static readonly Regex EffectMemoCoordinatePattern = new(
         @"(?<prefix>\bnode\s+)\d+\s*,\s*\d+",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly Regex ResearchEffectMemoSuffixPattern = new(
+        @"\s*\(연구소/[^/()]+/tier\s+\d+/node\s+\d+\s*,\s*\d+\)\s*$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
     private static readonly Regex EffectIdCoordinatePattern = new(
         @"^(?<theme>[a-z0-9_]+)_node_eff_(?<category>.+)_(?<column>\d+)_(?<row>\d+)$",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    private static readonly IReadOnlyDictionary<string, string> EffectMemoFallbackDescriptions =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["battle_gold_add"] = "전투 승리 시 탐사 재화 추가 획득",
+            ["battle_gold_add_rate"] = "전투 승리 탐사 재화 획득량 증가",
+            ["battle_reward_add"] = "전투 승리 보상 추가 획득",
+            ["cs_add"] = "전투 효과 강화",
+            ["event_gold_add"] = "이벤트 클리어 시 탐사 재화 추가 획득",
+            ["ex_undead"] = "탐사 강제 종료 방지",
+            ["max_ex_hp"] = "최대 횃불 증가",
+            ["relic_add_random"] = "무작위 유물 획득",
+            ["revive_hero_random"] = "사망한 무작위 영웅 부활",
+            ["shop_cost_rate"] = "상점 상품 가격 할인",
+            ["start_ex_hp_add"] = "탐사 진입 시 시작 횃불 증가",
+            ["start_gold_add"] = "탐사 진입 시 탐사 재화 획득",
+            ["tag_cool_reduce"] = "태그 쿨타임 감소"
+        };
 
     public static ResearchWorkbookContext Load(string outSystemPath, string effectPath)
     {
@@ -1279,11 +1299,131 @@ public static class ResearchWorkbookService
         effect.Id = node.NexusEffectId;
         effect.ExportId = effectiveExportId;
         effect.GroupMemo = $"연구소:{normalizedCategory}";
-        effect.Memo = $"연구 노드 효과 (연구소/{normalizedCategory}/tier 1/node {column},{row})";
+        effect.Memo = GenerateEffectMemo(context, node, effect.Type, effect.Condition, effect.ValueText, effect);
 
         context.Nodes.Add(node);
         context.Effects.Add(effect);
         return (node, effect);
+    }
+
+    public static string GenerateEffectMemo(
+        ResearchWorkbookContext context,
+        ResearchNodeRow node,
+        string? effectType,
+        string? condition,
+        string? valueText,
+        ResearchEffectRow? currentEffect = null)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(node);
+
+        var type = SanitizeText(effectType).Trim();
+        var normalizedCondition = SanitizeText(condition).Trim();
+        var normalizedValue = SanitizeText(valueText).Trim();
+        string? description = null;
+
+        if (currentEffect is not null
+            && Same(currentEffect.Type, type)
+            && Same(currentEffect.Condition, normalizedCondition)
+            && SameEffectValue(currentEffect.ValueText, normalizedValue))
+        {
+            description = ExtractEffectMemoDescription(currentEffect.Memo);
+        }
+
+        description ??= SelectEffectMemoDescription(
+            context,
+            node,
+            currentEffect,
+            candidate => Same(candidate.Type, type)
+                         && Same(candidate.Condition, normalizedCondition)
+                         && SameEffectValue(candidate.ValueText, normalizedValue),
+            requireSingleDescription: false);
+
+        description ??= SelectEffectMemoDescription(
+            context,
+            node,
+            currentEffect,
+            candidate => Same(candidate.Type, type)
+                         && Same(candidate.Condition, normalizedCondition),
+            requireSingleDescription: true);
+
+        if (string.IsNullOrWhiteSpace(description))
+        {
+            if (Same(type, "battle_reward_add") && Same(normalizedCondition, "recruit_point"))
+                description = "전투 승리 시 영입 재화 추가 획득";
+            else if (!EffectMemoFallbackDescriptions.TryGetValue(type, out description))
+                description = string.IsNullOrWhiteSpace(type) ? "연구 노드 효과" : $"연구 효과: {type}";
+        }
+
+        var category = SanitizeIdentifierPart(node.Category);
+        if (string.IsNullOrWhiteSpace(category))
+            category = "unknown";
+        var tier = Math.Max(1, node.NodePermission ?? 1);
+        return $"{description} (연구소/{category}/tier {tier}/node {node.Column},{node.Row})";
+    }
+
+    private static string? SelectEffectMemoDescription(
+        ResearchWorkbookContext context,
+        ResearchNodeRow node,
+        ResearchEffectRow? currentEffect,
+        Func<ResearchEffectRow, bool> predicate,
+        bool requireSingleDescription)
+    {
+        var candidates = context.Effects
+            .Where(candidate => !ReferenceEquals(candidate, currentEffect)
+                                && predicate(candidate)
+                                && !string.IsNullOrWhiteSpace(candidate.Memo))
+            .ToList();
+        if (candidates.Count == 0)
+            return null;
+
+        var sameCategory = candidates.Where(candidate => EffectBelongsToCategory(context, candidate, node.Category)).ToList();
+        var pool = sameCategory.Count > 0 ? sameCategory : candidates;
+        var descriptions = pool
+            .Select(candidate => ExtractEffectMemoDescription(candidate.Memo))
+            .Where(description => !string.IsNullOrWhiteSpace(description))
+            .Cast<string>()
+            .GroupBy(description => description, StringComparer.Ordinal)
+            .OrderByDescending(group => group.Count())
+            .ThenBy(group => group.Key, StringComparer.Ordinal)
+            .ToList();
+        if (descriptions.Count == 0 || requireSingleDescription && descriptions.Count != 1)
+            return null;
+        return descriptions[0].Key;
+    }
+
+    private static bool EffectBelongsToCategory(
+        ResearchWorkbookContext context,
+        ResearchEffectRow effect,
+        string category)
+    {
+        if (!string.IsNullOrWhiteSpace(effect.LinkedNodeRowIdentity))
+        {
+            var linkedNode = context.Nodes.FirstOrDefault(node => Same(node.RowIdentity, effect.LinkedNodeRowIdentity));
+            if (linkedNode is not null)
+                return Same(linkedNode.Category, category);
+        }
+
+        var match = EffectIdCoordinatePattern.Match(effect.Id);
+        return match.Success && Same(match.Groups["category"].Value, category);
+    }
+
+    private static string? ExtractEffectMemoDescription(string? memo)
+    {
+        var sanitized = SanitizeText(memo).Trim();
+        if (string.IsNullOrWhiteSpace(sanitized))
+            return null;
+        var description = ResearchEffectMemoSuffixPattern.Replace(sanitized, "").Trim();
+        return string.IsNullOrWhiteSpace(description) ? null : description;
+    }
+
+    private static bool SameEffectValue(string? left, string? right)
+    {
+        if (Same(left, right))
+            return true;
+        return decimal.TryParse(left, NumberStyles.Float, CultureInfo.InvariantCulture, out var leftNumber)
+               && decimal.TryParse(right, NumberStyles.Float, CultureInfo.InvariantCulture, out var rightNumber)
+               && leftNumber == rightNumber;
     }
 
     public static ResearchMutationResult TryDeleteNode(
