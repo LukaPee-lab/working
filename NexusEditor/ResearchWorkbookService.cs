@@ -12,6 +12,7 @@ namespace NexusEditor;
 
 public static class ResearchWorkbookService
 {
+    private const string SpreadsheetMainNamespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
     public const string CategorySheetName = "nexus_node_category";
     public const string NodeSheetName = "nexus_node";
     public const string EffectSheetName = "nexus_effect";
@@ -2471,6 +2472,7 @@ public static class ResearchWorkbookService
             CategorySheetName,
             NodeSheetName);
         WriteFormulaCaches(outputPath, context);
+        NormalizeLegacyExcelReaderNamespaces(outputPath);
     }
 
     private static void WriteEffectWorkbook(ResearchWorkbookContext context, string outputPath)
@@ -2485,6 +2487,7 @@ public static class ResearchWorkbookService
             context.SourceEffectPath,
             outputPath,
             EffectSheetName);
+        NormalizeLegacyExcelReaderNamespaces(outputPath);
     }
 
     private static void RewriteCategories(IXLWorksheet sheet, IReadOnlyList<ResearchCategoryRow> categories)
@@ -2590,6 +2593,8 @@ public static class ResearchWorkbookService
         string effectPath,
         bool validate)
     {
+        VerifyLegacyExcelReaderNamespaces(outSystemPath);
+        VerifyLegacyExcelReaderNamespaces(effectPath);
         VerifyFormulaCaches(outSystemPath, expected);
         VerifyUntouchedWorksheetData(
             expected.SourceOutSystemPath,
@@ -2879,6 +2884,93 @@ public static class ResearchWorkbookService
             FileShare.ReadWrite | FileShare.Delete),
         ZipArchiveMode.Read,
         leaveOpen: false);
+
+    private static void NormalizeLegacyExcelReaderNamespaces(string path)
+    {
+        using var archive = ZipFile.Open(path, ZipArchiveMode.Update);
+        RewriteZipTextEntry(archive, "xl/workbook.xml", NormalizeSpreadsheetMainNamespacePrefix);
+        foreach (var entryName in archive.Entries
+                     .Select(entry => entry.FullName)
+                     .Where(name => name.StartsWith("xl/worksheets/", StringComparison.OrdinalIgnoreCase)
+                                    && name.EndsWith(".xml", StringComparison.OrdinalIgnoreCase))
+                     .ToList())
+        {
+            RewriteZipTextEntry(archive, entryName, NormalizeSpreadsheetMainNamespacePrefix);
+        }
+    }
+
+    private static void VerifyLegacyExcelReaderNamespaces(string path)
+    {
+        using var archive = ZipFile.OpenRead(path);
+        var entryNames = archive.Entries
+            .Select(entry => entry.FullName)
+            .Where(name => string.Equals(name, "xl/workbook.xml", StringComparison.OrdinalIgnoreCase)
+                           || (name.StartsWith("xl/worksheets/", StringComparison.OrdinalIgnoreCase)
+                               && name.EndsWith(".xml", StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        foreach (var entryName in entryNames)
+        {
+            var entry = archive.GetEntry(entryName);
+            if (entry is null)
+                continue;
+
+            using var reader = new StreamReader(entry.Open(), Encoding.UTF8, detectEncodingFromByteOrderMarks: true);
+            var xml = reader.ReadToEnd();
+            if (xml.Contains($"xmlns:x=\"{SpreadsheetMainNamespace}\"", StringComparison.Ordinal)
+                && xml.Contains("<x:", StringComparison.Ordinal))
+            {
+                throw new InvalidDataException(
+                    $"Ruby 엑셀 익스포터 호환성 검사에 실패했습니다: {Path.GetFileName(path)}!{entryName}");
+            }
+        }
+    }
+
+    private static string NormalizeSpreadsheetMainNamespacePrefix(string xml)
+    {
+        if (!xml.Contains($"xmlns:x=\"{SpreadsheetMainNamespace}\"", StringComparison.Ordinal)
+            || !xml.Contains("<x:", StringComparison.Ordinal))
+        {
+            return xml;
+        }
+
+        var hasDefaultNamespace = xml.Contains($"xmlns=\"{SpreadsheetMainNamespace}\"", StringComparison.Ordinal);
+        var normalized = Regex.Replace(
+            xml,
+            $@"\sxmlns:x=""{Regex.Escape(SpreadsheetMainNamespace)}""",
+            hasDefaultNamespace ? "" : $" xmlns=\"{SpreadsheetMainNamespace}\"",
+            RegexOptions.None,
+            TimeSpan.FromSeconds(1));
+
+        return Regex.Replace(
+            normalized,
+            @"(<\/?)x:([A-Za-z_][\w.\-]*)",
+            "$1$2",
+            RegexOptions.None,
+            TimeSpan.FromSeconds(1));
+    }
+
+    private static void RewriteZipTextEntry(ZipArchive archive, string entryName, Func<string, string> transform)
+    {
+        var entry = archive.GetEntry(entryName);
+        if (entry is null)
+            return;
+
+        string xml;
+        using (var reader = new StreamReader(entry.Open(), Encoding.UTF8, detectEncodingFromByteOrderMarks: true))
+            xml = reader.ReadToEnd();
+
+        var transformed = transform(xml);
+        if (string.Equals(xml, transformed, StringComparison.Ordinal))
+            return;
+
+        entry.Delete();
+        var replacement = archive.CreateEntry(entryName, CompressionLevel.Optimal);
+        using var writer = new StreamWriter(
+            replacement.Open(),
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: xml.StartsWith('\ufeff')));
+        writer.Write(transformed.TrimStart('\ufeff'));
+    }
 
     private static IReadOnlyList<string> ReadSharedStrings(ZipArchive archive)
     {
