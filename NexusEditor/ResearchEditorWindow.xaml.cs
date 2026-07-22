@@ -9,7 +9,9 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using Ellipse = System.Windows.Shapes.Ellipse;
 using Path = System.IO.Path;
+using ShapePath = System.Windows.Shapes.Path;
 
 namespace NexusEditor;
 
@@ -17,13 +19,16 @@ public partial class ResearchEditorWindow : Window
 {
     private const double NodeWidth = 128;
     private const double NodeHeight = 140;
+    private const double PinDiameter = 14;
+    private const double PinDropRadius = 26;
     private const double ConnectorWidth = 124;
     private const double ColumnSpacing = NodeWidth + ConnectorWidth;
     private const double GraphLeft = 86;
-    private const double LaneTop = 138;
-    private const double LaneSpacing = 172;
-    private const double GraphHeight = 690;
-    private static readonly int[] StructuredRows = [2, 4, 6];
+    private const double LaneSpacing = 158;
+    private const double RowStep = LaneSpacing / 2;
+    private const double GraphHeight = 1480;
+    private const double LaneTop = GraphHeight / 2 - NodeHeight / 2;
+    private static readonly int[] StructuredRows = [1, 2, 3, 4, 5, 6, 7, 8];
     private static readonly Color[] PermissionColors =
     [
         Color.FromRgb(43, 82, 106),
@@ -38,6 +43,8 @@ public partial class ResearchEditorWindow : Window
 
     private readonly Action<WorkspaceMode>? _workspaceSwitch;
     private readonly Dictionary<string, Border> _nodeVisuals = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Ellipse> _inputPinVisuals = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Ellipse> _outputPinVisuals = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<int, Border> _stepBandVisuals = [];
     private readonly Dictionary<int, Border> _stepHeaderVisuals = [];
     private readonly HashSet<string> _selectedNodeIdentities = new(StringComparer.OrdinalIgnoreCase);
@@ -47,6 +54,7 @@ public partial class ResearchEditorWindow : Window
     private readonly List<ResearchConsoleEntry> _consoleEntries = [];
     private readonly List<ResearchNodeClipboardItem> _nodeClipboard = [];
     private readonly Dictionary<string, ImageSource?> _researchAssetCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<(BitmapSource Source, Int32Rect Crop), BitmapSource> _nineSliceCropCache = [];
     private readonly HashSet<string> _reportedMissingAssets = new(StringComparer.OrdinalIgnoreCase);
     private readonly DispatcherTimer _validationTimer;
     private long _consoleSequence;
@@ -67,9 +75,19 @@ public partial class ResearchEditorWindow : Window
     private bool _updatingPermissionFilters;
 
     private bool _isPanning;
+    private bool _panGestureMoved;
     private Point _panScreenStart;
     private double _panXStart;
     private double _panYStart;
+    private ResearchNodeRow? _pendingContextNode;
+    private Border? _pendingContextCard;
+    private ResearchPinTag? _pendingContextPin;
+    private string? _linkDragSourceIdentity;
+    private ShapePath? _linkPreviewPath;
+    private DispatcherOperation? _pendingHierarchyRefresh;
+    private ResearchSlotTag? _pendingEmptySlot;
+    private Point _pendingEmptySlotStartScreen;
+    private bool _pendingEmptySlotAdditive;
     private bool _isStepMarqueeSelecting;
     private bool _stepMarqueeMoved;
     private bool _stepMarqueeAdditive;
@@ -208,11 +226,14 @@ public partial class ResearchEditorWindow : Window
 
     private void RenderGraph(bool fitGraph = false)
     {
+        CancelLinkDrag(releaseCapture: true);
         CloseQuickNodePopup(clearRequest: false);
         BandCanvas.Children.Clear();
         LinkCanvas.Children.Clear();
         NodeCanvas.Children.Clear();
         _nodeVisuals.Clear();
+        _inputPinVisuals.Clear();
+        _outputPinVisuals.Clear();
         _stepBandVisuals.Clear();
         _stepHeaderVisuals.Clear();
 
@@ -271,7 +292,7 @@ public partial class ResearchEditorWindow : Window
             var band = new Border
             {
                 Width = GraphCanvas.Width,
-                Height = NodeHeight + 18,
+                Height = RowStep,
                 Background = new SolidColorBrush(laneIndex % 2 == 0
                     ? Color.FromRgb(30, 30, 30)
                     : Color.FromRgb(27, 27, 27)),
@@ -280,7 +301,7 @@ public partial class ResearchEditorWindow : Window
                 IsHitTestVisible = false,
                 Child = new TextBlock
                 {
-                    Text = $"SLOT {laneIndex + 1}  /  row {StructuredRows[laneIndex]}",
+                    Text = $"ROW {StructuredRows[laneIndex]}",
                     Foreground = new SolidColorBrush(Color.FromRgb(104, 104, 104)),
                     FontSize = 11,
                     FontWeight = FontWeights.SemiBold,
@@ -288,7 +309,7 @@ public partial class ResearchEditorWindow : Window
                 }
             };
             Canvas.SetLeft(band, 0);
-            Canvas.SetTop(band, WorldY(StructuredRows[laneIndex]) - 9);
+            Canvas.SetTop(band, WorldY(StructuredRows[laneIndex]) + NodeHeight / 2 - RowStep / 2);
             BandCanvas.Children.Add(band);
         }
 
@@ -510,7 +531,8 @@ public partial class ResearchEditorWindow : Window
             };
             Grid.SetColumn(countText, 1);
             counter.Children.Add(countText);
-            var increase = CreateStepCountButton("+", column, 1, count < 3);
+            var increase = CreateStepCountButton("+", column, 1,
+                count < ResearchWorkbookService.MaxNodesPerStep);
             Grid.SetColumn(increase, 2);
             counter.Children.Add(increase);
             Grid.SetRow(counter, 1);
@@ -684,6 +706,34 @@ public partial class ResearchEditorWindow : Window
         Panel.SetZIndex(card, 10);
         NodeCanvas.Children.Add(card);
         _nodeVisuals[node.RowIdentity] = card;
+        CreateNodePin(node, isOutput: false);
+        CreateNodePin(node, isOutput: true);
+    }
+
+    private void CreateNodePin(ResearchNodeRow node, bool isOutput)
+    {
+        var pin = new Ellipse
+        {
+            Width = PinDiameter,
+            Height = PinDiameter,
+            Fill = new SolidColorBrush(isOutput
+                ? Color.FromRgb(70, 196, 132)
+                : Color.FromRgb(218, 228, 250)),
+            Stroke = new SolidColorBrush(Color.FromRgb(19, 22, 27)),
+            StrokeThickness = 1.5,
+            Cursor = Cursors.Cross,
+            Tag = new ResearchPinTag(node.RowIdentity, isOutput),
+            ToolTip = isOutput
+                ? "출력 핀: 다음 STEP의 입력 핀으로 드래그하여 연결 / 우클릭하여 출력 연결 해제"
+                : "입력 핀: 이전 STEP의 출력 핀을 여기에 연결 / 우클릭하여 입력 연결 해제"
+        };
+        pin.MouseLeftButtonDown += Pin_MouseLeftButtonDown;
+        pin.MouseRightButtonDown += Pin_MouseRightButtonDown;
+        Canvas.SetLeft(pin, WorldX(node.Column) + (isOutput ? NodeWidth : 0) - PinDiameter / 2);
+        Canvas.SetTop(pin, WorldY(node.Row) + NodeHeight / 2 - PinDiameter / 2);
+        Panel.SetZIndex(pin, 30);
+        NodeCanvas.Children.Add(pin);
+        (isOutput ? _outputPinVisuals : _inputPinVisuals)[node.RowIdentity] = pin;
     }
 
     private void DrawEmptySlotTargets(
@@ -693,8 +743,13 @@ public partial class ResearchEditorWindow : Window
         var occupied = allCategoryNodes
             .Select(node => (node.Column, node.Row))
             .ToHashSet();
+        var countsByColumn = allCategoryNodes
+            .GroupBy(node => node.Column)
+            .ToDictionary(group => group.Key, group => group.Count());
         foreach (var column in visibleNodes.Select(node => node.Column).Distinct().OrderBy(value => value))
         {
+            if (countsByColumn.GetValueOrDefault(column) >= ResearchWorkbookService.MaxNodesPerStep)
+                continue;
             foreach (var row in StructuredRows)
             {
                 if (occupied.Contains((column, row)))
@@ -719,7 +774,7 @@ public partial class ResearchEditorWindow : Window
                     BorderThickness = new Thickness(1),
                     CornerRadius = new CornerRadius(3),
                     Tag = new ResearchSlotTag(column, row),
-                    ToolTip = $"STEP {column:000} / row {row}: 우클릭하여 연구 노드 추가",
+                    ToolTip = $"STEP {column:000} / row {row}: 좌클릭하여 연구 노드 추가 / 드래그하여 STEP 선택",
                     Child = hint
                 };
                 slot.MouseEnter += (_, _) =>
@@ -735,7 +790,6 @@ public partial class ResearchEditorWindow : Window
                     hint.Opacity = 0;
                 };
                 slot.MouseLeftButtonDown += EmptySlot_MouseLeftButtonDown;
-                slot.MouseRightButtonDown += EmptySlot_MouseRightButtonDown;
                 Canvas.SetLeft(slot, WorldX(column));
                 Canvas.SetTop(slot, WorldY(row));
                 Panel.SetZIndex(slot, 4);
@@ -747,6 +801,7 @@ public partial class ResearchEditorWindow : Window
     private void RefreshResearchAssetRoot()
     {
         _researchAssetCache.Clear();
+        _nineSliceCropCache.Clear();
         _reportedMissingAssets.Clear();
         var devRoot = NexusPathResolver.ResolveDefaultDevRoot(NexusPathResolver.LoadSettings());
         var candidate = string.IsNullOrWhiteSpace(devRoot)
@@ -850,7 +905,7 @@ public partial class ResearchEditorWindow : Window
                     continue;
                 connector.Tag = new ResearchLinkTag(source.Id, target.RowIdentity);
                 var menu = new ContextMenu();
-                var disconnect = new MenuItem { Header = "Disconnect condition" };
+                var disconnect = new MenuItem { Header = "조건 연결 해제" };
                 disconnect.Click += (_, _) => DisconnectLink(source, target);
                 menu.Items.Add(disconnect);
                 connector.ContextMenu = menu;
@@ -900,13 +955,13 @@ public partial class ResearchEditorWindow : Window
             };
         }
         connector.Cursor = Cursors.Hand;
-        connector.ToolTip = $"{source.Id} -> {target.Id}\nRight click to disconnect";
+        connector.ToolTip = $"{source.Id} -> {target.Id}\n우클릭하여 조건 연결 해제";
         Canvas.SetLeft(connector, from.X);
         Canvas.SetTop(connector, Math.Min(from.Y, to.Y) - 6);
         return connector;
     }
 
-    private static FrameworkElement CreateHorizontalNineSlice(BitmapSource source, double width)
+    private FrameworkElement CreateHorizontalNineSlice(BitmapSource source, double width)
     {
         var cap = Math.Min(8, Math.Max(1, source.PixelWidth / 3));
         var grid = new Grid
@@ -926,7 +981,7 @@ public partial class ResearchEditorWindow : Window
         return grid;
     }
 
-    private static FrameworkElement CreateBentNineSlice(BitmapSource source, string assetKey, double width, double height)
+    private FrameworkElement CreateBentNineSlice(BitmapSource source, string assetKey, double width, double height)
     {
         var longConnector = assetKey.Contains("_l_", StringComparison.OrdinalIgnoreCase);
         var spineStart = Math.Min(source.PixelWidth - 2, longConnector ? 56 : 49);
@@ -973,12 +1028,16 @@ public partial class ResearchEditorWindow : Window
         return grid;
     }
 
-    private static void AddNineSliceImage(Grid grid, BitmapSource source, Int32Rect crop, int row, int column)
+    private void AddNineSliceImage(Grid grid, BitmapSource source, Int32Rect crop, int row, int column)
     {
         if (crop.Width <= 0 || crop.Height <= 0)
             return;
-        var cropped = new CroppedBitmap(source, crop);
-        cropped.Freeze();
+        if (!_nineSliceCropCache.TryGetValue((source, crop), out var cropped))
+        {
+            cropped = new CroppedBitmap(source, crop);
+            cropped.Freeze();
+            _nineSliceCropCache[(source, crop)] = cropped;
+        }
         var image = new Image
         {
             Source = cropped,
@@ -1002,15 +1061,8 @@ public partial class ResearchEditorWindow : Window
 
     private static double WorldX(int column) => GraphLeft + Math.Max(0, column - 1) * ColumnSpacing;
 
-    private double WorldY(int row)
-    {
-        var lanes = GetLaneChoices();
-        var laneIndex = Array.IndexOf(lanes, row);
-        if (laneIndex >= 0)
-            return LaneTop + laneIndex * LaneSpacing;
-        var step = lanes.Length > 1 ? Math.Max(1d, lanes.Zip(lanes.Skip(1), (left, right) => right - left).Average()) : 2d;
-        return LaneTop + Math.Max(0, (row - lanes[0]) / step) * LaneSpacing;
-    }
+    private static double WorldY(int row) =>
+        LaneTop - (row / 2.0 - ResearchWorkbookService.CenterResearchRow / 2.0) * LaneSpacing;
 
     private int[] GetLaneChoices()
         => StructuredRows;
@@ -1032,6 +1084,7 @@ public partial class ResearchEditorWindow : Window
     private sealed record ResearchLinkTag(string SourceNodeId, string TargetRowIdentity);
     private sealed record ResearchStepTag(int Column);
     private sealed record ResearchSlotTag(int Column, int Row);
+    private sealed record ResearchPinTag(string NodeRowIdentity, bool IsOutput);
     private sealed record UndoState(
         ResearchWorkbookContext Workbook,
         string? Category,
@@ -1213,12 +1266,13 @@ public partial class ResearchEditorWindow
 
         var category = _selectedCategory.Category;
         var currentCount = _workbook.Nodes.Count(node => Same(node.Category, category) && node.Column == change.Item1);
-        var desiredCount = Math.Clamp(currentCount + change.Item2, 1, 3);
+        var desiredCount = Math.Clamp(currentCount + change.Item2, 1,
+            ResearchWorkbookService.MaxNodesPerStep);
         if (desiredCount == currentCount)
             return;
 
         PushUndo();
-        var result = ResearchWorkbookService.TrySetColumnNodeCount(
+        var result = ResearchWorkbookService.TrySetColumnNodeCountInPlace(
             _workbook, category, change.Item1, desiredCount);
         if (!result.Success)
         {
@@ -1233,7 +1287,7 @@ public partial class ResearchEditorWindow
         _selectedNodeIdentities.IntersectWith(liveIdentities);
         _primaryNode = _workbook.Nodes.FirstOrDefault(node => _selectedNodeIdentities.Contains(node.RowIdentity));
         RenderGraph();
-        PopulateHierarchy();
+        ScheduleHierarchyRefresh();
         RenderInspector();
         ScheduleValidation();
         UpdateDirtyState();
@@ -1352,22 +1406,15 @@ public partial class ResearchEditorWindow
     {
         if (sender is not FrameworkElement { Tag: ResearchSlotTag slot })
             return;
-        BeginStepMarqueeSelection(e, slot.Column);
-        e.Handled = true;
-    }
-
-    private void EmptySlot_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
-    {
-        if (sender is not FrameworkElement { Tag: ResearchSlotTag slot } target)
+        if (e.ChangedButton != MouseButton.Left)
             return;
 
+        SceneViewport.Focus();
         CloseQuickNodePopup();
-        var menu = new ContextMenu { Placement = PlacementMode.MousePoint };
-        var add = new MenuItem { Header = "연구 노드 추가" };
-        add.Click += (_, _) => CreateNodeAtSlot(slot.Column, slot.Row);
-        menu.Items.Add(add);
-        target.ContextMenu = menu;
-        menu.IsOpen = true;
+        _pendingEmptySlot = slot;
+        _pendingEmptySlotStartScreen = e.GetPosition(SceneViewport);
+        _pendingEmptySlotAdditive = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+        SceneViewport.CaptureMouse();
         e.Handled = true;
     }
 
@@ -1379,6 +1426,14 @@ public partial class ResearchEditorWindow
         if (_workbook.Nodes.Any(node => Same(node.Category, category) && node.Column == column && node.Row == row))
         {
             Log(ResearchConsoleSeverity.Warning, $"STEP {column:000} / row {row}은 이미 사용 중입니다.", category);
+            return;
+        }
+        if (_workbook.Nodes.Count(node => Same(node.Category, category) && node.Column == column)
+            >= ResearchWorkbookService.MaxNodesPerStep)
+        {
+            Log(ResearchConsoleSeverity.Warning,
+                $"STEP {column:000}에는 연구 노드를 최대 {ResearchWorkbookService.MaxNodesPerStep}개만 추가할 수 있습니다.",
+                category);
             return;
         }
 
@@ -1414,7 +1469,7 @@ public partial class ResearchEditorWindow
             _primaryNode = created.Node;
             _quickNodePopupRequested = true;
             RenderGraph();
-            PopulateHierarchy();
+            ScheduleHierarchyRefresh();
             RenderInspector();
             ScheduleValidation();
             UpdateDirtyState();
@@ -1434,9 +1489,19 @@ public partial class ResearchEditorWindow
     {
         if (sender is not Border { Tag: ResearchNodeRow node } card)
             return;
+        SelectNodeFromScene(node, card, respectControlModifier: true, showQuickEditor: true);
+        e.Handled = true;
+    }
+
+    private void SelectNodeFromScene(
+        ResearchNodeRow node,
+        Border card,
+        bool respectControlModifier,
+        bool showQuickEditor)
+    {
         SceneViewport.Focus();
         _selectedStepColumns.Clear();
-        if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
+        if (respectControlModifier && (Keyboard.Modifiers & ModifierKeys.Control) != 0)
         {
             if (!_selectedNodeIdentities.Add(node.RowIdentity))
                 _selectedNodeIdentities.Remove(node.RowIdentity);
@@ -1451,11 +1516,53 @@ public partial class ResearchEditorWindow
         ApplySelectionVisuals();
         RenderInspector();
         SelectHierarchyNode(node.RowIdentity);
-        if (_selectedNodeIdentities.Count == 1 && _primaryNode is not null)
+        if (showQuickEditor && _selectedNodeIdentities.Count == 1 && _primaryNode is not null)
             ShowQuickNodePopup(_primaryNode, card);
         else
             CloseQuickNodePopup();
+    }
+
+    private void Pin_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (_workbook is null
+            || sender is not Ellipse { Tag: ResearchPinTag pin }
+            || !_nodeVisuals.TryGetValue(pin.NodeRowIdentity, out var card))
+            return;
+        var node = _workbook.Nodes.FirstOrDefault(candidate => Same(candidate.RowIdentity, pin.NodeRowIdentity));
+        if (node is null)
+            return;
+
+        if (!pin.IsOutput)
+        {
+            SelectNodeFromScene(node, card, respectControlModifier: false, showQuickEditor: true);
+            e.Handled = true;
+            return;
+        }
+
+        SelectNodeFromScene(node, card, respectControlModifier: false, showQuickEditor: false);
+        CancelRightPointerGesture(releaseCapture: false);
+        CancelLinkDrag(releaseCapture: false);
+        _linkDragSourceIdentity = node.RowIdentity;
+        _linkPreviewPath = new ShapePath
+        {
+            Stroke = new SolidColorBrush(Color.FromRgb(104, 213, 151)),
+            StrokeThickness = 3,
+            StrokeLineJoin = PenLineJoin.Round,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            IsHitTestVisible = false
+        };
+        Panel.SetZIndex(_linkPreviewPath, 100);
+        LinkCanvas.Children.Add(_linkPreviewPath);
+        UpdateLinkPreview(e.GetPosition(SceneViewport));
+        SceneViewport.CaptureMouse();
         e.Handled = true;
+    }
+
+    private void Pin_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is Ellipse { Tag: ResearchPinTag pin })
+            _pendingContextPin = pin;
     }
 
     private void Node_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
@@ -1463,6 +1570,12 @@ public partial class ResearchEditorWindow
         if (sender is not Border { Tag: ResearchNodeRow node } card)
             return;
 
+        _pendingContextNode = node;
+        _pendingContextCard = card;
+    }
+
+    private void ShowNodeContextMenu(ResearchNodeRow node, Border card)
+    {
         SceneViewport.Focus();
         _selectedStepColumns.Clear();
         if (!_selectedNodeIdentities.Contains(node.RowIdentity))
@@ -1486,7 +1599,158 @@ public partial class ResearchEditorWindow
         menu.Items.Add(delete);
         card.ContextMenu = menu;
         menu.IsOpen = true;
-        e.Handled = true;
+    }
+
+    private void ShowPinContextMenu(ResearchPinTag pin)
+    {
+        if (_workbook is null)
+            return;
+        var node = _workbook.Nodes.FirstOrDefault(candidate => Same(candidate.RowIdentity, pin.NodeRowIdentity));
+        var visual = (pin.IsOutput ? _outputPinVisuals : _inputPinVisuals).GetValueOrDefault(pin.NodeRowIdentity);
+        if (node is null || visual is null || !_nodeVisuals.TryGetValue(node.RowIdentity, out var card))
+            return;
+
+        SelectNodeFromScene(node, card, respectControlModifier: false, showQuickEditor: false);
+        var menu = new ContextMenu { Placement = PlacementMode.MousePoint };
+        var disconnect = new MenuItem
+        {
+            Header = pin.IsOutput ? "이 출력 핀의 연결 모두 해제" : "이 입력 핀의 연결 모두 해제"
+        };
+        disconnect.Click += (_, _) => DisconnectPinConnections(node.RowIdentity, pin.IsOutput);
+        menu.Items.Add(disconnect);
+        visual.ContextMenu = menu;
+        menu.IsOpen = true;
+    }
+
+    private void DisconnectPinConnections(string nodeRowIdentity, bool isOutput)
+    {
+        if (_workbook is null)
+            return;
+        var node = _workbook.Nodes.FirstOrDefault(candidate => Same(candidate.RowIdentity, nodeRowIdentity));
+        if (node is null)
+            return;
+
+        var targets = isOutput
+            ? _workbook.Nodes.Where(candidate => candidate.Conditions.Any(value => Same(value, node.Id))).ToList()
+            : [node];
+        var sourceIds = isOutput
+            ? new[] { node.Id }
+            : node.Conditions.Where(value => !string.IsNullOrWhiteSpace(value)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        if (sourceIds.Length == 0 || !targets.Any(target => sourceIds.Any(sourceId =>
+                target.Conditions.Any(value => Same(value, sourceId)))))
+        {
+            Log(ResearchConsoleSeverity.Info, "해제할 핀 연결이 없습니다.", node.Id);
+            return;
+        }
+
+        PushUndo();
+        var changed = false;
+        foreach (var target in targets)
+        foreach (var sourceId in sourceIds)
+            changed |= ResearchWorkbookService.DisconnectCondition(target, sourceId);
+        if (!changed)
+        {
+            UndoWithoutRender();
+            return;
+        }
+
+        RenderGraph();
+        ScheduleHierarchyRefresh();
+        RenderInspector();
+        ScheduleValidation();
+        UpdateDirtyState();
+        Log(ResearchConsoleSeverity.Info,
+            isOutput ? "출력 핀의 연결을 해제했습니다." : "입력 핀의 연결을 해제했습니다.", node.Id);
+    }
+
+    private void UpdateLinkPreview(Point screenPoint)
+    {
+        if (_workbook is null || _linkPreviewPath is null || _linkDragSourceIdentity is null)
+            return;
+        var source = _workbook.Nodes.FirstOrDefault(node => Same(node.RowIdentity, _linkDragSourceIdentity));
+        if (source is null || !_outputPinVisuals.ContainsKey(source.RowIdentity))
+            return;
+        var from = GetOutputPoint(source);
+        var to = ScreenToWorld(screenPoint);
+        var bendX = from.X + Math.Max(24, (to.X - from.X) / 2);
+        var geometry = new StreamGeometry();
+        using (var context = geometry.Open())
+        {
+            context.BeginFigure(from, isFilled: false, isClosed: false);
+            context.LineTo(new Point(bendX, from.Y), isStroked: true, isSmoothJoin: false);
+            context.LineTo(new Point(bendX, to.Y), isStroked: true, isSmoothJoin: false);
+            context.LineTo(to, isStroked: true, isSmoothJoin: false);
+        }
+        geometry.Freeze();
+        _linkPreviewPath.Data = geometry;
+    }
+
+    private ResearchNodeRow? FindInputPinTarget(Point screenPoint, string sourceIdentity)
+    {
+        if (_workbook is null)
+            return null;
+        ResearchNodeRow? closest = null;
+        var closestDistanceSquared = PinDropRadius * PinDropRadius;
+        foreach (var (identity, visual) in _inputPinVisuals)
+        {
+            if (Same(identity, sourceIdentity))
+                continue;
+            var center = visual.TranslatePoint(new Point(PinDiameter / 2, PinDiameter / 2), SceneViewport);
+            var delta = center - screenPoint;
+            var distanceSquared = delta.X * delta.X + delta.Y * delta.Y;
+            if (distanceSquared > closestDistanceSquared)
+                continue;
+            closestDistanceSquared = distanceSquared;
+            closest = _workbook.Nodes.FirstOrDefault(node => Same(node.RowIdentity, identity));
+        }
+        return closest;
+    }
+
+    private void CompleteLinkDrag(Point screenPoint)
+    {
+        if (_workbook is null || _linkDragSourceIdentity is null)
+        {
+            CancelLinkDrag(releaseCapture: true);
+            return;
+        }
+        var sourceIdentity = _linkDragSourceIdentity;
+        var target = FindInputPinTarget(screenPoint, sourceIdentity);
+        CancelLinkDrag(releaseCapture: true);
+        if (target is null)
+            return;
+
+        var source = _workbook.Nodes.FirstOrDefault(node => Same(node.RowIdentity, sourceIdentity));
+        if (source is null)
+            return;
+        PushUndo();
+        var result = ResearchWorkbookService.TryConnectCondition(_workbook, source.RowIdentity, target.RowIdentity);
+        if (!result.Success)
+        {
+            UndoWithoutRender();
+            Log(ResearchConsoleSeverity.Warning, result.Message, source.Id);
+        }
+        else
+        {
+            Log(ResearchConsoleSeverity.Info, result.Message, target.Id);
+            if (!string.IsNullOrWhiteSpace(result.WarningMessage))
+                Log(ResearchConsoleSeverity.Warning, result.WarningMessage, target.Id);
+        }
+
+        RenderGraph();
+        ScheduleHierarchyRefresh();
+        RenderInspector();
+        ScheduleValidation();
+        UpdateDirtyState();
+    }
+
+    private void CancelLinkDrag(bool releaseCapture)
+    {
+        if (_linkPreviewPath is not null)
+            LinkCanvas.Children.Remove(_linkPreviewPath);
+        _linkPreviewPath = null;
+        _linkDragSourceIdentity = null;
+        if (releaseCapture && SceneViewport.IsMouseCaptured)
+            SceneViewport.ReleaseMouseCapture();
     }
 
     private void ShowQuickNodePopup(ResearchNodeRow node, Border card)
@@ -1605,7 +1869,7 @@ public partial class ResearchEditorWindow
         _selectedNodeIdentities.Add(node.RowIdentity);
         _quickNodePopupRequested = true;
         RenderGraph();
-        PopulateHierarchy();
+        ScheduleHierarchyRefresh();
         RenderInspector();
         ScheduleValidation();
         UpdateDirtyState();
@@ -1624,8 +1888,9 @@ public partial class ResearchEditorWindow
             return;
         }
         RenderGraph();
-        PopulateHierarchy();
+        ScheduleHierarchyRefresh();
         RenderInspector();
+        ScheduleValidation();
         UpdateDirtyState();
     }
 
@@ -1646,6 +1911,7 @@ public partial class ResearchEditorWindow
     private void SceneViewport_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
     {
         _isPanning = true;
+        _panGestureMoved = false;
         _panScreenStart = e.GetPosition(SceneViewport);
         _panXStart = GraphTranslate.X;
         _panYStart = GraphTranslate.Y;
@@ -1657,24 +1923,79 @@ public partial class ResearchEditorWindow
     {
         if (!_isPanning)
             return;
+
+        var wasDrag = _panGestureMoved;
+        var contextPin = _pendingContextPin;
+        var contextNode = _pendingContextNode;
+        var contextCard = _pendingContextCard;
         _isPanning = false;
-        SceneViewport.ReleaseMouseCapture();
-        SaveViewSettings();
+        _panGestureMoved = false;
+        _pendingContextPin = null;
+        _pendingContextNode = null;
+        _pendingContextCard = null;
+        if (SceneViewport.IsMouseCaptured)
+            SceneViewport.ReleaseMouseCapture();
+        if (wasDrag)
+            SaveViewSettings();
+        else if (contextPin is not null)
+            ShowPinContextMenu(contextPin);
+        else if (contextNode is not null && contextCard is not null)
+            ShowNodeContextMenu(contextNode, contextCard);
         e.Handled = true;
     }
 
     private void SceneViewport_MouseMove(object sender, MouseEventArgs e)
     {
+        if (_linkDragSourceIdentity is not null)
+        {
+            if (e.LeftButton != MouseButtonState.Pressed)
+                CancelLinkDrag(releaseCapture: true);
+            else
+                UpdateLinkPreview(e.GetPosition(SceneViewport));
+            e.Handled = true;
+            return;
+        }
+        if (_pendingEmptySlot is not null && e.LeftButton == MouseButtonState.Pressed)
+        {
+            var slotCurrent = e.GetPosition(SceneViewport);
+            if (HasExceededDragThreshold(_pendingEmptySlotStartScreen, slotCurrent))
+            {
+                var slot = _pendingEmptySlot;
+                _pendingEmptySlot = null;
+                BeginStepMarqueeSelection(
+                    _pendingEmptySlotStartScreen,
+                    slot.Column,
+                    _pendingEmptySlotAdditive);
+                UpdateStepMarqueeSelection(slotCurrent);
+            }
+            e.Handled = true;
+            return;
+        }
         if (_isStepMarqueeSelecting && e.LeftButton == MouseButtonState.Pressed)
         {
             UpdateStepMarqueeSelection(e.GetPosition(SceneViewport));
             e.Handled = true;
             return;
         }
-        if (!_isPanning || e.RightButton != MouseButtonState.Pressed)
+        if (!_isPanning)
             return;
-        var current = e.GetPosition(SceneViewport);
-        var delta = current - _panScreenStart;
+        if (e.RightButton != MouseButtonState.Pressed)
+        {
+            CancelRightPointerGesture(releaseCapture: true);
+            return;
+        }
+        var panCurrent = e.GetPosition(SceneViewport);
+        if (!_panGestureMoved && !HasExceededDragThreshold(_panScreenStart, panCurrent))
+        {
+            e.Handled = true;
+            return;
+        }
+        if (!_panGestureMoved)
+        {
+            _panGestureMoved = true;
+            CloseQuickNodePopup();
+        }
+        var delta = panCurrent - _panScreenStart;
         GraphTranslate.X = _panXStart + delta.X;
         GraphTranslate.Y = _panYStart + delta.Y;
         e.Handled = true;
@@ -1692,13 +2013,21 @@ public partial class ResearchEditorWindow
     {
         if (e.ChangedButton != MouseButton.Left)
             return;
+        BeginStepMarqueeSelection(
+            e.GetPosition(SceneViewport),
+            clickedColumn,
+            (Keyboard.Modifiers & ModifierKeys.Control) != 0);
+    }
+
+    private void BeginStepMarqueeSelection(Point startScreen, int? clickedColumn, bool additive)
+    {
         SceneViewport.Focus();
         CloseQuickNodePopup();
         _isStepMarqueeSelecting = true;
         _stepMarqueeMoved = false;
-        _stepMarqueeAdditive = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+        _stepMarqueeAdditive = additive;
         _stepMarqueeClickedColumn = clickedColumn;
-        _stepMarqueeStartScreen = e.GetPosition(SceneViewport);
+        _stepMarqueeStartScreen = startScreen;
         _stepMarqueeStartWorld = ScreenToWorld(_stepMarqueeStartScreen);
         _stepMarqueeBaseSelection.Clear();
         if (_stepMarqueeAdditive)
@@ -1713,8 +2042,7 @@ public partial class ResearchEditorWindow
     {
         if (!_isStepMarqueeSelecting)
             return;
-        var screenDelta = currentScreen - _stepMarqueeStartScreen;
-        if (!_stepMarqueeMoved && Math.Abs(screenDelta.X) < 4 && Math.Abs(screenDelta.Y) < 4)
+        if (!_stepMarqueeMoved && !HasExceededDragThreshold(_stepMarqueeStartScreen, currentScreen))
             return;
 
         _stepMarqueeMoved = true;
@@ -1738,6 +2066,22 @@ public partial class ResearchEditorWindow
 
     private void SceneViewport_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
+        if (_linkDragSourceIdentity is not null)
+        {
+            CompleteLinkDrag(e.GetPosition(SceneViewport));
+            e.Handled = true;
+            return;
+        }
+        if (_pendingEmptySlot is not null)
+        {
+            var slot = _pendingEmptySlot;
+            _pendingEmptySlot = null;
+            if (SceneViewport.IsMouseCaptured)
+                SceneViewport.ReleaseMouseCapture();
+            CreateNodeAtSlot(slot.Column, slot.Row);
+            e.Handled = true;
+            return;
+        }
         if (!_isStepMarqueeSelecting)
             return;
 
@@ -1763,6 +2107,35 @@ public partial class ResearchEditorWindow
             SelectHierarchyStep(_selectedStepColumns.Min);
         e.Handled = true;
     }
+
+    private void SceneViewport_LostMouseCapture(object sender, MouseEventArgs e)
+    {
+        if (!ReferenceEquals(e.OriginalSource, SceneViewport))
+            return;
+        CancelLinkDrag(releaseCapture: false);
+        CancelRightPointerGesture(releaseCapture: false);
+        _pendingEmptySlot = null;
+        if (_isStepMarqueeSelecting)
+        {
+            _isStepMarqueeSelecting = false;
+            StepSelectionMarquee.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private void CancelRightPointerGesture(bool releaseCapture)
+    {
+        _isPanning = false;
+        _panGestureMoved = false;
+        _pendingContextPin = null;
+        _pendingContextNode = null;
+        _pendingContextCard = null;
+        if (releaseCapture && SceneViewport.IsMouseCaptured)
+            SceneViewport.ReleaseMouseCapture();
+    }
+
+    private static bool HasExceededDragThreshold(Point start, Point current) =>
+        Math.Abs(current.X - start.X) >= SystemParameters.MinimumHorizontalDragDistance ||
+        Math.Abs(current.Y - start.Y) >= SystemParameters.MinimumVerticalDragDistance;
 
     private Point ScreenToWorld(Point point) => new(
         (point.X - GraphTranslate.X) / GraphScale.ScaleX,
@@ -1850,7 +2223,7 @@ public partial class ResearchEditorWindow
     {
         var left = nodes.Min(node => WorldX(node.Column));
         var right = nodes.Max(node => WorldX(node.Column)) + NodeWidth;
-        var top = 16d;
+        var top = nodes.Min(node => WorldY(node.Row)) - 24;
         var bottom = nodes.Max(node => WorldY(node.Row)) + NodeHeight;
         var scale = Math.Clamp(Math.Min((SceneViewport.ActualWidth - 70) / Math.Max(1, right - left),
                                         (SceneViewport.ActualHeight - 70) / Math.Max(1, bottom - top)), 0.18, maxScale);
@@ -2242,6 +2615,17 @@ public partial class ResearchEditorWindow
                 }
             }
         }
+    }
+
+    private void ScheduleHierarchyRefresh()
+    {
+        if (_pendingHierarchyRefresh is { Status: DispatcherOperationStatus.Pending })
+            return;
+        _pendingHierarchyRefresh = Dispatcher.BeginInvoke(DispatcherPriority.Background, new Action(() =>
+        {
+            _pendingHierarchyRefresh = null;
+            PopulateHierarchy();
+        }));
     }
 
     private void HierarchyTree_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
@@ -3431,8 +3815,9 @@ public partial class ResearchEditorWindow
         _selectedNodeIdentities.Clear();
         _primaryNode = null;
         RenderGraph();
-        PopulateHierarchy();
+        ScheduleHierarchyRefresh();
         RenderInspector();
+        ScheduleValidation();
         UpdateDirtyState();
     }
 

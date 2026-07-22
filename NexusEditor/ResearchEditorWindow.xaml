@@ -386,7 +386,8 @@
                               MouseRightButtonUp="SceneViewport_MouseRightButtonUp"
                               MouseMove="SceneViewport_MouseMove"
                               MouseLeftButtonDown="SceneViewport_MouseLeftButtonDown"
-                              MouseLeftButtonUp="SceneViewport_MouseLeftButtonUp">
+                              MouseLeftButtonUp="SceneViewport_MouseLeftButtonUp"
+                              LostMouseCapture="SceneViewport_LostMouseCapture">
                             <Grid.Background><SolidColorBrush Color="#1a1a1a"/></Grid.Background>
                             <Canvas x:Name="GraphCanvas" Width="28000" Height="760" HorizontalAlignment="Left" VerticalAlignment="Top">
                                 <Canvas.RenderTransform>

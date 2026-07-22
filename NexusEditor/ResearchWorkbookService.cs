@@ -16,6 +16,10 @@ public static class ResearchWorkbookService
     public const string NodeSheetName = "nexus_node";
     public const string EffectSheetName = "nexus_effect";
     public const string DefaultResearchExportId = "lbh9517_175126";
+    public const int MinResearchRow = 1;
+    public const int MaxResearchRow = 8;
+    public const int CenterResearchRow = 4;
+    public const int MaxNodesPerStep = 4;
 
     private const int FirstDataRow = 4;
     private const int CategoryColumnCount = 6;
@@ -193,6 +197,18 @@ public static class ResearchWorkbookService
             }
         }
 
+        foreach (var oversizedStep in context.Nodes
+                     .GroupBy(node => $"{node.Category}\u001f{node.Column}", StringComparer.OrdinalIgnoreCase)
+                     .Where(group => group.Count() > MaxNodesPerStep))
+        {
+            foreach (var node in oversizedStep)
+            {
+                issues.Add(Error("step_node_count_max4",
+                    $"{node.Id}: 같은 STEP에는 연구 노드를 최대 {MaxNodesPerStep}개만 배치할 수 있습니다.",
+                    NodeSheetName, node.RowIdentity, node.Id, "column,row"));
+            }
+        }
+
         foreach (var category in context.Categories)
         {
             var expectedCategory = GenerateCategoryId(category.HelperPrefix, category.CategoryKey);
@@ -239,8 +255,9 @@ public static class ResearchWorkbookService
             if (!Same(node.NodeEffectDesc, GenerateNodeEffectDescription(node.Category)))
                 issues.Add(Error("node_effect_desc", $"{node.Id}: node_effect_desc 생성값이 올바르지 않습니다.",
                     NodeSheetName, node.RowIdentity, node.Id, "node_effect_desc"));
-            if (node.Column <= 0 || node.Row <= 0)
-                issues.Add(Error("coordinate_invalid", $"{node.Id}: column과 row는 1 이상이어야 합니다.",
+            if (node.Column <= 0 || node.Row is < MinResearchRow or > MaxResearchRow)
+                issues.Add(Error("coordinate_invalid",
+                    $"{node.Id}: column은 1 이상, row는 {MinResearchRow}~{MaxResearchRow}이어야 합니다.",
                     NodeSheetName, node.RowIdentity, node.Id, "column,row"));
             if (string.IsNullOrWhiteSpace(node.Image))
                 issues.Add(Error("image_blank", $"{node.Id}: image가 비어 있습니다.",
@@ -1220,10 +1237,13 @@ public static class ResearchWorkbookService
         var normalizedTheme = SanitizeIdentifierPart(themeId);
         if (context.FindCategory(normalizedCategory) is null)
             throw new InvalidOperationException($"존재하지 않는 카테고리입니다: {normalizedCategory}");
-        if (column <= 0 || row <= 0)
-            throw new ArgumentOutOfRangeException(nameof(column), "column과 row는 1 이상이어야 합니다.");
+        if (column <= 0 || row is < MinResearchRow or > MaxResearchRow)
+            throw new ArgumentOutOfRangeException(nameof(column),
+                $"column은 1 이상, row는 {MinResearchRow}~{MaxResearchRow}이어야 합니다.");
         if (context.Nodes.Any(node => Same(node.Category, normalizedCategory) && node.Column == column && node.Row == row))
             throw new InvalidOperationException($"이미 사용 중인 좌표입니다: {normalizedCategory} ({column}, {row})");
+        if (context.Nodes.Count(node => Same(node.Category, normalizedCategory) && node.Column == column) >= MaxNodesPerStep)
+            throw new InvalidOperationException($"STEP {column}에는 연구 노드를 최대 {MaxNodesPerStep}개만 배치할 수 있습니다.");
 
         var sourceRow = NextSourceRow(context.Nodes.Select(node => node.SourceRowNumber));
         var effectiveExportId = SanitizeText(exportId ?? MostCommonExportId(context.Nodes.Select(node => node.ExportId)));
@@ -1364,8 +1384,9 @@ public static class ResearchWorkbookService
         int newRow)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (newColumn <= 0 || newRow <= 0)
-            return ResearchMutationResult.Failed("column과 row는 1 이상이어야 합니다.");
+        if (newColumn <= 0 || newRow is < MinResearchRow or > MaxResearchRow)
+            return ResearchMutationResult.Failed(
+                $"column은 1 이상, row는 {MinResearchRow}~{MaxResearchRow}이어야 합니다.");
 
         var candidate = context.DeepClone(includeOriginalSnapshot: false);
         var node = candidate.Nodes.FirstOrDefault(row => Same(row.RowIdentity, nodeRowIdentity));
@@ -1377,6 +1398,14 @@ public static class ResearchWorkbookService
                                        && row.Row == newRow))
         {
             return ResearchMutationResult.Failed($"이미 사용 중인 좌표입니다: {node.Category} ({newColumn}, {newRow})");
+        }
+        if (newColumn != node.Column
+            && candidate.Nodes.Count(row => !Same(row.RowIdentity, node.RowIdentity)
+                                            && Same(row.Category, node.Category)
+                                            && row.Column == newColumn) >= MaxNodesPerStep)
+        {
+            return ResearchMutationResult.Failed(
+                $"STEP {newColumn}에는 연구 노드를 최대 {MaxNodesPerStep}개만 배치할 수 있습니다.");
         }
 
         var oldId = node.Id;
@@ -1431,6 +1460,13 @@ public static class ResearchWorkbookService
         {
             return ResearchMutationResult.Failed(
                 $"대상 카테고리에 이미 사용 중인 좌표가 있습니다: {normalizedCategory} ({node.Column}, {node.Row})");
+        }
+        if (candidate.Nodes.Count(row => !Same(row.RowIdentity, node.RowIdentity)
+                                         && Same(row.Category, normalizedCategory)
+                                         && row.Column == node.Column) >= MaxNodesPerStep)
+        {
+            return ResearchMutationResult.Failed(
+                $"대상 카테고리의 STEP {node.Column}에는 연구 노드를 최대 {MaxNodesPerStep}개만 배치할 수 있습니다.");
         }
 
         var oldCategory = node.Category;
@@ -1497,8 +1533,9 @@ public static class ResearchWorkbookService
             Column = node.Column + deltaColumn,
             Row = node.Row + deltaRow
         }).ToList();
-        if (targets.Any(target => target.Column <= 0 || target.Row <= 0))
-            return ResearchMutationResult.Failed("column과 row는 1 이상이어야 합니다.");
+        if (targets.Any(target => target.Column <= 0 || target.Row is < MinResearchRow or > MaxResearchRow))
+            return ResearchMutationResult.Failed(
+                $"column은 1 이상, row는 {MinResearchRow}~{MaxResearchRow}이어야 합니다.");
 
         var duplicateTarget = targets
             .GroupBy(target => $"{target.Node.Category}\u001f{target.Column}\u001f{target.Row}", StringComparer.OrdinalIgnoreCase)
@@ -1517,6 +1554,15 @@ public static class ResearchWorkbookService
                     $"이미 사용 중인 좌표입니다: {target.Node.Category} ({target.Column}, {target.Row})");
             }
         }
+
+        var oversizedTarget = candidate.Nodes
+            .Where(node => !identities.Contains(node.RowIdentity))
+            .Select(node => (node.Category, node.Column))
+            .Concat(targets.Select(target => (target.Node.Category, target.Column)))
+            .GroupBy(target => $"{target.Category}\u001f{target.Column}", StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > MaxNodesPerStep);
+        if (oversizedTarget is not null)
+            return ResearchMutationResult.Failed($"이동 후 한 STEP의 연구 노드가 {MaxNodesPerStep}개를 초과합니다.");
 
         var idMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var effectUpdates = new Dictionary<string, (string NewId, int Column, int Row)>(StringComparer.OrdinalIgnoreCase);
@@ -1625,12 +1671,37 @@ public static class ResearchWorkbookService
         int desiredCount)
     {
         ArgumentNullException.ThrowIfNull(context);
+        var candidate = context.DeepClone(includeOriginalSnapshot: false);
+        var result = SetColumnNodeCountCore(candidate, category, column, desiredCount);
+        if (!result.Success)
+            return result;
+        context.ReplaceDataFrom(candidate, takeRowOwnership: true);
+        return result;
+    }
+
+    // UI already owns an undo snapshot, so it can use this path without cloning the workbook twice.
+    public static ResearchMutationResult TrySetColumnNodeCountInPlace(
+        ResearchWorkbookContext context,
+        string category,
+        int column,
+        int desiredCount)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        return SetColumnNodeCountCore(context, category, column, desiredCount);
+    }
+
+    private static ResearchMutationResult SetColumnNodeCountCore(
+        ResearchWorkbookContext candidate,
+        string category,
+        int column,
+        int desiredCount)
+    {
         if (column <= 0)
             return ResearchMutationResult.Failed("column은 1 이상이어야 합니다.");
-        if (desiredCount is < 1 or > 3)
-            return ResearchMutationResult.Failed("한 단계에는 연구 노드를 1~3개만 배치할 수 있습니다.");
+        if (desiredCount is < 1 or > MaxNodesPerStep)
+            return ResearchMutationResult.Failed(
+                $"한 단계에는 연구 노드를 1~{MaxNodesPerStep}개만 배치할 수 있습니다.");
 
-        var candidate = context.DeepClone(includeOriginalSnapshot: false);
         var categoryRow = candidate.FindCategory(category);
         if (categoryRow is null)
             return ResearchMutationResult.Failed($"연구 카테고리를 찾지 못했습니다: {category}");
@@ -1644,9 +1715,10 @@ public static class ResearchWorkbookService
 
         var desiredRows = desiredCount switch
         {
-            1 => new[] { 4 },
+            1 => new[] { CenterResearchRow },
             2 => new[] { 2, 6 },
-            _ => new[] { 2, 4, 6 }
+            3 => new[] { 2, CenterResearchRow, 6 },
+            _ => new[] { 1, 3, 5, 7 }
         };
         if (existing.Count == desiredCount
             && existing.Select(node => node.Row).SequenceEqual(desiredRows))
@@ -1741,7 +1813,6 @@ public static class ResearchWorkbookService
         if (HasDuplicateGeneratedKeys(candidate, out var duplicateMessage))
             return ResearchMutationResult.Failed(duplicateMessage);
 
-        context.ReplaceDataFrom(candidate, takeRowOwnership: true);
         var result = new ResearchMutationResult
         {
             Success = true,
@@ -1871,13 +1942,13 @@ public static class ResearchWorkbookService
     {
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(snapshot);
-        if (snapshot.NodeCount is < 1 or > 3)
-            return ResearchMutationResult.Failed("The copied STEP must contain 1 to 3 nodes.");
+        if (snapshot.NodeCount is < 1 or > MaxNodesPerStep)
+            return ResearchMutationResult.Failed($"복사한 STEP에는 연구 노드가 1~{MaxNodesPerStep}개 있어야 합니다.");
         if (targetColumn <= 0)
             return ResearchMutationResult.Failed("The destination STEP is invalid.");
 
         var candidate = context.DeepClone(includeOriginalSnapshot: false);
-        var resize = TrySetColumnNodeCount(candidate, targetCategory, targetColumn, snapshot.NodeCount);
+        var resize = SetColumnNodeCountCore(candidate, targetCategory, targetColumn, snapshot.NodeCount);
         if (!resize.Success)
             return resize;
 
