@@ -380,10 +380,115 @@ public partial class App : Application
             failures.Add("단계 노드 수 3->2 구조 변경 또는 조건 정리 실패");
         }
 
+        var exactSlot = ResearchWorkbookService.CreateNode(
+            structuredTest, structuredCategory.Category, 301, 4);
+        exactSlot.Node.Image = "qa_exact_slot_icon";
+        exactSlot.Effect.Type = "cs_add";
+        exactSlot.Effect.Condition = "range=self";
+        exactSlot.Effect.ValueText = "1";
+        var exactEffectIdentity = exactSlot.Effect.RowIdentity;
+        var deleteExactSlot = ResearchWorkbookService.TryDeleteNode(
+            structuredTest, exactSlot.Node.RowIdentity, removeConditionReferences: true);
+        if (!deleteExactSlot.Success
+            || structuredTest.Nodes.Any(node => node.RowIdentity == exactSlot.Node.RowIdentity)
+            || structuredTest.Effects.Any(effect => effect.RowIdentity == exactEffectIdentity)
+            || !structuredTest.Nodes
+                .Where(node => node.Category == structuredCategory.Category && node.Column == 301)
+                .Select(node => node.Row)
+                .OrderBy(row => row)
+                .SequenceEqual(new[] { 2, 6 }))
+        {
+            failures.Add("빈 슬롯의 정확한 좌표 생성 또는 노드/효과 단독 삭제 실패");
+        }
+
+        for (var index = 0; index < reducedNodes.Count; index++)
+        {
+            var sourceNode = reducedNodes[index];
+            sourceNode.Image = $"qa_step_copy_{sourceNode.Row}";
+            sourceNode.ActiveItemId = $"qa_item_{sourceNode.Row}";
+            sourceNode.ActiveItemValue = (index + 2).ToString();
+            sourceNode.ActiveStep = index + 2;
+            if (structuredTest.FindEffect(sourceNode) is { } sourceEffect)
+            {
+                sourceEffect.Type = $"qa_copy_type_{sourceNode.Row}";
+                sourceEffect.ValueText = (index + 10).ToString();
+            }
+        }
+        expandedTarget.NodePermission = 4;
+        var stepSnapshot = ResearchWorkbookService.CaptureStepBlock(
+            structuredTest, structuredCategory.Category, 301);
+        var pasteStep = ResearchWorkbookService.TryPasteStepBlock(
+            structuredTest, stepSnapshot, structuredCategory.Category, 302);
+        var pastedNodes = structuredTest.Nodes
+            .Where(node => node.Category == structuredCategory.Category && node.Column == 302)
+            .OrderBy(node => node.Row)
+            .ToList();
+        var pastedPrerequisites = pastedNodes
+            .SelectMany(node => node.Conditions)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .ToList();
+        if (!pasteStep.Success
+            || !pastedNodes.Select(node => node.Row).SequenceEqual(new[] { 2, 6 })
+            || !pastedNodes.Select(node => node.Image).SequenceEqual(new[] { "qa_step_copy_2", "qa_step_copy_6" })
+            || pastedNodes.Any(node => node.NodePermission != 4)
+            || pastedNodes.Any(node => structuredTest.FindEffect(node) is null)
+            || !pastedNodes.Select(node => structuredTest.FindEffect(node)!.Type)
+                .SequenceEqual(new[] { "qa_copy_type_2", "qa_copy_type_6" })
+            || pastedPrerequisites.Count != 2
+            || pastedPrerequisites.Distinct(StringComparer.OrdinalIgnoreCase).Count() != 2
+            || pastedPrerequisites.Any(value => structuredTest.FindNode(value) is null))
+        {
+            failures.Add("STEP 블록 복사/붙여넣기 또는 좌표·권한·연결 보존 실패");
+        }
+
+        var appendFirst = ResearchWorkbookService.TryAppendStep(
+            structuredTest, structuredCategory.Category);
+        var appendSecond = ResearchWorkbookService.TryAppendStep(
+            structuredTest, structuredCategory.Category);
+        var appendedNodes = structuredTest.Nodes
+            .Where(node => node.Category == structuredCategory.Category && node.Column is 303 or 304)
+            .OrderBy(node => node.Column)
+            .ToList();
+        var rangeSnapshot = ResearchWorkbookService.CaptureStepBlocks(
+            structuredTest, structuredCategory.Category, new[] { 301, 302 });
+        var pasteRangeFirst = ResearchMutationResult.Failed("STEP 묶음 캡처 실패");
+        var pasteRangeSecond = ResearchMutationResult.Failed("STEP 묶음 캡처 실패");
+        if (rangeSnapshot.Blocks.Count == 2)
+        {
+            pasteRangeFirst = ResearchWorkbookService.TryPasteStepBlock(
+                structuredTest, rangeSnapshot.Blocks[0], structuredCategory.Category, 303);
+            pasteRangeSecond = ResearchWorkbookService.TryPasteStepBlock(
+                structuredTest, rangeSnapshot.Blocks[1], structuredCategory.Category, 304);
+        }
+        var pastedRangeNodes = structuredTest.Nodes
+            .Where(node => node.Category == structuredCategory.Category && node.Column is 303 or 304)
+            .OrderBy(node => node.Column)
+            .ThenBy(node => node.Row)
+            .ToList();
+        if (!appendFirst.Success
+            || !appendSecond.Success
+            || appendedNodes.Count != 2
+            || appendedNodes.Any(node => structuredTest.FindEffect(node) is null)
+            || appendedNodes.Any(node => !string.Equals(
+                node.Id,
+                ResearchWorkbookService.GenerateNodeId(node.ThemeId, node.Category, node.Column, node.Row),
+                StringComparison.OrdinalIgnoreCase))
+            || appendedNodes.Any(node => node.Column > 301
+                && !node.Conditions.Any(value => !string.IsNullOrWhiteSpace(value)))
+            || rangeSnapshot.StepCount != 2
+            || rangeSnapshot.NodeCount != 4
+            || !pasteRangeFirst.Success
+            || !pasteRangeSecond.Success
+            || pastedRangeNodes.Count != 4
+            || pastedRangeNodes.Any(node => structuredTest.FindEffect(node) is null))
+        {
+            failures.Add("STEP 연속 추가 또는 다중 STEP 묶음 복사/붙여넣기 실패");
+        }
+
         var permissionTest = source.DeepClone();
         var permissionCategoryIndex = permissionTest.Categories.Select(row => row.Index ?? 0).DefaultIfEmpty().Max() + 1;
         var permissionCategory = ResearchWorkbookService.CreateCategory(permissionTest, "qa_permission", permissionCategoryIndex);
-        for (var column = 401; column <= 404; column++)
+        for (var column = 401; column <= 406; column++)
         {
             var pair = ResearchWorkbookService.CreateNode(permissionTest, permissionCategory.Category, column, 4);
             pair.Node.Image = "qa_permission_icon";
@@ -404,7 +509,7 @@ public partial class App : Application
         var removePermission = ResearchWorkbookService.TryRemovePermissionRegion(permissionTest, permissionCategory.Category);
         if (!addPermission.Success
             || !shiftPermissionLeft.Success
-            || !permissionTwoColumns.SequenceEqual(new[] { 403, 404 })
+            || !permissionTwoColumns.SequenceEqual(new[] { 405, 406 })
             || !shiftPermissionRight.Success
             || !removePermission.Success
             || permissionTest.Nodes.Where(node => node.Category == permissionCategory.Category)
@@ -412,6 +517,29 @@ public partial class App : Application
         {
             failures.Add("권한 구역 추가/경계 이동/삭제의 node_permission 일괄 변경 실패");
         }
+
+
+        var permissionColumns = permissionTest.Nodes
+            .Where(node => node.Category == permissionCategory.Category)
+            .GroupBy(node => node.Column)
+            .OrderBy(group => group.Key)
+            .ToList();
+        for (var index = 0; index < permissionColumns.Count; index++)
+        {
+            var permission = index >= permissionColumns.Count - 2 ? 5 : index + 1;
+            foreach (var node in permissionColumns[index])
+                node.NodePermission = permission;
+        }
+        var addPermissionSix = ResearchWorkbookService.TryAddPermissionRegion(
+            permissionTest, permissionCategory.Category);
+        var permissionSixNodes = permissionTest.Nodes
+            .Where(node => node.Category == permissionCategory.Category && node.NodePermission == 6)
+            .ToList();
+        var permissionSixValidation = ResearchWorkbookService.Validate(permissionTest)
+            .Where(issue => issue.Code == "node_permission_range")
+            .ToList();
+        if (!addPermissionSix.Success || permissionSixNodes.Count == 0 || permissionSixValidation.Count > 0)
+            failures.Add("PERMISSION 6 이상 구역 생성 또는 검증 상한 해제 실패");
 
         var test = source.DeepClone();
         var categoryIndex = test.Categories.Select(row => row.Index ?? 0).DefaultIfEmpty().Max() + 1;
@@ -618,6 +746,7 @@ public partial class App : Application
                 var eventWindow = new MainWindow();
                 next = eventWindow;
                 CopyWindowPlacement(previous, eventWindow);
+                eventWindow.WindowState = WindowState.Maximized;
                 MainWindow = eventWindow;
                 eventWindow.Show();
                 eventWindow.BeginInitialLoad();
@@ -628,6 +757,7 @@ public partial class App : Application
                 researchWindow = new ResearchEditorWindow(target => OpenWorkspace(target, researchWindow));
                 next = researchWindow;
                 CopyWindowPlacement(previous, researchWindow);
+                researchWindow.WindowState = WindowState.Maximized;
                 MainWindow = researchWindow;
                 researchWindow.Show();
                 if (!await researchWindow.BeginInitialLoadAsync())

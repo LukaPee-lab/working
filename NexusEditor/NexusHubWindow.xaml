@@ -6,6 +6,7 @@
         Height="620"
         MinWidth="760"
         MinHeight="500"
+        WindowState="Maximized"
         Icon="Assets/AppIcon.ico"
         Background="#1b1b1b"
         Foreground="#d8d8d8"

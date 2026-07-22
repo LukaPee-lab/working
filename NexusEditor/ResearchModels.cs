@@ -305,7 +305,10 @@ public sealed class ResearchWorkbookContext
         return clone;
     }
 
-    public void ReplaceDataFrom(ResearchWorkbookContext source, bool copyOriginalSnapshot = false)
+    public void ReplaceDataFrom(
+        ResearchWorkbookContext source,
+        bool copyOriginalSnapshot = false,
+        bool takeRowOwnership = false)
     {
         ArgumentNullException.ThrowIfNull(source);
         SourceOutSystemPath = source.SourceOutSystemPath;
@@ -313,11 +316,17 @@ public sealed class ResearchWorkbookContext
         SourceOutSystemSignature = source.SourceOutSystemSignature;
         SourceEffectSignature = source.SourceEffectSignature;
         Categories.Clear();
-        Categories.AddRange(source.Categories.Select(row => row.DeepClone()));
+        Categories.AddRange(takeRowOwnership
+            ? source.Categories
+            : source.Categories.Select(row => row.DeepClone()));
         Nodes.Clear();
-        Nodes.AddRange(source.Nodes.Select(row => row.DeepClone()));
+        Nodes.AddRange(takeRowOwnership
+            ? source.Nodes
+            : source.Nodes.Select(row => row.DeepClone()));
         Effects.Clear();
-        Effects.AddRange(source.Effects.Select(row => row.DeepClone()));
+        Effects.AddRange(takeRowOwnership
+            ? source.Effects
+            : source.Effects.Select(row => row.DeepClone()));
         if (copyOriginalSnapshot)
             OriginalSnapshot = source.OriginalSnapshot?.DeepClone(includeOriginalSnapshot: false);
     }
@@ -392,6 +401,28 @@ public sealed class ResearchMutationResult
     public List<string> AffectedRowIdentities { get; } = [];
 
     public static ResearchMutationResult Failed(string message) => new() { Success = false, Message = message };
+}
+
+public sealed class ResearchStepNodeSnapshot
+{
+    public required ResearchNodeRow Node { get; init; }
+    public ResearchEffectRow? Effect { get; init; }
+}
+
+public sealed class ResearchStepBlockSnapshot
+{
+    public string SourceCategory { get; init; } = "";
+    public int SourceColumn { get; init; }
+    public List<ResearchStepNodeSnapshot> Items { get; } = [];
+    public int NodeCount => Items.Count;
+}
+
+public sealed class ResearchStepRangeSnapshot
+{
+    public string SourceCategory { get; init; } = "";
+    public List<ResearchStepBlockSnapshot> Blocks { get; } = [];
+    public int StepCount => Blocks.Count;
+    public int NodeCount => Blocks.Sum(block => block.NodeCount);
 }
 
 public sealed class ResearchSaveOptions

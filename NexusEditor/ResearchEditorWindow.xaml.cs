@@ -8,6 +8,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using Path = System.IO.Path;
 
 namespace NexusEditor;
@@ -23,15 +24,31 @@ public partial class ResearchEditorWindow : Window
     private const double LaneSpacing = 172;
     private const double GraphHeight = 690;
     private static readonly int[] StructuredRows = [2, 4, 6];
+    private static readonly Color[] PermissionColors =
+    [
+        Color.FromRgb(43, 82, 106),
+        Color.FromRgb(61, 86, 77),
+        Color.FromRgb(92, 75, 45),
+        Color.FromRgb(88, 62, 89),
+        Color.FromRgb(102, 63, 63),
+        Color.FromRgb(54, 78, 112),
+        Color.FromRgb(70, 91, 55),
+        Color.FromRgb(105, 76, 50)
+    ];
 
     private readonly Action<WorkspaceMode>? _workspaceSwitch;
     private readonly Dictionary<string, Border> _nodeVisuals = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<int, Border> _stepBandVisuals = [];
+    private readonly Dictionary<int, Border> _stepHeaderVisuals = [];
     private readonly HashSet<string> _selectedNodeIdentities = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SortedSet<int> _selectedStepColumns = [];
+    private readonly SortedSet<int> _stepMarqueeBaseSelection = [];
     private readonly Stack<UndoState> _undoStack = [];
     private readonly List<ResearchConsoleEntry> _consoleEntries = [];
     private readonly List<ResearchNodeClipboardItem> _nodeClipboard = [];
     private readonly Dictionary<string, ImageSource?> _researchAssetCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _reportedMissingAssets = new(StringComparer.OrdinalIgnoreCase);
+    private readonly DispatcherTimer _validationTimer;
     private long _consoleSequence;
 
     private ResearchEditorSettings _settings;
@@ -39,21 +56,39 @@ public partial class ResearchEditorWindow : Window
     private ResearchWorkbookContext? _workbook;
     private ResearchCategoryRow? _selectedCategory;
     private ResearchNodeRow? _primaryNode;
+    private ResearchStepRangeSnapshot? _stepClipboard;
     private string? _researchImageRoot;
     private bool _isLoading;
     private bool _suppressCategorySelection;
     private bool _suppressInspectorCommit;
     private bool _allowClose;
     private int _permissionFilter;
+    private bool _quickNodePopupRequested;
+    private bool _updatingPermissionFilters;
 
     private bool _isPanning;
     private Point _panScreenStart;
     private double _panXStart;
     private double _panYStart;
+    private bool _isStepMarqueeSelecting;
+    private bool _stepMarqueeMoved;
+    private bool _stepMarqueeAdditive;
+    private int? _stepMarqueeClickedColumn;
+    private Point _stepMarqueeStartScreen;
+    private Point _stepMarqueeStartWorld;
 
     public ResearchEditorWindow(Action<WorkspaceMode>? workspaceSwitch = null)
     {
         InitializeComponent();
+        _validationTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromMilliseconds(300)
+        };
+        _validationTimer.Tick += (_, _) =>
+        {
+            _validationTimer.Stop();
+            RunValidation(logSuccess: false);
+        };
         _workspaceSwitch = workspaceSwitch;
         _settings = ResearchPathResolver.LoadSettings();
         RefreshResearchAssetRoot();
@@ -96,7 +131,9 @@ public partial class ResearchEditorWindow : Window
             _workbook = loaded;
             _undoStack.Clear();
             _selectedNodeIdentities.Clear();
+            _selectedStepColumns.Clear();
             _primaryNode = null;
+            _stepClipboard = null;
             RefreshResearchAssetRoot();
             ResearchPathResolver.Remember(paths);
             WorkbookPathText.Text = $"{Path.GetFileName(paths.OutSystemPath)} + {Path.GetFileName(paths.EffectPath)}";
@@ -147,9 +184,11 @@ public partial class ResearchEditorWindow : Window
 
     private void SelectCategory(ResearchCategoryRow? category, bool fitGraph)
     {
+        CloseQuickNodePopup();
         _selectedCategory = category;
         _settings.LastCategory = category?.Category;
         _selectedNodeIdentities.Clear();
+        _selectedStepColumns.Clear();
         _primaryNode = null;
         RenderGraph(fitGraph);
         PopulateHierarchy();
@@ -169,16 +208,22 @@ public partial class ResearchEditorWindow : Window
 
     private void RenderGraph(bool fitGraph = false)
     {
+        CloseQuickNodePopup(clearRequest: false);
         BandCanvas.Children.Clear();
         LinkCanvas.Children.Clear();
         NodeCanvas.Children.Clear();
         _nodeVisuals.Clear();
+        _stepBandVisuals.Clear();
+        _stepHeaderVisuals.Clear();
 
         if (_workbook is null || _selectedCategory is null)
         {
             SceneStatusText.Text = "Select a category";
+            RefreshPermissionFilterButtons();
             return;
         }
+
+        RefreshPermissionFilterButtons();
 
         var categoryNodes = _workbook.Nodes
             .Where(node => Same(node.Category, _selectedCategory.Category))
@@ -188,12 +233,16 @@ public partial class ResearchEditorWindow : Window
         var nodes = VisibleNodes().ToList();
         ResizeGraphSurface(categoryNodes);
         DrawStructuredBands(nodes);
+        DrawStepBands(nodes);
         DrawPermissionRegions(categoryNodes);
         DrawStepHeaders(nodes);
+        DrawAppendStepButton(categoryNodes);
+        DrawEmptySlotTargets(categoryNodes, nodes);
         foreach (var node in nodes)
             CreateNodeVisual(node);
         DrawAllLinks();
         ApplySelectionVisuals();
+        RefreshQuickNodePopup();
 
         var allCount = _workbook.Nodes.Count(node => Same(node.Category, _selectedCategory.Category));
         SceneStatusText.Text = $"{_selectedCategory.Category} / {nodes.Count:N0} of {allCount:N0} nodes / Wheel: Zoom / RMB: Pan";
@@ -204,7 +253,7 @@ public partial class ResearchEditorWindow : Window
     private void ResizeGraphSurface(IReadOnlyCollection<ResearchNodeRow> nodes)
     {
         var maxColumn = nodes.Select(node => node.Column).DefaultIfEmpty(4).Max();
-        var width = Math.Max(1600, WorldX(maxColumn) + NodeWidth + 120);
+        var width = Math.Max(1600, WorldX(maxColumn) + NodeWidth + 250);
         GraphCanvas.Width = width;
         GraphCanvas.Height = GraphHeight;
         BandCanvas.Width = width;
@@ -243,6 +292,40 @@ public partial class ResearchEditorWindow : Window
             BandCanvas.Children.Add(band);
         }
 
+    }
+
+    private void DrawStepBands(IReadOnlyCollection<ResearchNodeRow> nodes)
+    {
+        foreach (var column in nodes.Select(node => node.Column).Distinct().OrderBy(value => value))
+        {
+            var band = new Border
+            {
+                Width = NodeWidth + 18,
+                Height = GraphHeight - 48,
+                Background = StepBandBrush(column, selected: false, copied: false),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(90, 76, 76, 76)),
+                BorderThickness = new Thickness(1, 0, 1, 0),
+                Tag = new ResearchStepTag(column),
+                ToolTip = $"STEP {column:000} block - click to select, Ctrl+C to copy"
+            };
+            band.MouseLeftButtonDown += StepBlock_MouseLeftButtonDown;
+            Canvas.SetLeft(band, WorldX(column) - 9);
+            Canvas.SetTop(band, 43);
+            Panel.SetZIndex(band, 2);
+            BandCanvas.Children.Add(band);
+            _stepBandVisuals[column] = band;
+        }
+    }
+
+    private static Brush StepBandBrush(int column, bool selected, bool copied)
+    {
+        if (selected)
+            return new SolidColorBrush(Color.FromArgb(76, 51, 112, 142));
+        if (copied)
+            return new SolidColorBrush(Color.FromArgb(58, 137, 105, 42));
+        return new SolidColorBrush(column % 2 == 0
+            ? Color.FromArgb(34, 78, 91, 99)
+            : Color.FromArgb(20, 58, 66, 72));
     }
 
     private void DrawPermissionRegions(IReadOnlyCollection<ResearchNodeRow> nodes)
@@ -380,8 +463,10 @@ public partial class ResearchEditorWindow : Window
                 BorderBrush = new SolidColorBrush(Color.FromRgb(73, 73, 73)),
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(2),
-                Tag = column
+                Tag = new ResearchStepTag(column),
+                ToolTip = $"STEP {column:000} block - click to select, Ctrl+C to copy"
             };
+            header.MouseLeftButtonDown += StepBlock_MouseLeftButtonDown;
             var root = new Grid { Margin = new Thickness(6, 4, 6, 5) };
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(22) });
             root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
@@ -435,7 +520,31 @@ public partial class ResearchEditorWindow : Window
             Canvas.SetTop(header, 48);
             Panel.SetZIndex(header, 20);
             NodeCanvas.Children.Add(header);
+            _stepHeaderVisuals[column] = header;
         }
+    }
+
+    private void DrawAppendStepButton(IReadOnlyCollection<ResearchNodeRow> nodes)
+    {
+        if (_selectedCategory is null || nodes.Count == 0)
+            return;
+
+        var lastColumn = nodes.Max(node => node.Column);
+        var button = new Button
+        {
+            Content = "+ STEP",
+            Width = 94,
+            Height = 58,
+            Padding = new Thickness(7, 3, 7, 3),
+            FontSize = 11,
+            FontWeight = FontWeights.SemiBold,
+            ToolTip = "맨 끝에 연구 STEP을 하나 추가합니다."
+        };
+        button.Click += AppendStepButton_Click;
+        Canvas.SetLeft(button, WorldX(lastColumn) + NodeWidth + 20);
+        Canvas.SetTop(button, 48);
+        Panel.SetZIndex(button, 20);
+        NodeCanvas.Children.Add(button);
     }
 
     private Button CreateStepCountButton(string text, int column, int delta, bool enabled)
@@ -472,6 +581,7 @@ public partial class ResearchEditorWindow : Window
             ToolTip = $"{node.Id}\n{node.NodeEffectDesc}\nimage: {node.Image}\nactive_step: {node.ActiveStep ?? 0}"
         };
         card.MouseLeftButtonDown += Node_MouseLeftButtonDown;
+        card.MouseRightButtonDown += Node_MouseRightButtonDown;
 
         var root = new Grid();
         card.Child = root;
@@ -571,8 +681,67 @@ public partial class ResearchEditorWindow : Window
 
         Canvas.SetLeft(card, WorldX(node.Column));
         Canvas.SetTop(card, WorldY(node.Row));
+        Panel.SetZIndex(card, 10);
         NodeCanvas.Children.Add(card);
         _nodeVisuals[node.RowIdentity] = card;
+    }
+
+    private void DrawEmptySlotTargets(
+        IReadOnlyCollection<ResearchNodeRow> allCategoryNodes,
+        IReadOnlyCollection<ResearchNodeRow> visibleNodes)
+    {
+        var occupied = allCategoryNodes
+            .Select(node => (node.Column, node.Row))
+            .ToHashSet();
+        foreach (var column in visibleNodes.Select(node => node.Column).Distinct().OrderBy(value => value))
+        {
+            foreach (var row in StructuredRows)
+            {
+                if (occupied.Contains((column, row)))
+                    continue;
+
+                var hint = new TextBlock
+                {
+                    Text = "+ 연구 노드",
+                    Foreground = new SolidColorBrush(Color.FromRgb(139, 181, 204)),
+                    FontSize = 11,
+                    FontWeight = FontWeights.SemiBold,
+                    HorizontalAlignment = HorizontalAlignment.Center,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Opacity = 0
+                };
+                var slot = new Border
+                {
+                    Width = NodeWidth,
+                    Height = NodeHeight,
+                    Background = new SolidColorBrush(Color.FromArgb(1, 255, 255, 255)),
+                    BorderBrush = Brushes.Transparent,
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(3),
+                    Tag = new ResearchSlotTag(column, row),
+                    ToolTip = $"STEP {column:000} / row {row}: 우클릭하여 연구 노드 추가",
+                    Child = hint
+                };
+                slot.MouseEnter += (_, _) =>
+                {
+                    slot.BorderBrush = new SolidColorBrush(Color.FromRgb(66, 112, 138));
+                    slot.Background = new SolidColorBrush(Color.FromArgb(34, 50, 87, 108));
+                    hint.Opacity = 0.85;
+                };
+                slot.MouseLeave += (_, _) =>
+                {
+                    slot.BorderBrush = Brushes.Transparent;
+                    slot.Background = new SolidColorBrush(Color.FromArgb(1, 255, 255, 255));
+                    hint.Opacity = 0;
+                };
+                slot.MouseLeftButtonDown += EmptySlot_MouseLeftButtonDown;
+                slot.MouseRightButtonDown += EmptySlot_MouseRightButtonDown;
+                Canvas.SetLeft(slot, WorldX(column));
+                Canvas.SetTop(slot, WorldY(row));
+                Panel.SetZIndex(slot, 4);
+                NodeCanvas.Children.Add(slot);
+            }
+        }
     }
 
     private void RefreshResearchAssetRoot()
@@ -848,23 +1017,26 @@ public partial class ResearchEditorWindow : Window
 
     private static Brush NodeHeaderBrush(int? permission)
     {
-        var color = permission switch
-        {
-            1 => Color.FromRgb(43, 82, 106),
-            2 => Color.FromRgb(61, 86, 77),
-            3 => Color.FromRgb(92, 75, 45),
-            4 => Color.FromRgb(88, 62, 89),
-            5 => Color.FromRgb(102, 63, 63),
-            _ => Color.FromRgb(58, 58, 58)
-        };
+        var color = permission is >= 1
+            ? PermissionColors[(permission.Value - 1) % PermissionColors.Length]
+            : Color.FromRgb(58, 58, 58);
         return new SolidColorBrush(color);
     }
 
     private static bool Same(string? left, string? right) =>
         string.Equals(left?.Trim(), right?.Trim(), StringComparison.OrdinalIgnoreCase);
 
+    private static double PositiveOrDefault(double first, double second, double fallback) =>
+        first > 1 ? first : second > 1 ? second : fallback;
+
     private sealed record ResearchLinkTag(string SourceNodeId, string TargetRowIdentity);
-    private sealed record UndoState(ResearchWorkbookContext Workbook, string? Category, string[] SelectedNodeIds);
+    private sealed record ResearchStepTag(int Column);
+    private sealed record ResearchSlotTag(int Column, int Row);
+    private sealed record UndoState(
+        ResearchWorkbookContext Workbook,
+        string? Category,
+        string[] SelectedNodeIds,
+        int[] SelectedStepColumns);
     private sealed record ResearchNodeClipboardItem(ResearchNodeRow Node, ResearchEffectRow? Effect);
 
     private sealed class ResearchCategoryListItem
@@ -964,6 +1136,8 @@ public partial class ResearchEditorWindow
 
     private void PermissionFilter_Checked(object sender, RoutedEventArgs e)
     {
+        if (_updatingPermissionFilters)
+            return;
         if (sender is not RadioButton { Tag: string tag } || !int.TryParse(tag, out var permission))
             return;
         _permissionFilter = permission;
@@ -976,9 +1150,58 @@ public partial class ResearchEditorWindow
             _selectedNodeIdentities.IntersectWith(visibleIdentities);
             if (_primaryNode is not null && !visibleIdentities.Contains(_primaryNode.RowIdentity))
                 _primaryNode = null;
+            var visibleColumns = VisibleNodes().Select(node => node.Column).ToHashSet();
+            _selectedStepColumns.IntersectWith(visibleColumns);
             RenderGraph(fitGraph: true);
             PopulateHierarchy();
             RenderInspector();
+        }
+    }
+
+    private void RefreshPermissionFilterButtons()
+    {
+        if (PermissionFilterPanel is null || PermissionAll is null)
+            return;
+
+        _updatingPermissionFilters = true;
+        try
+        {
+            while (PermissionFilterPanel.Children.Count > 2)
+                PermissionFilterPanel.Children.RemoveAt(PermissionFilterPanel.Children.Count - 1);
+
+            var permissions = _workbook is null || _selectedCategory is null
+                ? []
+                : _workbook.Nodes
+                    .Where(node => Same(node.Category, _selectedCategory.Category) && node.NodePermission is >= 1)
+                    .Select(node => node.NodePermission!.Value)
+                    .Distinct()
+                    .OrderBy(value => value)
+                    .ToArray();
+
+            if (_permissionFilter > 0 && !permissions.Contains(_permissionFilter))
+            {
+                _permissionFilter = 0;
+                _settings.PermissionFilter = 0;
+            }
+
+            PermissionAll.IsChecked = _permissionFilter == 0;
+            foreach (var permission in permissions)
+            {
+                var button = new RadioButton
+                {
+                    GroupName = "Permission",
+                    Content = permission.ToString(CultureInfo.InvariantCulture),
+                    Tag = permission.ToString(CultureInfo.InvariantCulture),
+                    Style = (Style)FindResource("FilterToggle"),
+                    IsChecked = _permissionFilter == permission
+                };
+                button.Checked += PermissionFilter_Checked;
+                PermissionFilterPanel.Children.Add(button);
+            }
+        }
+        finally
+        {
+            _updatingPermissionFilters = false;
         }
     }
 
@@ -1012,9 +1235,44 @@ public partial class ResearchEditorWindow
         RenderGraph();
         PopulateHierarchy();
         RenderInspector();
-        RunValidation(logSuccess: false);
+        ScheduleValidation();
         UpdateDirtyState();
         Log(ResearchConsoleSeverity.Info, result.Message);
+        e.Handled = true;
+    }
+
+    private void AppendStepButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_workbook is null || _selectedCategory is null)
+            return;
+
+        var category = _selectedCategory.Category;
+        PushUndo();
+        var result = ResearchWorkbookService.TryAppendStep(_workbook, category);
+        if (!result.Success)
+        {
+            UndoWithoutRender();
+            Log(ResearchConsoleSeverity.Error, result.Message, category);
+            return;
+        }
+
+        var newColumn = _workbook.Nodes
+            .Where(node => Same(node.Category, category))
+            .Select(node => node.Column)
+            .DefaultIfEmpty()
+            .Max();
+        _permissionFilter = 0;
+        _settings.PermissionFilter = 0;
+        _selectedNodeIdentities.Clear();
+        _selectedStepColumns.Clear();
+        _selectedStepColumns.Add(newColumn);
+        _primaryNode = null;
+        RenderGraph();
+        PopulateHierarchy();
+        RenderInspector();
+        ScheduleValidation();
+        UpdateDirtyState();
+        Log(ResearchConsoleSeverity.Info, result.Message, category);
         e.Handled = true;
     }
 
@@ -1053,9 +1311,123 @@ public partial class ResearchEditorWindow
         RenderGraph();
         PopulateHierarchy();
         RenderInspector();
-        RunValidation(logSuccess: false);
+        ScheduleValidation();
         UpdateDirtyState();
         Log(ResearchConsoleSeverity.Info, result.Message, category);
+    }
+
+    private void StepBlock_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: ResearchStepTag step })
+            return;
+        BeginStepMarqueeSelection(e, step.Column);
+        e.Handled = true;
+    }
+
+    private void SelectStepBlock(int column, bool updateHierarchy)
+    {
+        if (!VisibleNodes().Any(node => node.Column == column))
+            return;
+        SelectStepBlocks([column], updateHierarchy);
+    }
+
+    private void SelectStepBlocks(IEnumerable<int> columns, bool updateHierarchy)
+    {
+        var visibleColumns = VisibleNodes().Select(node => node.Column).ToHashSet();
+        var selectedColumns = columns.Where(visibleColumns.Contains).Distinct().OrderBy(value => value).ToArray();
+        SceneViewport.Focus();
+        _selectedNodeIdentities.Clear();
+        _primaryNode = null;
+        _selectedStepColumns.Clear();
+        foreach (var column in selectedColumns)
+            _selectedStepColumns.Add(column);
+        CloseQuickNodePopup();
+        ApplySelectionVisuals();
+        RenderInspector();
+        if (updateHierarchy && selectedColumns.Length == 1)
+            SelectHierarchyStep(selectedColumns[0]);
+    }
+
+    private void EmptySlot_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: ResearchSlotTag slot })
+            return;
+        BeginStepMarqueeSelection(e, slot.Column);
+        e.Handled = true;
+    }
+
+    private void EmptySlot_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: ResearchSlotTag slot } target)
+            return;
+
+        CloseQuickNodePopup();
+        var menu = new ContextMenu { Placement = PlacementMode.MousePoint };
+        var add = new MenuItem { Header = "연구 노드 추가" };
+        add.Click += (_, _) => CreateNodeAtSlot(slot.Column, slot.Row);
+        menu.Items.Add(add);
+        target.ContextMenu = menu;
+        menu.IsOpen = true;
+        e.Handled = true;
+    }
+
+    private void CreateNodeAtSlot(int column, int row)
+    {
+        if (_workbook is null || _selectedCategory is null)
+            return;
+        var category = _selectedCategory.Category;
+        if (_workbook.Nodes.Any(node => Same(node.Category, category) && node.Column == column && node.Row == row))
+        {
+            Log(ResearchConsoleSeverity.Warning, $"STEP {column:000} / row {row}은 이미 사용 중입니다.", category);
+            return;
+        }
+
+        var categoryNodes = _workbook.Nodes
+            .Where(node => Same(node.Category, category))
+            .ToList();
+        var template = categoryNodes
+            .OrderBy(node => Math.Abs(node.Column - column))
+            .ThenBy(node => Math.Abs(node.Row - row))
+            .FirstOrDefault();
+        var permission = _permissionFilter > 0
+            ? _permissionFilter
+            : categoryNodes.Where(node => node.Column == column)
+                .Select(node => node.NodePermission)
+                .FirstOrDefault(value => value is not null)
+              ?? template?.NodePermission
+              ?? 1;
+
+        PushUndo();
+        try
+        {
+            var created = ResearchWorkbookService.CreateNode(
+                _workbook,
+                category,
+                column,
+                row,
+                template?.ExportId,
+                template?.ThemeId ?? "s1");
+            created.Node.NodePermission = permission;
+            _selectedNodeIdentities.Clear();
+            _selectedNodeIdentities.Add(created.Node.RowIdentity);
+            _selectedStepColumns.Clear();
+            _primaryNode = created.Node;
+            _quickNodePopupRequested = true;
+            RenderGraph();
+            PopulateHierarchy();
+            RenderInspector();
+            ScheduleValidation();
+            UpdateDirtyState();
+            Log(ResearchConsoleSeverity.Info,
+                $"연구 노드를 추가했습니다: {created.Node.Id} (STEP {column:000} / row {row})",
+                created.Node.Id);
+        }
+        catch (Exception ex)
+        {
+            UndoWithoutRender();
+            Log(ResearchConsoleSeverity.Error, $"연구 노드를 추가하지 못했습니다: {ex.Message}", category);
+            ThemedMessageBox.Show(ex.Message, "연구 노드 추가", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     private void Node_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -1063,6 +1435,7 @@ public partial class ResearchEditorWindow
         if (sender is not Border { Tag: ResearchNodeRow node } card)
             return;
         SceneViewport.Focus();
+        _selectedStepColumns.Clear();
         if ((Keyboard.Modifiers & ModifierKeys.Control) != 0)
         {
             if (!_selectedNodeIdentities.Add(node.RowIdentity))
@@ -1078,6 +1451,165 @@ public partial class ResearchEditorWindow
         ApplySelectionVisuals();
         RenderInspector();
         SelectHierarchyNode(node.RowIdentity);
+        if (_selectedNodeIdentities.Count == 1 && _primaryNode is not null)
+            ShowQuickNodePopup(_primaryNode, card);
+        else
+            CloseQuickNodePopup();
+        e.Handled = true;
+    }
+
+    private void Node_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not Border { Tag: ResearchNodeRow node } card)
+            return;
+
+        SceneViewport.Focus();
+        _selectedStepColumns.Clear();
+        if (!_selectedNodeIdentities.Contains(node.RowIdentity))
+        {
+            _selectedNodeIdentities.Clear();
+            _selectedNodeIdentities.Add(node.RowIdentity);
+        }
+        _primaryNode = node;
+        CloseQuickNodePopup();
+        ApplySelectionVisuals();
+        RenderInspector();
+        SelectHierarchyNode(node.RowIdentity);
+
+        var count = _selectedNodeIdentities.Count;
+        var menu = new ContextMenu { Placement = PlacementMode.MousePoint };
+        var delete = new MenuItem
+        {
+            Header = count > 1 ? $"선택한 연구 노드 {count:N0}개 삭제" : "연구 노드 삭제"
+        };
+        delete.Click += (_, _) => DeleteSelectedNodes();
+        menu.Items.Add(delete);
+        card.ContextMenu = menu;
+        menu.IsOpen = true;
+        e.Handled = true;
+    }
+
+    private void ShowQuickNodePopup(ResearchNodeRow node, Border card)
+    {
+        _quickNodePopupRequested = true;
+        QuickNodePopup.IsOpen = false;
+        QuickNodePopup.Tag = node.RowIdentity;
+        QuickNodePopup.PlacementTarget = card;
+
+        var cardPosition = card.TranslatePoint(new Point(0, 0), SceneViewport);
+        var placeRight = cardPosition.X + NodeWidth + 340 <= SceneViewport.ActualWidth;
+        QuickNodePopup.Placement = placeRight ? PlacementMode.Right : PlacementMode.Left;
+        QuickNodePopup.HorizontalOffset = placeRight ? 8 : -8;
+        QuickNodePopup.VerticalOffset = -6;
+
+        QuickNodeIdText.Text = node.Id;
+        QuickNodeImageBox.Text = node.Image;
+        QuickNodeActiveItemBox.Text = node.ActiveItemId;
+        QuickNodeActiveValueBox.Text = node.ActiveItemValue;
+        QuickNodeActiveStepBox.Text = node.ActiveStep?.ToString(CultureInfo.InvariantCulture) ?? "";
+        QuickNodeTotalText.Text = $"필요 수량 합계: {node.TotalRequiredHelper?.ToString("G", CultureInfo.InvariantCulture) ?? "0"}";
+        QuickNodePopup.IsOpen = true;
+    }
+
+    private void RefreshQuickNodePopup()
+    {
+        if (!_quickNodePopupRequested)
+        {
+            CloseQuickNodePopup(clearRequest: false);
+            return;
+        }
+
+        if (_primaryNode is null || _selectedNodeIdentities.Count != 1)
+        {
+            CloseQuickNodePopup();
+            return;
+        }
+
+        if (!_nodeVisuals.ContainsKey(_primaryNode.RowIdentity))
+        {
+            CloseQuickNodePopup(clearRequest: false);
+            return;
+        }
+
+        Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+        {
+            if (_quickNodePopupRequested
+                && _primaryNode is not null
+                && _selectedNodeIdentities.Count == 1
+                && _nodeVisuals.TryGetValue(_primaryNode.RowIdentity, out var currentCard))
+            {
+                ShowQuickNodePopup(_primaryNode, currentCard);
+            }
+        }));
+    }
+
+    private void CloseQuickNodePopup(bool clearRequest = true)
+    {
+        QuickNodePopup.IsOpen = false;
+        QuickNodePopup.PlacementTarget = null;
+        QuickNodePopup.Tag = null;
+        if (clearRequest)
+            _quickNodePopupRequested = false;
+    }
+
+    private void QuickNodeCloseButton_Click(object sender, RoutedEventArgs e)
+    {
+        CloseQuickNodePopup();
+        e.Handled = true;
+    }
+
+    private void QuickNodeApplyButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_workbook is null || QuickNodePopup.Tag is not string rowIdentity)
+            return;
+        var node = _workbook.Nodes.FirstOrDefault(candidate => Same(candidate.RowIdentity, rowIdentity));
+        if (node is null)
+        {
+            CloseQuickNodePopup();
+            return;
+        }
+
+        int? activeStep;
+        try
+        {
+            activeStep = ParseNullableInt(QuickNodeActiveStepBox.Text, "active_step");
+            if (activeStep is < 0)
+                throw new InvalidOperationException("active_step은 0 이상이어야 합니다.");
+        }
+        catch (Exception ex)
+        {
+            ThemedMessageBox.Show(ex.Message, "빠른 노드 편집", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var image = QuickNodeImageBox.Text.Trim();
+        var activeItem = QuickNodeActiveItemBox.Text.Trim();
+        var activeValues = QuickNodeActiveValueBox.Text.Trim();
+        if (Same(node.Image, image)
+            && Same(node.ActiveItemId, activeItem)
+            && Same(node.ActiveItemValue, activeValues)
+            && node.ActiveStep == activeStep)
+        {
+            CloseQuickNodePopup();
+            return;
+        }
+
+        PushUndo();
+        node.Image = image;
+        node.ActiveItemId = activeItem;
+        node.ActiveItemValue = activeValues;
+        node.ActiveStep = activeStep;
+        node.TotalRequiredHelper = ResearchWorkbookService.CalculateActiveItemTotal(activeValues);
+        _primaryNode = node;
+        _selectedNodeIdentities.Clear();
+        _selectedNodeIdentities.Add(node.RowIdentity);
+        _quickNodePopupRequested = true;
+        RenderGraph();
+        PopulateHierarchy();
+        RenderInspector();
+        ScheduleValidation();
+        UpdateDirtyState();
+        Log(ResearchConsoleSeverity.Info, $"빠른 노드 편집을 적용했습니다: {node.Id}", node.Id);
         e.Handled = true;
     }
 
@@ -1133,6 +1665,12 @@ public partial class ResearchEditorWindow
 
     private void SceneViewport_MouseMove(object sender, MouseEventArgs e)
     {
+        if (_isStepMarqueeSelecting && e.LeftButton == MouseButtonState.Pressed)
+        {
+            UpdateStepMarqueeSelection(e.GetPosition(SceneViewport));
+            e.Handled = true;
+            return;
+        }
         if (!_isPanning || e.RightButton != MouseButtonState.Pressed)
             return;
         var current = e.GetPosition(SceneViewport);
@@ -1146,12 +1684,95 @@ public partial class ResearchEditorWindow
     {
         if (e.OriginalSource is Border or TextBlock or Image or Button)
             return;
-        _selectedNodeIdentities.Clear();
-        _primaryNode = null;
-        ApplySelectionVisuals();
-        RenderInspector();
+        BeginStepMarqueeSelection(e, clickedColumn: null);
         e.Handled = true;
     }
+
+    private void BeginStepMarqueeSelection(MouseButtonEventArgs e, int? clickedColumn)
+    {
+        if (e.ChangedButton != MouseButton.Left)
+            return;
+        SceneViewport.Focus();
+        CloseQuickNodePopup();
+        _isStepMarqueeSelecting = true;
+        _stepMarqueeMoved = false;
+        _stepMarqueeAdditive = (Keyboard.Modifiers & ModifierKeys.Control) != 0;
+        _stepMarqueeClickedColumn = clickedColumn;
+        _stepMarqueeStartScreen = e.GetPosition(SceneViewport);
+        _stepMarqueeStartWorld = ScreenToWorld(_stepMarqueeStartScreen);
+        _stepMarqueeBaseSelection.Clear();
+        if (_stepMarqueeAdditive)
+            _stepMarqueeBaseSelection.UnionWith(_selectedStepColumns);
+        _selectedNodeIdentities.Clear();
+        _primaryNode = null;
+        StepSelectionMarquee.Visibility = Visibility.Collapsed;
+        SceneViewport.CaptureMouse();
+    }
+
+    private void UpdateStepMarqueeSelection(Point currentScreen)
+    {
+        if (!_isStepMarqueeSelecting)
+            return;
+        var screenDelta = currentScreen - _stepMarqueeStartScreen;
+        if (!_stepMarqueeMoved && Math.Abs(screenDelta.X) < 4 && Math.Abs(screenDelta.Y) < 4)
+            return;
+
+        _stepMarqueeMoved = true;
+        var currentWorld = ScreenToWorld(currentScreen);
+        var selectionRect = NormalizedRect(_stepMarqueeStartWorld, currentWorld);
+        Canvas.SetLeft(StepSelectionMarquee, selectionRect.Left);
+        Canvas.SetTop(StepSelectionMarquee, selectionRect.Top);
+        StepSelectionMarquee.Width = selectionRect.Width;
+        StepSelectionMarquee.Height = selectionRect.Height;
+        StepSelectionMarquee.Visibility = Visibility.Visible;
+
+        var intersected = _stepBandVisuals.Keys
+            .Where(column => new Rect(WorldX(column) - 9, 43, NodeWidth + 18, GraphHeight - 48)
+                .IntersectsWith(selectionRect))
+            .ToArray();
+        _selectedStepColumns.Clear();
+        _selectedStepColumns.UnionWith(_stepMarqueeBaseSelection);
+        _selectedStepColumns.UnionWith(intersected);
+        ApplySelectionVisuals();
+    }
+
+    private void SceneViewport_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_isStepMarqueeSelecting)
+            return;
+
+        if (!_stepMarqueeMoved)
+        {
+            _selectedStepColumns.Clear();
+            _selectedStepColumns.UnionWith(_stepMarqueeBaseSelection);
+            if (_stepMarqueeClickedColumn is int clickedColumn)
+            {
+                if (_stepMarqueeAdditive && !_selectedStepColumns.Add(clickedColumn))
+                    _selectedStepColumns.Remove(clickedColumn);
+                else if (!_stepMarqueeAdditive)
+                    _selectedStepColumns.Add(clickedColumn);
+            }
+        }
+
+        _isStepMarqueeSelecting = false;
+        StepSelectionMarquee.Visibility = Visibility.Collapsed;
+        SceneViewport.ReleaseMouseCapture();
+        ApplySelectionVisuals();
+        RenderInspector();
+        if (_selectedStepColumns.Count == 1)
+            SelectHierarchyStep(_selectedStepColumns.Min);
+        e.Handled = true;
+    }
+
+    private Point ScreenToWorld(Point point) => new(
+        (point.X - GraphTranslate.X) / GraphScale.ScaleX,
+        (point.Y - GraphTranslate.Y) / GraphScale.ScaleY);
+
+    private static Rect NormalizedRect(Point first, Point second) => new(
+        Math.Min(first.X, second.X),
+        Math.Min(first.Y, second.Y),
+        Math.Max(1, Math.Abs(second.X - first.X)),
+        Math.Max(1, Math.Abs(second.Y - first.Y)));
 
     private void ApplySelectionVisuals()
     {
@@ -1163,7 +1784,50 @@ public partial class ResearchEditorWindow
                 : new SolidColorBrush(Color.FromRgb(91, 91, 91));
             visual.BorderThickness = selected ? new Thickness(2.2) : new Thickness(1.2);
         }
+
+        foreach (var (column, visual) in _stepBandVisuals)
+        {
+            var selected = _selectedStepColumns.Contains(column);
+            var copied = IsCopiedStep(column);
+            visual.Background = StepBandBrush(column, selected, copied);
+            visual.BorderBrush = selected
+                ? new SolidColorBrush(Color.FromRgb(82, 170, 211))
+                : copied
+                    ? new SolidColorBrush(Color.FromRgb(222, 183, 79))
+                    : new SolidColorBrush(Color.FromArgb(90, 76, 76, 76));
+            visual.BorderThickness = selected || copied
+                ? new Thickness(2, 0, 2, 0)
+                : new Thickness(1, 0, 1, 0);
+        }
+
+        foreach (var (column, visual) in _stepHeaderVisuals)
+        {
+            var selected = _selectedStepColumns.Contains(column);
+            var copied = IsCopiedStep(column);
+            visual.Background = new SolidColorBrush(selected
+                ? Color.FromRgb(45, 79, 96)
+                : copied
+                    ? Color.FromRgb(78, 67, 39)
+                    : Color.FromRgb(42, 42, 42));
+            visual.BorderBrush = selected
+                ? new SolidColorBrush(Color.FromRgb(82, 170, 211))
+                : copied
+                    ? new SolidColorBrush(Color.FromRgb(222, 183, 79))
+                    : new SolidColorBrush(Color.FromRgb(73, 73, 73));
+            visual.BorderThickness = selected || copied ? new Thickness(2) : new Thickness(1);
+            visual.ToolTip = selected && _stepClipboard is not null && !copied
+                ? $"STEP {column:000} paste target - press Ctrl+V"
+                : copied
+                    ? $"STEP {column:000} copied source"
+                    : $"STEP {column:000} block - click to select, Ctrl+C to copy";
+        }
     }
+
+    private bool IsCopiedStep(int column) =>
+        _stepClipboard is not null
+        && _selectedCategory is not null
+        && Same(_stepClipboard.SourceCategory, _selectedCategory.Category)
+        && _stepClipboard.Blocks.Any(block => block.SourceColumn == column);
 
     private void FitOpeningView()
     {
@@ -1218,7 +1882,7 @@ public partial class ResearchEditorWindow
         var diff = ResearchWorkbookService.BuildDiff(_workbook);
         if (diff.Count == 0)
         {
-            ThemedMessageBox.Show("Export할 연구 변경이 없습니다.", "Research Export", MessageBoxButton.OK, MessageBoxImage.Information);
+            ThemedMessageBox.Show("내보낼 연구 변경 내용이 없습니다.", "연구 데이터 내보내기", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -1277,7 +1941,11 @@ public partial class ResearchEditorWindow
         {
             var rebasedState = ResearchWorkbookService.RebaseAfterExport(
                 state.Workbook, savedReload, exportContext, selectedEntries);
-            _undoStack.Push(new UndoState(rebasedState, state.Category, state.SelectedNodeIds));
+            _undoStack.Push(new UndoState(
+                rebasedState,
+                state.Category,
+                state.SelectedNodeIds,
+                state.SelectedStepColumns));
         }
         _settings.LastExportId = exportId;
         ResearchPathResolver.SaveSettings(_settings);
@@ -1305,15 +1973,41 @@ public partial class ResearchEditorWindow
             foreach (var issue in ex.Issues)
                 Log(issue.Severity == ResearchValidationSeverity.Error ? ResearchConsoleSeverity.Error : ResearchConsoleSeverity.Warning,
                     issue.Message, issue.TargetId);
-            ThemedMessageBox.Show("연구 DB 검증 오류를 먼저 해결하세요.", "Research Export", MessageBoxButton.OK, MessageBoxImage.Error);
+            ThemedMessageBox.Show("연구 DB 검증 오류를 먼저 해결하세요.", "연구 데이터 내보내기", MessageBoxButton.OK, MessageBoxImage.Error);
             return false;
         }
         catch (Exception ex)
         {
-            Log(ResearchConsoleSeverity.Error, ex.Message);
-            ThemedMessageBox.Show(ex.Message, "Research Export failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            var message = BuildResearchExportFailureMessage(ex);
+            Log(ResearchConsoleSeverity.Error, message);
+            ThemedMessageBox.Show(message, "연구 데이터 내보내기 실패", MessageBoxButton.OK, MessageBoxImage.Error);
             return false;
         }
+    }
+
+    private string BuildResearchExportFailureMessage(Exception exception)
+    {
+        if (IsFileLockException(exception))
+        {
+            var fileName = _paths is null
+                ? "연구 DB 엑셀 파일"
+                : $"'{Path.GetFileName(_paths.OutSystemPath)}' 파일";
+            return $"다른 프로그램에서 {fileName}을 사용 중이라 내보낼 수 없습니다.\n\n" +
+                   "Excel에서 해당 파일을 닫은 뒤 다시 시도해 주세요.";
+        }
+
+        return $"연구 데이터를 내보내지 못했습니다.\n\n오류 내용: {exception.Message}";
+    }
+
+    private static bool IsFileLockException(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException!)
+        {
+            if (current is IOException && (current.HResult & 0xFFFF) is 32 or 33)
+                return true;
+        }
+
+        return false;
     }
 
     private void RefreshAfterExternalMutation()
@@ -1329,6 +2023,12 @@ public partial class ResearchEditorWindow
 public partial class ResearchEditorWindow
 {
     private void ValidateMenuItem_Click(object sender, RoutedEventArgs e) => RunValidation(logSuccess: true);
+
+    private void ScheduleValidation()
+    {
+        _validationTimer.Stop();
+        _validationTimer.Start();
+    }
 
     private IReadOnlyList<ResearchValidationIssue> RunValidation(bool logSuccess)
     {
@@ -1528,6 +2228,7 @@ public partial class ResearchEditorWindow
                 var step = new TreeViewItem
                 {
                     Header = $"STEP {stepGroup.Key:000}  ({stepGroup.Count()} nodes)",
+                    Tag = new ResearchStepTag(stepGroup.Key),
                     IsExpanded = stepGroup.Key == permissionGroup.Min(node => node.Column)
                 };
                 permission.Items.Add(step);
@@ -1550,19 +2251,56 @@ public partial class ResearchEditorWindow
         if (item.Tag is ResearchCategoryRow category)
         {
             _selectedNodeIdentities.Clear();
+            _selectedStepColumns.Clear();
             _primaryNode = null;
             _selectedCategory = category;
             ApplySelectionVisuals();
             RenderInspector();
             return;
         }
+        if (item.Tag is ResearchStepTag step)
+        {
+            SelectStepBlock(step.Column, updateHierarchy: false);
+            return;
+        }
         if (item.Tag is not ResearchNodeRow node)
             return;
         _selectedNodeIdentities.Clear();
         _selectedNodeIdentities.Add(node.RowIdentity);
+        _selectedStepColumns.Clear();
         _primaryNode = node;
         ApplySelectionVisuals();
         RenderInspector();
+    }
+
+    private void SelectHierarchyStep(int column)
+    {
+        foreach (var root in HierarchyTree.Items.OfType<TreeViewItem>())
+        {
+            if (SelectHierarchyStepRecursive(root, column))
+                return;
+        }
+    }
+
+    private static bool SelectHierarchyStepRecursive(TreeViewItem parent, int column)
+    {
+        foreach (var item in parent.Items.OfType<TreeViewItem>())
+        {
+            if (item.Tag is ResearchStepTag step && step.Column == column)
+            {
+                item.IsSelected = true;
+                item.BringIntoView();
+                parent.IsExpanded = true;
+                return true;
+            }
+            if (SelectHierarchyStepRecursive(item, column))
+            {
+                item.IsExpanded = true;
+                parent.IsExpanded = true;
+                return true;
+            }
+        }
+        return false;
     }
 
     private void SelectHierarchyNode(string rowIdentity)
@@ -1599,7 +2337,26 @@ public partial class ResearchEditorWindow
         _suppressInspectorCommit = true;
         InspectorPanel.Children.Clear();
         NavigatorPanel.Children.Clear();
-        RenderNavigator();
+        if (_selectedStepColumns.Count == 1)
+        {
+            var selectedStep = _selectedStepColumns.Min;
+            RenderStepInspector(selectedStep);
+            _suppressInspectorCommit = false;
+            return;
+        }
+        if (_selectedStepColumns.Count > 1)
+        {
+            var nodeCount = VisibleNodes().Count(node => _selectedStepColumns.Contains(node.Column));
+            AddInspectorTitle($"{_selectedStepColumns.Count:N0}개 STEP 블록 선택");
+            InspectorPanel.Children.Add(new TextBlock
+            {
+                Text = $"STEP {_selectedStepColumns.Min:000}~{_selectedStepColumns.Max:000}, 연구 노드 {nodeCount:N0}개가 선택되었습니다. Ctrl+C로 묶어서 복사할 수 있습니다.",
+                Foreground = new SolidColorBrush(Color.FromRgb(165, 165, 165)),
+                TextWrapping = TextWrapping.Wrap
+            });
+            _suppressInspectorCommit = false;
+            return;
+        }
         if (_selectedNodeIdentities.Count > 1)
         {
             AddInspectorTitle($"{_selectedNodeIdentities.Count:N0} nodes selected");
@@ -1623,6 +2380,40 @@ public partial class ResearchEditorWindow
 
     private void RenderNavigator()
     {
+        if (_selectedStepColumns.Count == 1)
+        {
+            var selectedStep = _selectedStepColumns.Min;
+            var nodes = VisibleNodes().Where(node => node.Column == selectedStep).ToList();
+            AddPanelTitle(NavigatorPanel, $"STEP {selectedStep:000}");
+            AddReadOnlyField(NavigatorPanel, "nodes", nodes.Count.ToString(CultureInfo.InvariantCulture),
+                "Number of nodes in this STEP block.");
+            AddReadOnlyField(NavigatorPanel, "permission",
+                nodes.Select(node => node.NodePermission).FirstOrDefault(value => value is not null)?.ToString(CultureInfo.InvariantCulture) ?? "",
+                "Permission region assigned to this STEP block.");
+            NavigatorPanel.Children.Add(new TextBlock
+            {
+                Text = _stepClipboard is null
+                    ? "Press Ctrl+C to copy this STEP block."
+                    : IsCopiedStep(selectedStep)
+                        ? "Copied source. Select another STEP and press Ctrl+V."
+                        : "Paste target. Press Ctrl+V to replace this STEP block's content.",
+                Foreground = new SolidColorBrush(Color.FromRgb(171, 185, 194)),
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 8, 0, 0)
+            });
+            return;
+        }
+        if (_selectedStepColumns.Count > 1)
+        {
+            AddPanelTitle(NavigatorPanel, $"{_selectedStepColumns.Count:N0} STEP blocks");
+            NavigatorPanel.Children.Add(new TextBlock
+            {
+                Text = $"STEP {_selectedStepColumns.Min:000}~{_selectedStepColumns.Max:000} 선택. Ctrl+C로 함께 복사하세요.",
+                Foreground = new SolidColorBrush(Color.FromRgb(171, 185, 194)),
+                TextWrapping = TextWrapping.Wrap
+            });
+            return;
+        }
         if (_selectedNodeIdentities.Count > 1)
         {
             AddPanelTitle(NavigatorPanel, $"{_selectedNodeIdentities.Count:N0} nodes");
@@ -1663,6 +2454,30 @@ public partial class ResearchEditorWindow
         AddReadOnlyField(NavigatorPanel, "total required",
             node.TotalRequiredHelper?.ToString("G", CultureInfo.InvariantCulture) ?? "",
             "active_item_value에 입력한 수량의 합계입니다.");
+    }
+
+    private void RenderStepInspector(int column)
+    {
+        var nodes = VisibleNodes().Where(node => node.Column == column).OrderBy(node => node.Row).ToList();
+        AddInspectorTitle($"STEP {column:000} Block");
+        AddReadOnlyField("node count", nodes.Count.ToString(CultureInfo.InvariantCulture),
+            "Use the minus and plus buttons in the STEP header to set 1 to 3 nodes.");
+        AddReadOnlyField("rows", string.Join(", ", nodes.Select(node => node.Row)),
+            "Rows occupied by this STEP block.");
+        AddReadOnlyField("permission",
+            nodes.Select(node => node.NodePermission).FirstOrDefault(value => value is not null)?.ToString(CultureInfo.InvariantCulture) ?? "",
+            "Permission region assigned to this STEP block.");
+        InspectorPanel.Children.Add(new TextBlock
+        {
+            Text = _stepClipboard is null
+                ? "Ctrl+C copies the whole STEP. Select another shaded STEP and press Ctrl+V to paste."
+                : IsCopiedStep(column)
+                    ? "This is the copied source STEP."
+                    : "This is the paste target. Ctrl+V keeps its position, permission and links while replacing node content.",
+            Foreground = new SolidColorBrush(Color.FromRgb(174, 184, 190)),
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 12, 0, 0)
+        });
     }
 
     private void RenderCategoryInspector(ResearchCategoryRow category)
@@ -1715,10 +2530,10 @@ public partial class ResearchEditorWindow
         AddEditableField("node_permission", node.NodePermission?.ToString(CultureInfo.InvariantCulture) ?? "", value =>
         {
             var permission = ParseNullableInt(value, "node_permission");
-            if (permission is < 1 or > 5)
-                throw new InvalidOperationException("node_permission은 1~5여야 합니다.");
+            if (permission is < 1)
+                throw new InvalidOperationException("node_permission은 1 이상이어야 합니다.");
             node.NodePermission = permission;
-        }, "연구 단계입니다. 1~5를 사용하며 상단 필터와 permission band에 반영됩니다.");
+        }, "연구 권한 구역 번호입니다. 1 이상의 값을 사용하며 상단 필터와 permission band에 반영됩니다.");
         AddEditableField("active_item_id", node.ActiveItemId, value => node.ActiveItemId = value,
             "노드 활성화에 필요한 아이템 ID입니다.");
         AddEditableField("active_item_value", node.ActiveItemValue, value =>
@@ -2160,20 +2975,7 @@ public partial class ResearchEditorWindow
     {
         if (sender is not Button { Tag: string tag })
             return;
-        var menuItem = tag switch
-        {
-            "category" => CategoryPaneMenuItem,
-            "scene" => ScenePaneMenuItem,
-            "navigator" => NavigatorPaneMenuItem,
-            "hierarchy" => HierarchyPaneMenuItem,
-            "inspector" => InspectorPaneMenuItem,
-            "console" => ConsolePaneMenuItem,
-            _ => null
-        };
-        if (menuItem is null)
-            return;
-        menuItem.IsChecked = false;
-        PaneMenuItem_Click(menuItem, e);
+        SetPaneVisible(tag, false);
         e.Handled = true;
     }
 
@@ -2181,51 +2983,131 @@ public partial class ResearchEditorWindow
     {
         if (sender is not MenuItem { Tag: string tag } item)
             return;
+        SetPaneVisible(tag, item.IsChecked);
+    }
+
+    private void SetPaneVisible(string tag, bool visible)
+    {
+        if (!visible)
+            RememberPaneSize(tag);
+
         switch (tag)
         {
             case "category":
-                CategoryColumn.Width = item.IsChecked ? new GridLength(Math.Max(170, _settings.CategoryPaneWidth)) : new GridLength(0);
-                CategoryPane.Visibility = item.IsChecked ? Visibility.Visible : Visibility.Collapsed;
-                CategorySplitter.Visibility = item.IsChecked ? Visibility.Visible : Visibility.Collapsed;
+                CategoryPaneMenuItem.IsChecked = visible;
                 break;
             case "scene":
-                ScenePane.Visibility = item.IsChecked ? Visibility.Visible : Visibility.Collapsed;
-                break;
-            case "navigator":
-                NavigatorColumn.Width = item.IsChecked ? new GridLength(Math.Max(190, _settings.NavigatorPaneWidth)) : new GridLength(0);
-                NavigatorPane.Visibility = item.IsChecked ? Visibility.Visible : Visibility.Collapsed;
-                NavigatorSplitter.Visibility = item.IsChecked ? Visibility.Visible : Visibility.Collapsed;
+                ScenePaneMenuItem.IsChecked = visible;
                 break;
             case "hierarchy":
-                HierarchyColumn.Width = item.IsChecked ? new GridLength(Math.Max(130, _settings.HierarchyPaneWidth)) : new GridLength(0);
-                HierarchyPane.Visibility = item.IsChecked ? Visibility.Visible : Visibility.Collapsed;
+                HierarchyPaneMenuItem.IsChecked = visible;
                 break;
             case "inspector":
-                InspectorPane.Visibility = item.IsChecked ? Visibility.Visible : Visibility.Collapsed;
+                InspectorPaneMenuItem.IsChecked = visible;
                 break;
             case "console":
-                ConsoleRow.Height = item.IsChecked ? new GridLength(Math.Clamp(_settings.ConsoleHeight, 130, 520)) : new GridLength(0);
-                ConsolePane.Visibility = item.IsChecked ? Visibility.Visible : Visibility.Collapsed;
-                ConsoleSplitter.Visibility = item.IsChecked ? Visibility.Visible : Visibility.Collapsed;
+                ConsolePaneMenuItem.IsChecked = visible;
+                break;
+            default:
+                return;
+        }
+
+        ApplyPaneVisibility();
+        SaveLayoutSettings();
+    }
+
+    private void RememberPaneSize(string tag)
+    {
+        switch (tag)
+        {
+            case "category":
+                _settings.CategoryPaneWidth = PositiveOrDefault(
+                    CategoryColumn.ActualWidth, CategoryColumn.Width.Value, _settings.CategoryPaneWidth);
+                break;
+            case "hierarchy":
+                _settings.HierarchyPaneWidth = PositiveOrDefault(
+                    HierarchyColumn.ActualWidth, HierarchyColumn.Width.Value, _settings.HierarchyPaneWidth);
+                goto case "right";
+            case "inspector":
+            case "right":
+                _settings.RightPaneWidth = PositiveOrDefault(
+                    RightColumn.ActualWidth, RightColumn.Width.Value, _settings.RightPaneWidth);
+                break;
+            case "console":
+                _settings.ConsoleHeight = PositiveOrDefault(
+                    ConsoleRow.ActualHeight, ConsoleRow.Height.Value, _settings.ConsoleHeight);
                 break;
         }
-        SaveLayoutSettings();
+    }
+
+    private void ApplyPaneVisibility()
+    {
+        var showCategory = CategoryPaneMenuItem.IsChecked;
+        var showScene = ScenePaneMenuItem.IsChecked;
+        var showHierarchy = HierarchyPaneMenuItem.IsChecked;
+        var showInspector = InspectorPaneMenuItem.IsChecked;
+        var showConsole = ConsolePaneMenuItem.IsChecked;
+
+        CategoryPane.Visibility = showCategory ? Visibility.Visible : Visibility.Collapsed;
+        CategoryColumn.MinWidth = showCategory ? 170 : 0;
+        CategoryColumn.Width = showCategory
+            ? new GridLength(Math.Clamp(_settings.CategoryPaneWidth, 170, 520))
+            : new GridLength(0);
+
+        ScenePane.Visibility = showScene ? Visibility.Visible : Visibility.Collapsed;
+        SceneColumn.MinWidth = showScene ? 220 : 0;
+        SceneColumn.Width = showScene ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
+
+        var showCategorySceneSplitter = showCategory && showScene;
+        CategorySplitter.Visibility = showCategorySceneSplitter ? Visibility.Visible : Visibility.Collapsed;
+        CategorySplitterColumn.Width = showCategorySceneSplitter ? new GridLength(5) : new GridLength(0);
+
+        ConsolePane.Visibility = showConsole ? Visibility.Visible : Visibility.Collapsed;
+        ConsoleSplitter.Visibility = showConsole ? Visibility.Visible : Visibility.Collapsed;
+        ConsoleSplitterRow.Height = showConsole ? new GridLength(7) : new GridLength(0);
+        ConsoleRow.MinHeight = showConsole ? 130 : 0;
+        ConsoleRow.Height = showConsole
+            ? new GridLength(Math.Clamp(_settings.ConsoleHeight, 130, 520))
+            : new GridLength(0);
+
+        var showRight = showHierarchy || showInspector;
+        RightPane.Visibility = showRight ? Visibility.Visible : Visibility.Collapsed;
+        var showRightSplitter = showRight && (showCategory || showScene);
+        RightPaneSplitter.Visibility = showRightSplitter ? Visibility.Visible : Visibility.Collapsed;
+        RightPaneSplitterColumn.Width = showRightSplitter ? new GridLength(5) : new GridLength(0);
+        var rightMinimum = showHierarchy && showInspector ? 520 : 260;
+        RightColumn.MinWidth = showRight ? rightMinimum : 0;
+        RightColumn.Width = showRight
+            ? new GridLength(Math.Clamp(_settings.RightPaneWidth, rightMinimum, 1500))
+            : new GridLength(0);
+
+        HierarchyPane.Visibility = showHierarchy ? Visibility.Visible : Visibility.Collapsed;
+        HierarchyColumn.MinWidth = showHierarchy ? 140 : 0;
+        HierarchyColumn.Width = showHierarchy
+            ? new GridLength(Math.Clamp(_settings.HierarchyPaneWidth, 140, 720))
+            : new GridLength(0);
+
+        InspectorPane.Visibility = showInspector ? Visibility.Visible : Visibility.Collapsed;
+        InspectorColumn.MinWidth = showInspector ? 120 : 0;
+        InspectorColumn.Width = showInspector ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
+
+        var showInnerSplitter = showHierarchy && showInspector;
+        HierarchyInspectorSplitter.Visibility = showInnerSplitter ? Visibility.Visible : Visibility.Collapsed;
+        HierarchyInspectorSplitterColumn.Width = showInnerSplitter ? new GridLength(5) : new GridLength(0);
     }
 
     private void LayoutSplitter_DragCompleted(object sender, DragCompletedEventArgs e) => SaveLayoutSettings();
 
     private void RestoreLayout()
     {
-        CategoryColumn.Width = new GridLength(Math.Max(170, _settings.CategoryPaneWidth));
-        NavigatorColumn.Width = new GridLength(Math.Max(190, _settings.NavigatorPaneWidth));
-        HierarchyColumn.Width = new GridLength(Math.Max(130, _settings.HierarchyPaneWidth));
-        var rightMinimum = NavigatorColumn.Width.Value + HierarchyColumn.Width.Value + 190;
-        RightColumn.Width = new GridLength(Math.Max(rightMinimum, _settings.RightPaneWidth));
-        ConsoleRow.Height = new GridLength(Math.Clamp(_settings.ConsoleHeight, 130, 520));
+        NavigatorColumn.Width = new GridLength(0);
+        NavigatorPane.Visibility = Visibility.Collapsed;
+        NavigatorSplitter.Visibility = Visibility.Collapsed;
+        ApplyPaneVisibility();
         GraphScale.ScaleX = GraphScale.ScaleY = Math.Clamp(_settings.Zoom, 0.18, 2.4);
         GraphTranslate.X = _settings.PanX;
         GraphTranslate.Y = _settings.PanY;
-        _permissionFilter = Math.Clamp(_settings.PermissionFilter, 0, 5);
+        _permissionFilter = Math.Max(0, _settings.PermissionFilter);
     }
 
     private void SaveViewSettings()
@@ -2238,15 +3120,13 @@ public partial class ResearchEditorWindow
 
     private void SaveLayoutSettings()
     {
-        if (CategoryColumn.ActualWidth > 20)
+        if (CategoryPane.Visibility == Visibility.Visible && CategoryColumn.ActualWidth > 20)
             _settings.CategoryPaneWidth = CategoryColumn.ActualWidth;
-        if (RightColumn.ActualWidth > 20)
+        if (RightPane.Visibility == Visibility.Visible && RightColumn.ActualWidth > 20)
             _settings.RightPaneWidth = RightColumn.ActualWidth;
-        if (NavigatorColumn.ActualWidth > 20)
-            _settings.NavigatorPaneWidth = NavigatorColumn.ActualWidth;
-        if (HierarchyColumn.ActualWidth > 20)
+        if (HierarchyPane.Visibility == Visibility.Visible && HierarchyColumn.ActualWidth > 20)
             _settings.HierarchyPaneWidth = HierarchyColumn.ActualWidth;
-        if (ConsoleRow.ActualHeight >= 130)
+        if (ConsolePane.Visibility == Visibility.Visible && ConsoleRow.ActualHeight >= 130)
             _settings.ConsoleHeight = ConsoleRow.ActualHeight;
         SaveViewSettings();
     }
@@ -2327,10 +3207,13 @@ public partial class ResearchEditorWindow
     {
         if (_workbook is null)
             return;
+        var snapshot = _workbook.DeepClone(includeOriginalSnapshot: false);
+        snapshot.OriginalSnapshot = _workbook.OriginalSnapshot;
         _undoStack.Push(new UndoState(
-            _workbook.DeepClone(includeOriginalSnapshot: true),
+            snapshot,
             _selectedCategory?.Category,
-            _selectedNodeIdentities.ToArray()));
+            _selectedNodeIdentities.ToArray(),
+            _selectedStepColumns.ToArray()));
         while (_undoStack.Count > 80)
         {
             var retained = _undoStack.Take(80).Reverse().ToArray();
@@ -2347,11 +3230,13 @@ public partial class ResearchEditorWindow
         var state = _undoStack.Pop();
         _workbook = state.Workbook;
         _selectedCategory = _workbook.FindCategory(state.Category);
+        PopulateCategories(_selectedCategory?.Category);
         _selectedNodeIdentities.Clear();
         foreach (var identity in state.SelectedNodeIds)
             _selectedNodeIdentities.Add(identity);
         _primaryNode = _workbook.Nodes.FirstOrDefault(node => _selectedNodeIdentities.Contains(node.RowIdentity));
-        PopulateCategories(_selectedCategory?.Category);
+        _selectedStepColumns.Clear();
+        _selectedStepColumns.UnionWith(state.SelectedStepColumns);
         RenderGraph();
         PopulateHierarchy();
         RenderInspector();
@@ -2370,22 +3255,49 @@ public partial class ResearchEditorWindow
         foreach (var identity in state.SelectedNodeIds)
             _selectedNodeIdentities.Add(identity);
         _primaryNode = _workbook.Nodes.FirstOrDefault(node => _selectedNodeIdentities.Contains(node.RowIdentity));
+        _selectedStepColumns.Clear();
+        _selectedStepColumns.UnionWith(state.SelectedStepColumns);
     }
 
     private void CopySelectedNodes()
     {
-        if (_workbook is null)
+        if (_workbook is null || _selectedCategory is null)
             return;
+        if (_selectedStepColumns.Count > 0)
+        {
+            var snapshot = ResearchWorkbookService.CaptureStepBlocks(
+                _workbook, _selectedCategory.Category, _selectedStepColumns);
+            if (snapshot.StepCount == 0 || snapshot.NodeCount == 0)
+                return;
+            _stepClipboard = snapshot;
+            _nodeClipboard.Clear();
+            ApplySelectionVisuals();
+            RenderInspector();
+            Log(ResearchConsoleSeverity.Info,
+                $"STEP 블록 {snapshot.StepCount:N0}개를 복사했습니다. ({snapshot.NodeCount:N0}개 노드)",
+                _selectedCategory.Category);
+            return;
+        }
+
+        _stepClipboard = null;
         _nodeClipboard.Clear();
         foreach (var node in _workbook.Nodes.Where(node => _selectedNodeIdentities.Contains(node.RowIdentity)))
             _nodeClipboard.Add(new ResearchNodeClipboardItem(node.DeepClone(), _workbook.FindEffect(node)?.DeepClone()));
+        ApplySelectionVisuals();
         if (_nodeClipboard.Count > 0)
             Log(ResearchConsoleSeverity.Info, $"연구 노드 {_nodeClipboard.Count:N0}개를 복사했습니다.");
     }
 
     private void PasteNodes()
     {
-        if (_workbook is null || _selectedCategory is null || _nodeClipboard.Count == 0)
+        if (_workbook is null || _selectedCategory is null)
+            return;
+        if (_stepClipboard is not null)
+        {
+            PasteStepBlock();
+            return;
+        }
+        if (_nodeClipboard.Count == 0)
             return;
         PushUndo();
         var createdIdentities = new List<string>();
@@ -2425,13 +3337,86 @@ public partial class ResearchEditorWindow
         UpdateDirtyState();
     }
 
+    private void PasteStepBlock()
+    {
+        if (_workbook is null || _selectedCategory is null || _stepClipboard is null)
+            return;
+        if (_selectedStepColumns.Count == 0)
+        {
+            Log(ResearchConsoleSeverity.Warning, "붙여넣을 STEP 또는 시작 STEP을 먼저 선택하세요.");
+            return;
+        }
+
+        var sourceBlocks = _stepClipboard.Blocks.OrderBy(block => block.SourceColumn).ToArray();
+        int[] targetColumns;
+        if (_selectedStepColumns.Count == 1)
+        {
+            targetColumns = Enumerable.Range(_selectedStepColumns.Min, sourceBlocks.Length).ToArray();
+        }
+        else if (_selectedStepColumns.Count == sourceBlocks.Length)
+        {
+            targetColumns = _selectedStepColumns.ToArray();
+        }
+        else
+        {
+            Log(ResearchConsoleSeverity.Warning,
+                $"복사한 STEP은 {sourceBlocks.Length:N0}개입니다. 붙여넣을 STEP {sourceBlocks.Length:N0}개 또는 시작 STEP 하나를 선택하세요.");
+            return;
+        }
+
+        var availableColumns = _workbook.Nodes
+            .Where(node => Same(node.Category, _selectedCategory.Category))
+            .Select(node => node.Column)
+            .ToHashSet();
+        if (targetColumns.Any(column => !availableColumns.Contains(column)))
+        {
+            Log(ResearchConsoleSeverity.Warning, "붙여넣을 범위에 아직 생성되지 않은 STEP이 있습니다. 우측 + STEP으로 먼저 추가하세요.");
+            return;
+        }
+        if (Same(_stepClipboard.SourceCategory, _selectedCategory.Category)
+            && sourceBlocks.Select(block => block.SourceColumn).SequenceEqual(targetColumns))
+        {
+            Log(ResearchConsoleSeverity.Warning, "복사한 STEP 묶음과 붙여넣을 STEP 묶음이 같습니다.");
+            return;
+        }
+
+        var category = _selectedCategory.Category;
+        PushUndo();
+        for (var index = 0; index < sourceBlocks.Length; index++)
+        {
+            var result = ResearchWorkbookService.TryPasteStepBlock(
+                _workbook, sourceBlocks[index], category, targetColumns[index]);
+            if (!result.Success)
+            {
+                UndoWithoutRender();
+                Log(ResearchConsoleSeverity.Error, result.Message, category);
+                return;
+            }
+        }
+
+        _selectedCategory = _workbook.FindCategory(category);
+        _selectedNodeIdentities.Clear();
+        _primaryNode = null;
+        _selectedStepColumns.Clear();
+        _selectedStepColumns.UnionWith(targetColumns);
+        RenderGraph();
+        PopulateHierarchy();
+        RenderInspector();
+        ScheduleValidation();
+        UpdateDirtyState();
+        Log(ResearchConsoleSeverity.Info,
+            $"STEP 블록 {sourceBlocks.Length:N0}개를 STEP {targetColumns.Min():000}~{targetColumns.Max():000}에 붙여넣었습니다.",
+            category);
+    }
+
     private void DeleteSelectedNodes()
     {
         if (_workbook is null || _selectedNodeIdentities.Count == 0)
             return;
         if (ThemedMessageBox.Show($"선택한 연구 노드 {_selectedNodeIdentities.Count:N0}개를 삭제할까요? 참조 중인 조건선도 함께 제거됩니다.",
-                "Delete research nodes", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
+                "연구 노드 삭제", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
             return;
+        CloseQuickNodePopup();
         PushUndo();
         foreach (var identity in _selectedNodeIdentities.ToArray())
         {

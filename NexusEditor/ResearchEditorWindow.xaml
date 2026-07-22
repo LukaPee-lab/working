@@ -94,6 +94,13 @@
                 </Trigger>
             </Style.Triggers>
         </Style>
+        <Style TargetType="ContextMenu">
+            <Setter Property="Foreground" Value="#dddddd"/>
+            <Setter Property="Background" Value="#292929"/>
+            <Setter Property="BorderBrush" Value="#555555"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="2"/>
+        </Style>
         <Style x:Key="PanelHeader" TargetType="Border">
             <Setter Property="Height" Value="30"/>
             <Setter Property="Background" Value="#2b2b2b"/>
@@ -281,7 +288,6 @@
                 <Separator/>
                 <MenuItem x:Name="CategoryPaneMenuItem" Header="Category List" IsCheckable="True" IsChecked="True" Tag="category" Click="PaneMenuItem_Click"/>
                 <MenuItem x:Name="ScenePaneMenuItem" Header="Scene" IsCheckable="True" IsChecked="True" Tag="scene" Click="PaneMenuItem_Click"/>
-                <MenuItem x:Name="NavigatorPaneMenuItem" Header="Navigator" IsCheckable="True" IsChecked="True" Tag="navigator" Click="PaneMenuItem_Click"/>
                 <MenuItem x:Name="HierarchyPaneMenuItem" Header="Hierarchy" IsCheckable="True" IsChecked="True" Tag="hierarchy" Click="PaneMenuItem_Click"/>
                 <MenuItem x:Name="InspectorPaneMenuItem" Header="Inspector" IsCheckable="True" IsChecked="True" Tag="inspector" Click="PaneMenuItem_Click"/>
                 <MenuItem x:Name="ConsolePaneMenuItem" Header="Console" IsCheckable="True" IsChecked="True" Tag="console" Click="PaneMenuItem_Click"/>
@@ -305,15 +311,14 @@
                 <Button Grid.Column="0" Content="Reload" Margin="0,0,5,0" Click="ReloadButton_Click"/>
                 <Button Grid.Column="1" Content="Fit All" Margin="0,0,5,0" Click="FitAllButton_Click"/>
                 <Button Grid.Column="2" Content="Export Preview" Click="ExportPreviewButton_Click"/>
-                <StackPanel Grid.Column="4" Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="Permission" VerticalAlignment="Center" Margin="0,0,7,0" Foreground="#aaaaaa"/>
-                    <RadioButton x:Name="PermissionAll" GroupName="Permission" Content="All" Style="{StaticResource FilterToggle}" IsChecked="True" Tag="0" Checked="PermissionFilter_Checked"/>
-                    <RadioButton GroupName="Permission" Content="1" Style="{StaticResource FilterToggle}" Tag="1" Checked="PermissionFilter_Checked"/>
-                    <RadioButton GroupName="Permission" Content="2" Style="{StaticResource FilterToggle}" Tag="2" Checked="PermissionFilter_Checked"/>
-                    <RadioButton GroupName="Permission" Content="3" Style="{StaticResource FilterToggle}" Tag="3" Checked="PermissionFilter_Checked"/>
-                    <RadioButton GroupName="Permission" Content="4" Style="{StaticResource FilterToggle}" Tag="4" Checked="PermissionFilter_Checked"/>
-                    <RadioButton GroupName="Permission" Content="5" Style="{StaticResource FilterToggle}" Tag="5" Checked="PermissionFilter_Checked"/>
-                </StackPanel>
+                <ScrollViewer Grid.Column="4" MaxWidth="520"
+                              HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+                    <StackPanel x:Name="PermissionFilterPanel" Orientation="Horizontal" VerticalAlignment="Center">
+                        <TextBlock Text="Permission" VerticalAlignment="Center" Margin="0,0,7,0" Foreground="#aaaaaa"/>
+                        <RadioButton x:Name="PermissionAll" GroupName="Permission" Content="All" Style="{StaticResource FilterToggle}"
+                                     IsChecked="True" Tag="0" Checked="PermissionFilter_Checked"/>
+                    </StackPanel>
+                </ScrollViewer>
                 <TextBlock x:Name="WorkbookPathText" Grid.Column="5" Margin="14,0" VerticalAlignment="Center"
                            Foreground="#9e9e9e" TextTrimming="CharacterEllipsis"/>
                 <TextBlock x:Name="DirtyText" Grid.Column="6" VerticalAlignment="Center" Foreground="#f0c75e" FontWeight="SemiBold"/>
@@ -322,11 +327,11 @@
 
         <Grid Grid.Row="2">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition x:Name="CategoryColumn" Width="250" MinWidth="170"/>
-                <ColumnDefinition Width="5"/>
-                <ColumnDefinition Width="*" MinWidth="360"/>
-                <ColumnDefinition Width="5"/>
-                <ColumnDefinition x:Name="RightColumn" Width="700" MinWidth="550"/>
+                <ColumnDefinition x:Name="CategoryColumn" Width="250" MinWidth="170" MaxWidth="520"/>
+                <ColumnDefinition x:Name="CategorySplitterColumn" Width="5"/>
+                <ColumnDefinition x:Name="SceneColumn" Width="*" MinWidth="220"/>
+                <ColumnDefinition x:Name="RightPaneSplitterColumn" Width="5"/>
+                <ColumnDefinition x:Name="RightColumn" Width="700" MinWidth="520" MaxWidth="1500"/>
             </Grid.ColumnDefinitions>
 
             <Border x:Name="CategoryPane" Grid.Column="0" Background="{StaticResource PanelBackground}">
@@ -349,7 +354,10 @@
                     <ListBox x:Name="CategoryList" SelectionChanged="CategoryList_SelectionChanged" PreviewMouseRightButtonDown="CategoryList_PreviewMouseRightButtonDown"/>
                 </DockPanel>
             </Border>
-            <GridSplitter x:Name="CategorySplitter" Grid.Column="1" Width="5" Background="#111111" ResizeDirection="Columns" DragCompleted="LayoutSplitter_DragCompleted"/>
+            <GridSplitter x:Name="CategorySplitter" Grid.Column="1" Width="5" Background="#111111" ShowsPreview="False"
+                          HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Cursor="SizeWE"
+                          ResizeDirection="Columns" ResizeBehavior="PreviousAndNext"
+                          DragCompleted="LayoutSplitter_DragCompleted"/>
 
             <Grid Grid.Column="2">
                 <Grid.RowDefinitions>
@@ -377,7 +385,8 @@
                               MouseRightButtonDown="SceneViewport_MouseRightButtonDown"
                               MouseRightButtonUp="SceneViewport_MouseRightButtonUp"
                               MouseMove="SceneViewport_MouseMove"
-                              MouseLeftButtonDown="SceneViewport_MouseLeftButtonDown">
+                              MouseLeftButtonDown="SceneViewport_MouseLeftButtonDown"
+                              MouseLeftButtonUp="SceneViewport_MouseLeftButtonUp">
                             <Grid.Background><SolidColorBrush Color="#1a1a1a"/></Grid.Background>
                             <Canvas x:Name="GraphCanvas" Width="28000" Height="760" HorizontalAlignment="Left" VerticalAlignment="Top">
                                 <Canvas.RenderTransform>
@@ -389,7 +398,50 @@
                                 <Canvas x:Name="BandCanvas" Width="28000" Height="760"/>
                                 <Canvas x:Name="LinkCanvas" Width="28000" Height="760"/>
                                 <Canvas x:Name="NodeCanvas" Width="28000" Height="760"/>
+                                <Rectangle x:Name="StepSelectionMarquee" Visibility="Collapsed" IsHitTestVisible="False"
+                                           Stroke="#52aad3" StrokeThickness="1.5" StrokeDashArray="4,2"
+                                           Fill="#2852aad3" Panel.ZIndex="100"/>
                             </Canvas>
+                            <Popup x:Name="QuickNodePopup"
+                                   AllowsTransparency="True"
+                                   Focusable="True"
+                                   Placement="Right"
+                                   StaysOpen="True">
+                                <Border Width="310"
+                                        Margin="10"
+                                        Padding="11"
+                                        Background="#2a2a2a"
+                                        BorderBrush="#d6b94f"
+                                        BorderThickness="1.5"
+                                        CornerRadius="4">
+                                    <StackPanel>
+                                        <Grid Margin="0,0,0,9">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel>
+                                                <TextBlock Text="빠른 노드 편집" FontSize="14" FontWeight="SemiBold" Foreground="#f1d56a"/>
+                                                <TextBlock x:Name="QuickNodeIdText" Margin="0,2,0,0" Foreground="#8bc8f1"
+                                                           FontSize="10.5" TextTrimming="CharacterEllipsis"/>
+                                            </StackPanel>
+                                            <Button Grid.Column="1" Style="{StaticResource PanelTabCloseButton}"
+                                                    ToolTip="닫기" Click="QuickNodeCloseButton_Click"/>
+                                        </Grid>
+
+                                        <TextBlock Text="image" Foreground="#bdbdbd" Margin="0,0,0,3"/>
+                                        <TextBox x:Name="QuickNodeImageBox" Margin="0,0,0,8"/>
+                                        <TextBlock Text="active_item_id" Foreground="#bdbdbd" Margin="0,0,0,3"/>
+                                        <TextBox x:Name="QuickNodeActiveItemBox" Margin="0,0,0,8"/>
+                                        <TextBlock Text="active_item_value" Foreground="#bdbdbd" Margin="0,0,0,3"/>
+                                        <TextBox x:Name="QuickNodeActiveValueBox" Margin="0,0,0,8"/>
+                                        <TextBlock Text="active_step" Foreground="#bdbdbd" Margin="0,0,0,3"/>
+                                        <TextBox x:Name="QuickNodeActiveStepBox" Margin="0,0,0,8"/>
+                                        <TextBlock x:Name="QuickNodeTotalText" Foreground="#999999" Margin="0,0,0,8"/>
+                                        <Button Content="적용" Height="30" Click="QuickNodeApplyButton_Click"/>
+                                    </StackPanel>
+                                </Border>
+                            </Popup>
                         </Grid>
                     </DockPanel>
                 </Border>
@@ -418,16 +470,19 @@
                 </Border>
             </Grid>
 
-            <GridSplitter Grid.Column="3" Width="5" Background="#111111" ResizeDirection="Columns" DragCompleted="LayoutSplitter_DragCompleted"/>
+            <GridSplitter x:Name="RightPaneSplitter" Grid.Column="3" Width="5" Background="#111111" ShowsPreview="False"
+                          HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Cursor="SizeWE"
+                          ResizeDirection="Columns" ResizeBehavior="PreviousAndNext"
+                          DragCompleted="LayoutSplitter_DragCompleted"/>
             <Grid x:Name="RightPane" Grid.Column="4">
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition x:Name="NavigatorColumn" Width="220" MinWidth="190"/>
-                    <ColumnDefinition Width="5"/>
-                    <ColumnDefinition x:Name="HierarchyColumn" Width="220" MinWidth="130"/>
-                    <ColumnDefinition Width="5"/>
-                    <ColumnDefinition Width="*" MinWidth="180"/>
+                    <ColumnDefinition x:Name="NavigatorColumn" Width="0" MinWidth="0"/>
+                    <ColumnDefinition Width="0"/>
+                    <ColumnDefinition x:Name="HierarchyColumn" Width="270" MinWidth="140" MaxWidth="720"/>
+                    <ColumnDefinition x:Name="HierarchyInspectorSplitterColumn" Width="5"/>
+                    <ColumnDefinition x:Name="InspectorColumn" Width="*" MinWidth="120"/>
                 </Grid.ColumnDefinitions>
-                <Border x:Name="NavigatorPane" Grid.Column="0" Background="{StaticResource PanelBackground}">
+                <Border x:Name="NavigatorPane" Grid.Column="0" Background="{StaticResource PanelBackground}" Visibility="Collapsed">
                     <DockPanel>
                         <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top">
                             <DockPanel LastChildFill="False">
@@ -445,7 +500,8 @@
                         </ScrollViewer>
                     </DockPanel>
                 </Border>
-                <GridSplitter x:Name="NavigatorSplitter" Grid.Column="1" Width="5" Background="#111111" ResizeDirection="Columns" DragCompleted="LayoutSplitter_DragCompleted"/>
+                <GridSplitter x:Name="NavigatorSplitter" Grid.Column="1" Width="5" Background="#111111" ResizeDirection="Columns"
+                              Visibility="Collapsed" DragCompleted="LayoutSplitter_DragCompleted"/>
                 <Border x:Name="HierarchyPane" Grid.Column="2" Background="{StaticResource PanelBackground}">
                     <DockPanel>
                         <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top">
@@ -462,7 +518,10 @@
                         <TreeView x:Name="HierarchyTree" SelectedItemChanged="HierarchyTree_SelectedItemChanged"/>
                     </DockPanel>
                 </Border>
-                <GridSplitter Grid.Column="3" Width="5" Background="#111111" ResizeDirection="Columns" DragCompleted="LayoutSplitter_DragCompleted"/>
+                <GridSplitter x:Name="HierarchyInspectorSplitter" Grid.Column="3" Width="5" Background="#111111" ShowsPreview="False"
+                              HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Cursor="SizeWE"
+                              ResizeDirection="Columns" ResizeBehavior="PreviousAndNext"
+                              DragCompleted="LayoutSplitter_DragCompleted"/>
                 <Border x:Name="InspectorPane" Grid.Column="4" Background="{StaticResource PanelBackground}">
                     <DockPanel>
                         <Border Style="{StaticResource PanelHeader}" DockPanel.Dock="Top">

@@ -245,8 +245,8 @@ public static class ResearchWorkbookService
             if (string.IsNullOrWhiteSpace(node.Image))
                 issues.Add(Error("image_blank", $"{node.Id}: image가 비어 있습니다.",
                     NodeSheetName, node.RowIdentity, node.Id, "image"));
-            if (node.NodePermission is < 1 or > 5)
-                issues.Add(Error("node_permission_range", $"{node.Id}: node_permission은 1~5여야 합니다.",
+            if (node.NodePermission is < 1)
+                issues.Add(Error("node_permission_range", $"{node.Id}: node_permission은 1 이상이어야 합니다.",
                     NodeSheetName, node.RowIdentity, node.Id, "node_permission"));
 
             ValidateNodeFormulas(issues, node);
@@ -1741,11 +1741,182 @@ public static class ResearchWorkbookService
         if (HasDuplicateGeneratedKeys(candidate, out var duplicateMessage))
             return ResearchMutationResult.Failed(duplicateMessage);
 
-        context.ReplaceDataFrom(candidate);
+        context.ReplaceDataFrom(candidate, takeRowOwnership: true);
         var result = new ResearchMutationResult
         {
             Success = true,
             Message = $"STEP {column}을 연구 노드 {desiredCount}개 구조로 변경했습니다."
+        };
+        result.AffectedRowIdentities.AddRange(affected);
+        return result;
+    }
+
+    public static ResearchStepBlockSnapshot CaptureStepBlock(
+        ResearchWorkbookContext context,
+        string category,
+        int column)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var snapshot = new ResearchStepBlockSnapshot
+        {
+            SourceCategory = category,
+            SourceColumn = column
+        };
+        foreach (var node in context.Nodes
+                     .Where(node => Same(node.Category, category) && node.Column == column)
+                     .OrderBy(node => node.Row))
+        {
+            snapshot.Items.Add(new ResearchStepNodeSnapshot
+            {
+                Node = node.DeepClone(),
+                Effect = context.FindEffect(node)?.DeepClone()
+            });
+        }
+        return snapshot;
+    }
+
+    public static ResearchStepRangeSnapshot CaptureStepBlocks(
+        ResearchWorkbookContext context,
+        string category,
+        IEnumerable<int> columns)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(columns);
+        var snapshot = new ResearchStepRangeSnapshot { SourceCategory = category };
+        foreach (var column in columns.Where(column => column > 0).Distinct().OrderBy(column => column))
+        {
+            var block = CaptureStepBlock(context, category, column);
+            if (block.NodeCount > 0)
+                snapshot.Blocks.Add(block);
+        }
+        return snapshot;
+    }
+
+    public static ResearchMutationResult TryAppendStep(
+        ResearchWorkbookContext context,
+        string category)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var candidate = context.DeepClone(includeOriginalSnapshot: false);
+        var categoryRow = candidate.FindCategory(category);
+        if (categoryRow is null)
+            return ResearchMutationResult.Failed($"연구 카테고리를 찾지 못했습니다: {category}");
+
+        var categoryNodes = candidate.Nodes
+            .Where(node => Same(node.Category, categoryRow.Category))
+            .OrderBy(node => node.Column)
+            .ThenBy(node => node.Row)
+            .ToList();
+        if (categoryNodes.Count == 0)
+            return ResearchMutationResult.Failed("기준이 될 연구 노드가 없어 STEP을 추가할 수 없습니다.");
+
+        var lastColumn = categoryNodes.Max(node => node.Column);
+        var newColumn = lastColumn + 1;
+        var templateNode = categoryNodes
+            .Where(node => node.Column == lastColumn)
+            .OrderBy(node => Math.Abs(node.Row - 4))
+            .ThenBy(node => node.Row)
+            .First();
+        var templateEffect = candidate.FindEffect(templateNode)?.DeepClone();
+        var permission = categoryNodes
+            .Where(node => node.Column == lastColumn)
+            .GroupBy(node => node.NodePermission ?? 1)
+            .OrderByDescending(group => group.Count())
+            .ThenBy(group => group.Key)
+            .Select(group => Math.Max(1, group.Key))
+            .FirstOrDefault(1);
+
+        var created = CreateNode(
+            candidate,
+            categoryRow.Category,
+            newColumn,
+            4,
+            templateNode.ExportId,
+            templateNode.ThemeId);
+        CopyNodePayload(templateNode, created.Node);
+        created.Node.Column = newColumn;
+        created.Node.Row = 4;
+        created.Node.Id = GenerateNodeId(created.Node.ThemeId, created.Node.Category, newColumn, 4);
+        created.Node.NexusEffectId = GenerateEffectId(created.Node.ThemeId, created.Node.Category, newColumn, 4);
+        created.Node.NodePermission = permission;
+        ClearNodeConditions(created.Node);
+        if (templateEffect is not null)
+            CopyEffectPayload(templateEffect, created.Effect, created.Node);
+
+        var affected = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            created.Node.RowIdentity,
+            created.Effect.RowIdentity
+        };
+        RebuildCanonicalBoundary(candidate, categoryRow.Category, newColumn, affected);
+
+        if (HasDuplicateGeneratedKeys(candidate, out var duplicateMessage))
+            return ResearchMutationResult.Failed(duplicateMessage);
+
+        context.ReplaceDataFrom(candidate, takeRowOwnership: true);
+        var result = new ResearchMutationResult
+        {
+            Success = true,
+            Message = $"STEP {newColumn:000}을 추가했습니다."
+        };
+        result.AffectedRowIdentities.AddRange(affected);
+        return result;
+    }
+
+    public static ResearchMutationResult TryPasteStepBlock(
+        ResearchWorkbookContext context,
+        ResearchStepBlockSnapshot snapshot,
+        string targetCategory,
+        int targetColumn)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(snapshot);
+        if (snapshot.NodeCount is < 1 or > 3)
+            return ResearchMutationResult.Failed("The copied STEP must contain 1 to 3 nodes.");
+        if (targetColumn <= 0)
+            return ResearchMutationResult.Failed("The destination STEP is invalid.");
+
+        var candidate = context.DeepClone(includeOriginalSnapshot: false);
+        var resize = TrySetColumnNodeCount(candidate, targetCategory, targetColumn, snapshot.NodeCount);
+        if (!resize.Success)
+            return resize;
+
+        var targets = candidate.Nodes
+            .Where(node => Same(node.Category, targetCategory) && node.Column == targetColumn)
+            .OrderBy(node => node.Row)
+            .ToList();
+        var sources = snapshot.Items.OrderBy(item => item.Node.Row).ToList();
+        if (targets.Count != sources.Count)
+            return ResearchMutationResult.Failed("The copied STEP does not match the destination structure.");
+
+        var affected = new HashSet<string>(resize.AffectedRowIdentities, StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < targets.Count; index++)
+        {
+            var source = sources[index];
+            var target = targets[index];
+            target.Image = source.Node.Image;
+            target.ActiveItemId = source.Node.ActiveItemId;
+            target.ActiveItemValue = source.Node.ActiveItemValue;
+            target.TotalRequiredHelper = source.Node.TotalRequiredHelper;
+            target.ActiveStep = source.Node.ActiveStep;
+            affected.Add(target.RowIdentity);
+
+            if (source.Effect is null || candidate.FindEffect(target) is not { } targetEffect)
+                continue;
+            var targetExportId = targetEffect.ExportId;
+            CopyEffectPayload(source.Effect, targetEffect, target);
+            targetEffect.ExportId = targetExportId;
+            affected.Add(targetEffect.RowIdentity);
+        }
+
+        if (HasDuplicateGeneratedKeys(candidate, out var duplicateMessage))
+            return ResearchMutationResult.Failed(duplicateMessage);
+
+        context.ReplaceDataFrom(candidate, takeRowOwnership: true);
+        var result = new ResearchMutationResult
+        {
+            Success = true,
+            Message = $"STEP {snapshot.SourceColumn:000} block copied to STEP {targetColumn:000}."
         };
         result.AffectedRowIdentities.AddRange(affected);
         return result;
@@ -1758,7 +1929,7 @@ public static class ResearchWorkbookService
         int direction)
     {
         ArgumentNullException.ThrowIfNull(context);
-        if (permission is < 1 or >= 5)
+        if (permission < 1)
             return ResearchMutationResult.Failed("조정할 권한 구역 경계를 찾지 못했습니다.");
         if (direction is not (-1 or 1))
             return ResearchMutationResult.Failed("권한 구역 이동 방향이 올바르지 않습니다.");
@@ -1831,8 +2002,8 @@ public static class ResearchWorkbookService
             .Select(node => node.NodePermission ?? 0)
             .DefaultIfEmpty()
             .Max();
-        if (maximumPermission is < 1 or >= 5)
-            return ResearchMutationResult.Failed("권한 구역은 최대 5개까지 사용할 수 있습니다.");
+        if (maximumPermission < 1)
+            return ResearchMutationResult.Failed("유효한 권한 구역을 찾지 못했습니다.");
         var lastColumns = categoryNodes
             .Where(node => node.NodePermission == maximumPermission)
             .Select(node => node.Column)
@@ -2135,6 +2306,11 @@ public static class ResearchWorkbookService
             RewriteNodes(nodeSheet, context.Nodes);
             workbook.SaveAs(outputPath);
         }
+        RestoreFormulaCellsInUntouchedWorksheets(
+            context.SourceOutSystemPath,
+            outputPath,
+            CategorySheetName,
+            NodeSheetName);
         WriteFormulaCaches(outputPath, context);
     }
 
@@ -2146,6 +2322,10 @@ public static class ResearchWorkbookService
 
         RewriteResearchEffects(effectSheet, context);
         workbook.SaveAs(outputPath);
+        RestoreFormulaCellsInUntouchedWorksheets(
+            context.SourceEffectPath,
+            outputPath,
+            EffectSheetName);
     }
 
     private static void RewriteCategories(IXLWorksheet sheet, IReadOnlyList<ResearchCategoryRow> categories)
@@ -2252,6 +2432,15 @@ public static class ResearchWorkbookService
         bool validate)
     {
         VerifyFormulaCaches(outSystemPath, expected);
+        VerifyUntouchedWorksheetData(
+            expected.SourceOutSystemPath,
+            outSystemPath,
+            CategorySheetName,
+            NodeSheetName);
+        VerifyUntouchedWorksheetData(
+            expected.SourceEffectPath,
+            effectPath,
+            EffectSheetName);
         var reloaded = Load(outSystemPath, effectPath);
         if (reloaded.Categories.Count != expected.Categories.Count
             || reloaded.Nodes.Count != expected.Nodes.Count
@@ -2371,6 +2560,229 @@ public static class ResearchWorkbookService
         }
 
         ReplaceXmlEntry(archive, entryPath, document);
+    }
+
+    private static void RestoreFormulaCellsInUntouchedWorksheets(
+        string sourcePath,
+        string outputPath,
+        params string[] editedSheetNames)
+    {
+        var edited = editedSheetNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        using var sourceArchive = OpenZipSnapshot(sourcePath);
+        using var outputArchive = ZipFile.Open(outputPath, ZipArchiveMode.Update);
+        var sourceSheets = ReadWorksheetEntryPaths(sourceArchive);
+        var outputSheets = ReadWorksheetEntryPaths(outputArchive);
+
+        foreach (var (sheetName, sourceEntryPath) in sourceSheets)
+        {
+            if (edited.Contains(sheetName))
+                continue;
+            if (!outputSheets.TryGetValue(sheetName, out var outputEntryPath))
+                throw new InvalidDataException($"저장 후 비대상 시트가 사라졌습니다: {sheetName}");
+
+            var sourceEntry = sourceArchive.GetEntry(sourceEntryPath)
+                ?? throw new InvalidDataException($"원본 워크시트 XML을 찾을 수 없습니다: {sheetName}");
+            var outputEntry = outputArchive.GetEntry(outputEntryPath)
+                ?? throw new InvalidDataException($"저장된 워크시트 XML을 찾을 수 없습니다: {sheetName}");
+            var sourceDocument = LoadXml(sourceEntry);
+            var outputDocument = LoadXml(outputEntry);
+            var spreadsheet = sourceDocument.Root?.Name.Namespace
+                ?? throw new InvalidDataException($"원본 워크시트 XML이 비어 있습니다: {sheetName}");
+            var outputSpreadsheet = outputDocument.Root?.Name.Namespace
+                ?? throw new InvalidDataException($"저장된 워크시트 XML이 비어 있습니다: {sheetName}");
+            var outputCells = outputDocument.Descendants(outputSpreadsheet + "c")
+                .Where(cell => cell.Attribute("r") is not null)
+                .ToDictionary(cell => cell.Attribute("r")!.Value, StringComparer.OrdinalIgnoreCase);
+            var changed = false;
+
+            foreach (var sourceCell in sourceDocument.Descendants(spreadsheet + "c")
+                         .Where(cell => cell.Element(spreadsheet + "f") is not null))
+            {
+                var address = sourceCell.Attribute("r")?.Value
+                    ?? throw new InvalidDataException($"원본 수식 셀 주소가 없습니다: {sheetName}");
+                if (!outputCells.TryGetValue(address, out var outputCell))
+                    throw new InvalidDataException($"저장 후 비대상 수식 셀이 사라졌습니다: {sheetName}!{address}");
+
+                outputCell.Element(outputSpreadsheet + "f")?.Remove();
+                outputCell.Element(outputSpreadsheet + "v")?.Remove();
+                outputCell.Element(outputSpreadsheet + "is")?.Remove();
+                outputCell.SetAttributeValue("t", sourceCell.Attribute("t")?.Value);
+
+                var sourceFormula = sourceCell.Element(spreadsheet + "f")!;
+                outputCell.Add(new XElement(outputSpreadsheet + "f",
+                    sourceFormula.Attributes(),
+                    sourceFormula.Nodes()));
+                var sourceValue = sourceCell.Element(spreadsheet + "v");
+                if (sourceValue is not null)
+                    outputCell.Add(new XElement(outputSpreadsheet + "v", sourceValue.Value));
+                changed = true;
+            }
+
+            if (changed)
+                ReplaceXmlEntry(outputArchive, outputEntryPath, outputDocument);
+        }
+    }
+
+    private static void VerifyUntouchedWorksheetData(
+        string sourcePath,
+        string outputPath,
+        params string[] editedSheetNames)
+    {
+        var differences = CompareUntouchedWorksheetData(sourcePath, outputPath, editedSheetNames);
+        if (differences.Count == 0)
+            return;
+
+        throw new InvalidDataException(
+            "저장 과정에서 편집 대상이 아닌 시트의 데이터가 변경되었습니다." + Environment.NewLine
+            + string.Join(Environment.NewLine, differences.Take(20)));
+    }
+
+    internal static List<string> CompareUntouchedWorksheetData(
+        string sourcePath,
+        string outputPath,
+        params string[] editedSheetNames)
+    {
+        var edited = editedSheetNames.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        using var sourceArchive = OpenZipSnapshot(sourcePath);
+        using var outputArchive = ZipFile.OpenRead(outputPath);
+        var sourceSheets = ReadWorksheetEntryPaths(sourceArchive);
+        var outputSheets = ReadWorksheetEntryPaths(outputArchive);
+        var sourceSharedStrings = ReadSharedStrings(sourceArchive);
+        var outputSharedStrings = ReadSharedStrings(outputArchive);
+        var differences = new List<string>();
+
+        foreach (var (sheetName, sourceEntryPath) in sourceSheets)
+        {
+            if (edited.Contains(sheetName))
+                continue;
+            if (!outputSheets.TryGetValue(sheetName, out var outputEntryPath))
+            {
+                differences.Add($"{sheetName}: 시트가 삭제됨");
+                continue;
+            }
+
+            var sourceCells = ReadWorksheetDataCells(sourceArchive, sourceEntryPath, sourceSharedStrings);
+            var outputCells = ReadWorksheetDataCells(outputArchive, outputEntryPath, outputSharedStrings);
+            foreach (var address in sourceCells.Keys.Union(outputCells.Keys, StringComparer.OrdinalIgnoreCase)
+                         .OrderBy(value => value, StringComparer.OrdinalIgnoreCase))
+            {
+                sourceCells.TryGetValue(address, out var before);
+                outputCells.TryGetValue(address, out var after);
+                if (!string.Equals(before, after, StringComparison.Ordinal))
+                    differences.Add($"{sheetName}!{address}: before={before ?? "<missing>"}, after={after ?? "<missing>"}");
+            }
+        }
+
+        foreach (var sheetName in outputSheets.Keys)
+        {
+            if (!edited.Contains(sheetName) && !sourceSheets.ContainsKey(sheetName))
+                differences.Add($"{sheetName}: 비대상 시트가 새로 추가됨");
+        }
+        return differences;
+    }
+
+    private static Dictionary<string, string> ReadWorksheetEntryPaths(ZipArchive archive)
+    {
+        var workbookEntry = archive.GetEntry("xl/workbook.xml")
+            ?? throw new InvalidDataException("xl/workbook.xml을 찾을 수 없습니다.");
+        var workbook = LoadXml(workbookEntry);
+        var spreadsheet = workbook.Root?.Name.Namespace
+            ?? throw new InvalidDataException("workbook.xml이 비어 있습니다.");
+        var relationshipsEntry = archive.GetEntry("xl/_rels/workbook.xml.rels")
+            ?? throw new InvalidDataException("workbook.xml.rels를 찾을 수 없습니다.");
+        var relationships = LoadXml(relationshipsEntry);
+        var package = relationships.Root?.Name.Namespace
+            ?? throw new InvalidDataException("workbook.xml.rels가 비어 있습니다.");
+        var targets = relationships.Descendants(package + "Relationship")
+            .Where(item => item.Attribute("Id") is not null && item.Attribute("Target") is not null)
+            .ToDictionary(
+                item => item.Attribute("Id")!.Value,
+                item => item.Attribute("Target")!.Value,
+                StringComparer.Ordinal);
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var sheet in workbook.Descendants(spreadsheet + "sheet"))
+        {
+            var name = sheet.Attribute("name")?.Value
+                ?? throw new InvalidDataException("워크시트 이름이 없습니다.");
+            var relationshipId = sheet.Attributes().FirstOrDefault(attribute => attribute.Name.LocalName == "id")?.Value
+                ?? throw new InvalidDataException($"워크시트 관계 ID가 없습니다: {name}");
+            if (!targets.TryGetValue(relationshipId, out var target))
+                throw new InvalidDataException($"워크시트 관계 경로가 없습니다: {name}");
+            result[name] = new Uri(new Uri("https://nexus.local/xl/workbook.xml"), target)
+                .AbsolutePath.TrimStart('/');
+        }
+        return result;
+    }
+
+    private static ZipArchive OpenZipSnapshot(string path) => new(
+        new FileStream(path, FileMode.Open, FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete),
+        ZipArchiveMode.Read,
+        leaveOpen: false);
+
+    private static IReadOnlyList<string> ReadSharedStrings(ZipArchive archive)
+    {
+        var entry = archive.GetEntry("xl/sharedStrings.xml");
+        if (entry is null)
+            return [];
+        var document = LoadXml(entry);
+        var spreadsheet = document.Root?.Name.Namespace
+            ?? throw new InvalidDataException("sharedStrings.xml이 비어 있습니다.");
+        return document.Descendants(spreadsheet + "si")
+            .Select(item => string.Concat(item.Descendants(spreadsheet + "t").Select(text => text.Value)))
+            .ToList();
+    }
+
+    private static Dictionary<string, string> ReadWorksheetDataCells(
+        ZipArchive archive,
+        string entryPath,
+        IReadOnlyList<string> sharedStrings)
+    {
+        var entry = archive.GetEntry(entryPath)
+            ?? throw new InvalidDataException($"워크시트 XML을 찾을 수 없습니다: {entryPath}");
+        var document = LoadXml(entry);
+        var spreadsheet = document.Root?.Name.Namespace
+            ?? throw new InvalidDataException($"워크시트 XML이 비어 있습니다: {entryPath}");
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var cell in document.Descendants(spreadsheet + "c"))
+        {
+            var address = cell.Attribute("r")?.Value;
+            if (string.IsNullOrWhiteSpace(address))
+                continue;
+            var formula = cell.Element(spreadsheet + "f");
+            var value = cell.Element(spreadsheet + "v")?.Value ?? "";
+            if (formula is not null)
+            {
+                result[address] = "formula|" + (cell.Attribute("t")?.Value ?? "") + "|"
+                                  + SerializeFormulaSemantics(formula) + "|" + value;
+                continue;
+            }
+
+            var type = cell.Attribute("t")?.Value ?? "";
+            string? semanticValue = type switch
+            {
+                "s" when int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var index)
+                         && index >= 0 && index < sharedStrings.Count => "text|" + sharedStrings[index],
+                "inlineStr" => "text|" + string.Concat(cell.Descendants(spreadsheet + "t").Select(text => text.Value)),
+                "str" => "text|" + value,
+                _ when cell.Element(spreadsheet + "v") is not null => type + "|" + value,
+                _ => null
+            };
+            if (semanticValue is not null)
+                result[address] = semanticValue;
+        }
+        return result;
+    }
+
+    private static string SerializeFormulaSemantics(XElement formula)
+    {
+        var attributes = formula.Attributes()
+            .OrderBy(attribute => attribute.Name.NamespaceName, StringComparer.Ordinal)
+            .ThenBy(attribute => attribute.Name.LocalName, StringComparer.Ordinal)
+            .Select(attribute => $"{attribute.Name.NamespaceName}:{attribute.Name.LocalName}={attribute.Value}");
+        return string.Join(";", attributes) + "|" + formula.Value;
     }
 
     private static Dictionary<string, string> ReadFormulaCaches(ZipArchive archive, string sheetName)
