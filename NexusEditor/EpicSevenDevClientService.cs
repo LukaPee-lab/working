@@ -33,6 +33,7 @@ public sealed record EpicSevenDevCommandResult(bool Success, string Message);
 
 public static class EpicSevenDevClientService
 {
+    private const uint ProcessQueryLimitedInformation = 0x1000;
     private const uint WmSetText = 0x000C;
     private const uint WmGetText = 0x000D;
     private const uint WmGetTextLength = 0x000E;
@@ -41,49 +42,57 @@ public static class EpicSevenDevClientService
     private const int VkReturn = 0x0D;
     private const uint SmtoAbortIfHung = 0x0002;
     private static readonly Regex EventIdPattern = new("^[a-z0-9_]+$", RegexOptions.Compiled);
+    private static readonly string[] DefaultDevProcessNames = ["ur", "EpicSeven"];
+    private static readonly string[] HelperExecutableKeywords =
+        ["sound", "crash", "patch", "update", "unins", "launcher", "report", "tool"];
 
-    public static IReadOnlyList<EpicSevenDevInstance> FindInstances()
+    public static IReadOnlyList<EpicSevenDevInstance> FindInstances() => FindInstances(null);
+
+    public static IReadOnlyList<EpicSevenDevInstance> FindInstances(string? configuredDevRoot)
     {
+        var devRoot = NexusPathResolver.FindDevRoot(configuredDevRoot);
+        var executableCandidates = FindExecutableCandidates(devRoot);
+        var processNames = new HashSet<string>(DefaultDevProcessNames, StringComparer.OrdinalIgnoreCase);
+        processNames.UnionWith(executableCandidates.Keys);
+
         var results = new List<EpicSevenDevInstance>();
-        foreach (var process in Process.GetProcessesByName("ur"))
+        var seenProcessIds = new HashSet<int>();
+        foreach (var processName in processNames)
         {
-            try
+            foreach (var process in Process.GetProcessesByName(processName))
             {
-                var executablePath = TryGetExecutablePath(process);
-                if (!LooksLikeDevClientExecutable(executablePath))
-                    continue;
+                try
+                {
+                    if (!seenProcessIds.Add(process.Id))
+                        continue;
 
-                var windows = EnumerateTopLevelWindows(process.Id);
-                var console = FindConsoleWindow(windows);
-                var input = console == IntPtr.Zero ? IntPtr.Zero : FindConsoleInput(console);
-                var output = console == IntPtr.Zero ? IntPtr.Zero : FindConsoleOutput(console);
-                var gameWindow = windows
-                    .Where(window => window != console && IsWindowVisible(window))
-                    .Select(window => new { Handle = window, Title = GetWindowTitle(window), Area = GetWindowArea(window) })
-                    .Where(window => !string.IsNullOrWhiteSpace(window.Title))
-                    .OrderByDescending(window => window.Area)
-                    .FirstOrDefault();
+                    var executablePath = TryGetExecutablePath(process);
+                    var instance = BuildInstance(process, executablePath);
+                    if (LooksLikeDevClientExecutable(executablePath, devRoot))
+                    {
+                        if (instance.HasConsole || instance.GameWindowHandle != IntPtr.Zero)
+                            results.Add(instance);
+                        continue;
+                    }
 
-                DateTime? startedAt = null;
-                try { startedAt = process.StartTime; } catch { }
+                    // Cross-user/elevated processes can deny executable-path queries. In that case,
+                    // a DEV console is the required fingerprint; a normal STOVE client has no such input.
+                    if (!string.IsNullOrWhiteSpace(executablePath) || !instance.HasConsole)
+                        continue;
+                    if (!executableCandidates.TryGetValue(process.ProcessName, out var matchingPaths))
+                        continue;
 
-                results.Add(new EpicSevenDevInstance(
-                    process.Id,
-                    gameWindow?.Title ?? "",
-                    executablePath!,
-                    startedAt,
-                    gameWindow?.Handle ?? IntPtr.Zero,
-                    console,
-                    input,
-                    output));
-            }
-            catch
-            {
-                // A process can exit while the list is being collected.
-            }
-            finally
-            {
-                process.Dispose();
+                    var inferredPath = matchingPaths.Count == 1 ? matchingPaths[0] : "";
+                    results.Add(instance with { ExecutablePath = inferredPath });
+                }
+                catch
+                {
+                    // A process can exit while the list is being collected.
+                }
+                finally
+                {
+                    process.Dispose();
+                }
             }
         }
 
@@ -102,7 +111,7 @@ public static class EpicSevenDevClientService
         EpicSevenDevInstance? current;
         try
         {
-            current = FindInstances().FirstOrDefault(instance => instance.ProcessId == selected.ProcessId);
+            current = RefreshSelectedInstance(selected);
         }
         catch (Exception ex)
         {
@@ -141,7 +150,7 @@ public static class EpicSevenDevClientService
 
     public static string ReadConsoleText(EpicSevenDevInstance selected)
     {
-        var current = FindInstances().FirstOrDefault(instance => instance.ProcessId == selected.ProcessId);
+        var current = RefreshSelectedInstance(selected);
         if (current?.ConsoleOutputHandle is null or 0)
             return "";
 
@@ -170,25 +179,44 @@ public static class EpicSevenDevClientService
     }
 
     public static bool LooksLikeDevClientExecutable(string? executablePath)
+        => LooksLikeDevClientExecutable(executablePath, null);
+
+    public static bool LooksLikeDevClientExecutable(string? executablePath, string? configuredDevRoot)
     {
-        if (string.IsNullOrWhiteSpace(executablePath)
-            || !string.Equals(Path.GetFileName(executablePath), "ur.exe", StringComparison.OrdinalIgnoreCase))
-        {
+        if (string.IsNullOrWhiteSpace(executablePath))
             return false;
-        }
 
         try
         {
-            var x64Directory = Directory.GetParent(executablePath);
-            var gameRoot = x64Directory?.Parent?.Parent?.Parent;
-            if (gameRoot is null)
+            var fullPath = Path.GetFullPath(executablePath);
+            if (!IsPotentialClientExecutable(fullPath))
                 return false;
 
-            return string.Equals(x64Directory?.Name, "x64", StringComparison.OrdinalIgnoreCase)
-                   && string.Equals(x64Directory?.Parent?.Name, "release", StringComparison.OrdinalIgnoreCase)
-                   && string.Equals(x64Directory?.Parent?.Parent?.Name, "bin", StringComparison.OrdinalIgnoreCase)
-                   && Directory.Exists(Path.Combine(gameRoot.FullName, "Resources"))
-                   && File.Exists(Path.Combine(gameRoot.FullName, "ur.udf"));
+            var devRoot = NexusPathResolver.FindDevRoot(configuredDevRoot);
+            if (devRoot is not null
+                && IsSameOrDescendant(fullPath, Path.Combine(devRoot, "game", "bin", "release")))
+            {
+                return true;
+            }
+
+            var fileName = Path.GetFileNameWithoutExtension(fullPath);
+            if (!DefaultDevProcessNames.Contains(fileName, StringComparer.OrdinalIgnoreCase))
+                return false;
+
+            var current = Directory.GetParent(fullPath);
+            while (current is not null)
+            {
+                if (string.Equals(current.Name, "game", StringComparison.OrdinalIgnoreCase)
+                    && Directory.Exists(Path.Combine(current.FullName, "Resources"))
+                    && File.Exists(Path.Combine(current.FullName, "ur.udf"))
+                    && IsSameOrDescendant(fullPath, Path.Combine(current.FullName, "bin")))
+                {
+                    return true;
+                }
+                current = current.Parent;
+            }
+
+            return false;
         }
         catch
         {
@@ -198,8 +226,137 @@ public static class EpicSevenDevClientService
 
     private static string? TryGetExecutablePath(Process process)
     {
-        try { return process.MainModule?.FileName; }
-        catch { return null; }
+        try
+        {
+            var path = process.MainModule?.FileName;
+            if (!string.IsNullOrWhiteSpace(path))
+                return path;
+        }
+        catch
+        {
+            // Fall through to PROCESS_QUERY_LIMITED_INFORMATION.
+        }
+
+        var handle = OpenProcess(ProcessQueryLimitedInformation, false, process.Id);
+        if (handle == IntPtr.Zero)
+            return null;
+        try
+        {
+            var capacity = 32768;
+            var buffer = new StringBuilder(capacity);
+            return QueryFullProcessImageName(handle, 0, buffer, ref capacity)
+                ? buffer.ToString()
+                : null;
+        }
+        finally
+        {
+            CloseHandle(handle);
+        }
+    }
+
+    private static EpicSevenDevInstance BuildInstance(Process process, string? executablePath)
+    {
+        var windows = EnumerateTopLevelWindows(process.Id);
+        var console = FindConsoleWindow(windows);
+        var input = console == IntPtr.Zero ? IntPtr.Zero : FindConsoleInput(console);
+        var output = console == IntPtr.Zero ? IntPtr.Zero : FindConsoleOutput(console);
+        var gameWindow = windows
+            .Where(window => window != console && IsWindowVisible(window))
+            .Select(window => new { Handle = window, Title = GetWindowTitle(window), Area = GetWindowArea(window) })
+            .Where(window => !string.IsNullOrWhiteSpace(window.Title))
+            .OrderByDescending(window => window.Area)
+            .FirstOrDefault();
+
+        DateTime? startedAt = null;
+        try { startedAt = process.StartTime; } catch { }
+
+        return new EpicSevenDevInstance(
+            process.Id,
+            gameWindow?.Title ?? "",
+            executablePath ?? "",
+            startedAt,
+            gameWindow?.Handle ?? IntPtr.Zero,
+            console,
+            input,
+            output);
+    }
+
+    private static EpicSevenDevInstance? RefreshSelectedInstance(EpicSevenDevInstance selected)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(selected.ProcessId);
+            DateTime? startedAt = null;
+            try { startedAt = process.StartTime; } catch { }
+            if (selected.StartedAt.HasValue && startedAt.HasValue
+                && Math.Abs((selected.StartedAt.Value - startedAt.Value).TotalSeconds) > 1)
+            {
+                return null;
+            }
+
+            var executablePath = TryGetExecutablePath(process);
+            if (string.IsNullOrWhiteSpace(executablePath))
+                executablePath = selected.ExecutablePath;
+            return BuildInstance(process, executablePath);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static Dictionary<string, List<string>> FindExecutableCandidates(string? devRoot)
+    {
+        var candidates = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var name in DefaultDevProcessNames)
+            candidates[name] = [];
+
+        if (string.IsNullOrWhiteSpace(devRoot))
+            return candidates;
+
+        var releaseRoot = Path.Combine(devRoot, "game", "bin", "release");
+        if (!Directory.Exists(releaseRoot))
+            return candidates;
+
+        try
+        {
+            foreach (var path in Directory.EnumerateFiles(releaseRoot, "*.exe", SearchOption.AllDirectories))
+            {
+                if (!IsPotentialClientExecutable(path))
+                    continue;
+                var processName = Path.GetFileNameWithoutExtension(path);
+                if (!candidates.TryGetValue(processName, out var paths))
+                {
+                    paths = [];
+                    candidates[processName] = paths;
+                }
+                paths.Add(Path.GetFullPath(path));
+            }
+        }
+        catch
+        {
+            // The configured client may be on a disconnected or access-limited drive.
+        }
+
+        return candidates;
+    }
+
+    private static bool IsPotentialClientExecutable(string path)
+    {
+        var name = Path.GetFileNameWithoutExtension(path);
+        if (DefaultDevProcessNames.Contains(name, StringComparer.OrdinalIgnoreCase))
+            return true;
+        return !HelperExecutableKeywords.Any(keyword => name.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsSameOrDescendant(string candidatePath, string rootPath)
+    {
+        var candidate = Path.GetFullPath(candidatePath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var root = Path.GetFullPath(rootPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        return string.Equals(candidate, root, StringComparison.OrdinalIgnoreCase)
+               || candidate.StartsWith(root + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
     }
 
     private static List<IntPtr> EnumerateTopLevelWindows(int processId)
@@ -330,6 +487,21 @@ public static class EpicSevenDevClientService
         public int Width => Math.Max(0, Right - Left);
         public int Height => Math.Max(0, Bottom - Top);
     }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr OpenProcess(uint desiredAccess, bool inheritHandle, int processId);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool QueryFullProcessImageName(
+        IntPtr process,
+        int flags,
+        StringBuilder executablePath,
+        ref int size);
+
+    [DllImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CloseHandle(IntPtr handle);
 
     [DllImport("user32.dll")]
     private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr parameter);

@@ -88,6 +88,11 @@ public partial class ResearchEditorWindow : Window
     private ResearchSlotTag? _pendingEmptySlot;
     private Point _pendingEmptySlotStartScreen;
     private bool _pendingEmptySlotAdditive;
+    private string? _pendingNodeDragAnchorIdentity;
+    private readonly Dictionary<string, int> _pendingNodeDragRows = new(StringComparer.OrdinalIgnoreCase);
+    private Point _pendingNodeDragStartScreen;
+    private int _pendingNodeDragDeltaRow;
+    private bool _nodeDragMoved;
     private bool _isStepMarqueeSelecting;
     private bool _stepMarqueeMoved;
     private bool _stepMarqueeAdditive;
@@ -798,6 +803,72 @@ public partial class ResearchEditorWindow : Window
         }
     }
 
+    private void RefreshEmptySlotTargets()
+    {
+        if (_workbook is null || _selectedCategory is null)
+            return;
+
+        var oldSlots = NodeCanvas.Children
+            .OfType<FrameworkElement>()
+            .Where(element => element.Tag is ResearchSlotTag)
+            .ToList();
+        foreach (var slot in oldSlots)
+            NodeCanvas.Children.Remove(slot);
+
+        var categoryNodes = _workbook.Nodes
+            .Where(node => Same(node.Category, _selectedCategory.Category))
+            .ToList();
+        DrawEmptySlotTargets(categoryNodes, VisibleNodes().ToList());
+    }
+
+    private void RefreshStepHeaderCount(int column)
+    {
+        if (_workbook is null || _selectedCategory is null
+            || !_stepHeaderVisuals.TryGetValue(column, out var header)
+            || header.Child is not Grid root)
+        {
+            return;
+        }
+
+        var count = VisibleNodes().Count(node => node.Column == column);
+        var counter = root.Children
+            .OfType<Grid>()
+            .FirstOrDefault(element => Grid.GetRow(element) == 1);
+        if (counter is null)
+            return;
+
+        var countText = counter.Children.OfType<TextBlock>().FirstOrDefault();
+        if (countText is not null)
+            countText.Text = $"{count} NODES";
+        foreach (var button in counter.Children.OfType<Button>())
+        {
+            if (button.Tag is not ValueTuple<int, int> change)
+                continue;
+            button.IsEnabled = change.Item2 > 0
+                ? count < ResearchWorkbookService.MaxNodesPerStep
+                : count > 1;
+        }
+    }
+
+    private void RemoveNodeVisual(string rowIdentity)
+    {
+        if (_nodeVisuals.Remove(rowIdentity, out var card))
+            NodeCanvas.Children.Remove(card);
+        if (_inputPinVisuals.Remove(rowIdentity, out var inputPin))
+            NodeCanvas.Children.Remove(inputPin);
+        if (_outputPinVisuals.Remove(rowIdentity, out var outputPin))
+            NodeCanvas.Children.Remove(outputPin);
+    }
+
+    private void UpdateSceneStatus()
+    {
+        if (_workbook is null || _selectedCategory is null)
+            return;
+        var visibleCount = VisibleNodes().Count();
+        var allCount = _workbook.Nodes.Count(node => Same(node.Category, _selectedCategory.Category));
+        SceneStatusText.Text = $"{_selectedCategory.Category} / {visibleCount:N0} of {allCount:N0} nodes / Wheel: Zoom / RMB: Pan";
+    }
+
     private void RefreshResearchAssetRoot()
     {
         _researchAssetCache.Clear();
@@ -1468,7 +1539,12 @@ public partial class ResearchEditorWindow
             _selectedStepColumns.Clear();
             _primaryNode = created.Node;
             _quickNodePopupRequested = true;
-            RenderGraph();
+            RefreshEmptySlotTargets();
+            RefreshStepHeaderCount(column);
+            CreateNodeVisual(created.Node);
+            ApplySelectionVisuals();
+            RefreshQuickNodePopup();
+            UpdateSceneStatus();
             ScheduleHierarchyRefresh();
             RenderInspector();
             ScheduleValidation();
@@ -1489,7 +1565,27 @@ public partial class ResearchEditorWindow
     {
         if (sender is not Border { Tag: ResearchNodeRow node } card)
             return;
-        SelectNodeFromScene(node, card, respectControlModifier: true, showQuickEditor: true);
+        if (e.ChangedButton != MouseButton.Left)
+            return;
+
+        SelectNodeFromScene(node, card, respectControlModifier: true, showQuickEditor: false);
+        if (!_selectedNodeIdentities.Contains(node.RowIdentity))
+        {
+            e.Handled = true;
+            return;
+        }
+
+        _pendingNodeDragAnchorIdentity = node.RowIdentity;
+        _pendingNodeDragRows.Clear();
+        foreach (var selected in VisibleNodes().Where(candidate =>
+                     _selectedNodeIdentities.Contains(candidate.RowIdentity)))
+        {
+            _pendingNodeDragRows[selected.RowIdentity] = selected.Row;
+        }
+        _pendingNodeDragStartScreen = e.GetPosition(SceneViewport);
+        _pendingNodeDragDeltaRow = 0;
+        _nodeDragMoved = false;
+        SceneViewport.CaptureMouse();
         e.Handled = true;
     }
 
@@ -1955,6 +2051,43 @@ public partial class ResearchEditorWindow
             e.Handled = true;
             return;
         }
+        if (_pendingNodeDragAnchorIdentity is not null)
+        {
+            if (e.LeftButton != MouseButtonState.Pressed)
+            {
+                CancelNodeRowDrag(restorePreview: true, releaseCapture: true);
+                return;
+            }
+
+            var current = e.GetPosition(SceneViewport);
+            if (!_nodeDragMoved && !HasExceededDragThreshold(_pendingNodeDragStartScreen, current))
+            {
+                e.Handled = true;
+                return;
+            }
+            if (!_nodeDragMoved)
+            {
+                _nodeDragMoved = true;
+                CloseQuickNodePopup();
+            }
+
+            var scale = Math.Max(0.01, GraphScale.ScaleY);
+            var rawDelta = -(current.Y - _pendingNodeDragStartScreen.Y) / scale / RowStep;
+            var deltaRow = (int)Math.Round(rawDelta, MidpointRounding.AwayFromZero);
+            var minRow = _pendingNodeDragRows.Values.DefaultIfEmpty(ResearchWorkbookService.MinResearchRow).Min();
+            var maxRow = _pendingNodeDragRows.Values.DefaultIfEmpty(ResearchWorkbookService.MaxResearchRow).Max();
+            deltaRow = Math.Clamp(
+                deltaRow,
+                ResearchWorkbookService.MinResearchRow - minRow,
+                ResearchWorkbookService.MaxResearchRow - maxRow);
+            if (deltaRow != _pendingNodeDragDeltaRow)
+            {
+                _pendingNodeDragDeltaRow = deltaRow;
+                PreviewNodeRowDrag(deltaRow);
+            }
+            e.Handled = true;
+            return;
+        }
         if (_pendingEmptySlot is not null && e.LeftButton == MouseButtonState.Pressed)
         {
             var slotCurrent = e.GetPosition(SceneViewport);
@@ -2072,6 +2205,12 @@ public partial class ResearchEditorWindow
             e.Handled = true;
             return;
         }
+        if (_pendingNodeDragAnchorIdentity is not null)
+        {
+            CompleteNodeRowDrag();
+            e.Handled = true;
+            return;
+        }
         if (_pendingEmptySlot is not null)
         {
             var slot = _pendingEmptySlot;
@@ -2113,6 +2252,7 @@ public partial class ResearchEditorWindow
         if (!ReferenceEquals(e.OriginalSource, SceneViewport))
             return;
         CancelLinkDrag(releaseCapture: false);
+        CancelNodeRowDrag(restorePreview: true, releaseCapture: false);
         CancelRightPointerGesture(releaseCapture: false);
         _pendingEmptySlot = null;
         if (_isStepMarqueeSelecting)
@@ -2120,6 +2260,82 @@ public partial class ResearchEditorWindow
             _isStepMarqueeSelecting = false;
             StepSelectionMarquee.Visibility = Visibility.Collapsed;
         }
+    }
+
+    private void PreviewNodeRowDrag(int deltaRow)
+    {
+        foreach (var (identity, originalRow) in _pendingNodeDragRows)
+        {
+            var targetRow = originalRow + deltaRow;
+            if (_nodeVisuals.TryGetValue(identity, out var card))
+                Canvas.SetTop(card, WorldY(targetRow));
+            if (_inputPinVisuals.TryGetValue(identity, out var inputPin))
+                Canvas.SetTop(inputPin, WorldY(targetRow) + NodeHeight / 2 - PinDiameter / 2);
+            if (_outputPinVisuals.TryGetValue(identity, out var outputPin))
+                Canvas.SetTop(outputPin, WorldY(targetRow) + NodeHeight / 2 - PinDiameter / 2);
+        }
+        DrawAllLinks();
+    }
+
+    private void CompleteNodeRowDrag()
+    {
+        if (_workbook is null || _pendingNodeDragAnchorIdentity is null)
+        {
+            CancelNodeRowDrag(restorePreview: true, releaseCapture: true);
+            return;
+        }
+
+        var anchorIdentity = _pendingNodeDragAnchorIdentity;
+        var identities = _pendingNodeDragRows.Keys.ToArray();
+        var deltaRow = _pendingNodeDragDeltaRow;
+        var wasDrag = _nodeDragMoved;
+        CancelNodeRowDrag(restorePreview: false, releaseCapture: true);
+
+        if (!wasDrag || deltaRow == 0)
+        {
+            var clickedNode = _workbook.Nodes.FirstOrDefault(node => Same(node.RowIdentity, anchorIdentity));
+            if (clickedNode is not null && _nodeVisuals.TryGetValue(anchorIdentity, out var clickedCard))
+                SelectNodeFromScene(clickedNode, clickedCard, respectControlModifier: false, showQuickEditor: true);
+            return;
+        }
+
+        PushUndo();
+        var result = ResearchWorkbookService.TryMoveNodesInPlace(
+            _workbook,
+            identities,
+            deltaColumn: 0,
+            deltaRow: deltaRow);
+        if (!result.Success)
+        {
+            UndoWithoutRender();
+            RenderGraph();
+            RenderInspector();
+            Log(ResearchConsoleSeverity.Warning, result.Message, anchorIdentity);
+            return;
+        }
+
+        var category = _selectedCategory?.Category;
+        _selectedCategory = _workbook.FindCategory(category);
+        _primaryNode = _workbook.Nodes.FirstOrDefault(node => Same(node.RowIdentity, anchorIdentity));
+        RenderGraph();
+        ScheduleHierarchyRefresh();
+        RenderInspector();
+        ScheduleValidation();
+        UpdateDirtyState();
+        Log(ResearchConsoleSeverity.Info, result.Message, _primaryNode?.Id ?? anchorIdentity);
+    }
+
+    private void CancelNodeRowDrag(bool restorePreview, bool releaseCapture)
+    {
+        if (restorePreview && _nodeDragMoved && _pendingNodeDragRows.Count > 0)
+            PreviewNodeRowDrag(0);
+
+        _pendingNodeDragAnchorIdentity = null;
+        _pendingNodeDragRows.Clear();
+        _pendingNodeDragDeltaRow = 0;
+        _nodeDragMoved = false;
+        if (releaseCapture && SceneViewport.IsMouseCaptured)
+            SceneViewport.ReleaseMouseCapture();
     }
 
     private void CancelRightPointerGesture(bool releaseCapture)
@@ -3833,25 +4049,48 @@ public partial class ResearchEditorWindow
                 "연구 노드 삭제", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
             return;
         CloseQuickNodePopup();
+        var identitySet = identities.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var affectedColumns = _workbook.Nodes
+            .Where(node => identitySet.Contains(node.RowIdentity))
+            .Select(node => node.Column)
+            .Distinct()
+            .ToArray();
         PushUndo();
-        foreach (var identity in identities)
+        var result = ResearchWorkbookService.TryDeleteNodesInPlace(
+            _workbook,
+            identities,
+            removeConditionReferences: true);
+        if (!result.Success)
         {
-            var result = ResearchWorkbookService.TryDeleteNode(_workbook, identity, removeConditionReferences: true);
-            if (!result.Success)
-            {
-                UndoWithoutRender();
-                Log(ResearchConsoleSeverity.Error, result.Message);
-                return;
-            }
+            UndoWithoutRender();
+            Log(ResearchConsoleSeverity.Error, result.Message);
+            return;
         }
         _selectedNodeIdentities.Clear();
         _selectedStepColumns.Clear();
         _primaryNode = null;
-        RenderGraph();
+        var requiresFullRender = affectedColumns.Any(column =>
+            !VisibleNodes().Any(node => node.Column == column));
+        if (requiresFullRender)
+        {
+            RenderGraph();
+        }
+        else
+        {
+            foreach (var identity in identities)
+                RemoveNodeVisual(identity);
+            DrawAllLinks();
+            RefreshEmptySlotTargets();
+            foreach (var column in affectedColumns)
+                RefreshStepHeaderCount(column);
+            ApplySelectionVisuals();
+            UpdateSceneStatus();
+        }
         ScheduleHierarchyRefresh();
         RenderInspector();
         ScheduleValidation();
         UpdateDirtyState();
+        Log(ResearchConsoleSeverity.Info, result.Message);
     }
 
     private static void ClearConditions(ResearchNodeRow node)

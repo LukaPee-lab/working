@@ -5425,7 +5425,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        var picker = new RuntimeTargetPickerWindow(EpicSevenDevClientService.FindInstances())
+        var devRoot = NexusPathResolver.ResolveDefaultDevRoot(_settings);
+        var picker = new RuntimeTargetPickerWindow(EpicSevenDevClientService.FindInstances(devRoot))
         {
             Owner = this
         };

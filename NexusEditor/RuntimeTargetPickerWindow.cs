@@ -113,7 +113,7 @@ public sealed class RuntimeTargetPickerWindow : Window
         var noDevMessage = new TextBlock
         {
             Text = devInstances.Count == 0
-                ? "실행 중인 DEV ur.exe를 찾지 못했습니다."
+                ? "실행 중인 DEV 클라이언트를 찾지 못했습니다. Preference > Asset Path의 Client Path와 DEV console을 확인하세요."
                 : "console 입력창이 있는 DEV를 선택하세요.",
             Foreground = new SolidColorBrush(Color.FromRgb(205, 160, 90)),
             VerticalAlignment = VerticalAlignment.Center

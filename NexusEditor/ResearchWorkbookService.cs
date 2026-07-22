@@ -1319,6 +1319,68 @@ public static class ResearchWorkbookService
         return result;
     }
 
+    // The editor already owns one undo snapshot. Delete a selection in one pass so
+    // condition cleanup and effect lookup do not repeat for every selected node.
+    public static ResearchMutationResult TryDeleteNodesInPlace(
+        ResearchWorkbookContext context,
+        IEnumerable<string> rowIdentities,
+        bool removeConditionReferences = false)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(rowIdentities);
+
+        var identities = rowIdentities
+            .Where(NotBlank)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        if (identities.Count == 0)
+            return ResearchMutationResult.Failed("삭제할 연구 노드를 선택하세요.");
+
+        var selected = context.Nodes
+            .Where(node => identities.Contains(node.RowIdentity))
+            .ToList();
+        if (selected.Count != identities.Count)
+            return ResearchMutationResult.Failed("삭제할 연구 노드 일부를 찾지 못했습니다.");
+
+        var removedIds = selected
+            .Select(node => node.Id)
+            .Where(NotBlank)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var dependants = context.Nodes
+            .Where(node => !identities.Contains(node.RowIdentity))
+            .Where(node => node.Conditions.Any(removedIds.Contains))
+            .ToList();
+        if (dependants.Count > 0 && !removeConditionReferences)
+        {
+            return ResearchMutationResult.Failed(
+                $"선행 조건으로 참조하는 연구 노드 {dependants.Count:N0}개가 있습니다.");
+        }
+
+        var result = new ResearchMutationResult
+        {
+            Success = true,
+            Message = $"연구 노드 {selected.Count:N0}개와 연결 효과를 삭제했습니다."
+        };
+        foreach (var node in selected)
+            result.AffectedRowIdentities.Add(node.RowIdentity);
+        foreach (var dependant in dependants)
+        {
+            RemoveConditionReferences(dependant, removedIds);
+            result.AffectedRowIdentities.Add(dependant.RowIdentity);
+        }
+
+        var linkedEffects = selected
+            .Select(context.FindEffect)
+            .Where(effect => effect is not null)
+            .Cast<ResearchEffectRow>()
+            .ToHashSet();
+        foreach (var effect in linkedEffects)
+            result.AffectedRowIdentities.Add(effect.RowIdentity);
+
+        context.Effects.RemoveAll(linkedEffects.Contains);
+        context.Nodes.RemoveAll(node => identities.Contains(node.RowIdentity));
+        return result;
+    }
+
     public static ResearchMutationResult TryRenameCategory(
         ResearchWorkbookContext context,
         string categoryRowIdentity,
@@ -1514,6 +1576,34 @@ public static class ResearchWorkbookService
         ArgumentNullException.ThrowIfNull(context);
         ArgumentNullException.ThrowIfNull(nodeRowIdentities);
 
+        var candidate = context.DeepClone(includeOriginalSnapshot: false);
+        var result = MoveNodesCore(candidate, nodeRowIdentities, deltaColumn, deltaRow);
+        if (!result.Success)
+            return result;
+        context.ReplaceDataFrom(candidate, takeRowOwnership: true);
+        return result;
+    }
+
+    // UI mutations already push an undo snapshot, so this path avoids a second
+    // complete workbook clone while preserving the same validation and cascades.
+    public static ResearchMutationResult TryMoveNodesInPlace(
+        ResearchWorkbookContext context,
+        IEnumerable<string> nodeRowIdentities,
+        int deltaColumn,
+        int deltaRow)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        ArgumentNullException.ThrowIfNull(nodeRowIdentities);
+        return MoveNodesCore(context, nodeRowIdentities, deltaColumn, deltaRow);
+    }
+
+    private static ResearchMutationResult MoveNodesCore(
+        ResearchWorkbookContext candidate,
+        IEnumerable<string> nodeRowIdentities,
+        int deltaColumn,
+        int deltaRow)
+    {
+
         var identities = nodeRowIdentities
             .Where(NotBlank)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -1522,7 +1612,6 @@ public static class ResearchWorkbookService
         if (deltaColumn == 0 && deltaRow == 0)
             return new ResearchMutationResult { Success = true, Message = "노드 위치가 바뀌지 않았습니다." };
 
-        var candidate = context.DeepClone(includeOriginalSnapshot: false);
         var selected = candidate.Nodes.Where(node => identities.Contains(node.RowIdentity)).ToList();
         if (selected.Count != identities.Count)
             return ResearchMutationResult.Failed("이동할 연구 노드 일부를 찾지 못했습니다.");
@@ -1596,7 +1685,6 @@ public static class ResearchWorkbookService
         if (HasDuplicateGeneratedKeys(candidate, out var duplicateMessage))
             return ResearchMutationResult.Failed(duplicateMessage);
 
-        context.ReplaceDataFrom(candidate);
         var result = new ResearchMutationResult
         {
             Success = true,

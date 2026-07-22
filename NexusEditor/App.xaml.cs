@@ -820,7 +820,7 @@ public partial class App : Application
     private static void RunDevProbeMode()
     {
         TryEnableUtf8Console();
-        var instances = EpicSevenDevClientService.FindInstances();
+        var instances = FindConfiguredDevInstances();
         foreach (var instance in instances)
         {
             Console.WriteLine($"PID={instance.ProcessId} title={instance.GameWindowTitle} console={instance.HasConsole} input=0x{instance.ConsoleInputHandle.ToInt64():X} output=0x{instance.ConsoleOutputHandle.ToInt64():X} path={instance.ExecutablePath}");
@@ -839,7 +839,7 @@ public partial class App : Application
             return;
         }
 
-        var instance = EpicSevenDevClientService.FindInstances().FirstOrDefault(candidate => candidate.ProcessId == processId);
+        var instance = FindConfiguredDevInstances().FirstOrDefault(candidate => candidate.ProcessId == processId);
         if (instance is null)
         {
             Console.Error.WriteLine($"DEV PID {processId} not found.");
@@ -862,7 +862,7 @@ public partial class App : Application
             return;
         }
 
-        var instance = EpicSevenDevClientService.FindInstances().FirstOrDefault(candidate => candidate.ProcessId == processId);
+        var instance = FindConfiguredDevInstances().FirstOrDefault(candidate => candidate.ProcessId == processId);
         if (instance is null)
         {
             Console.Error.WriteLine($"DEV PID {processId} not found.");
@@ -875,6 +875,13 @@ public partial class App : Application
             Console.WriteLine(line);
         Console.WriteLine($"DEV console chars: {text.Length}");
         Environment.ExitCode = text.Length > 0 ? 0 : 11;
+    }
+
+    private static IReadOnlyList<EpicSevenDevInstance> FindConfiguredDevInstances()
+    {
+        var settings = NexusPathResolver.LoadSettings();
+        var devRoot = NexusPathResolver.ResolveDefaultDevRoot(settings);
+        return EpicSevenDevClientService.FindInstances(devRoot);
     }
 
     private static void RunSoundProbeMode(string[] args)
