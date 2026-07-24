@@ -3260,22 +3260,35 @@ public partial class ResearchEditorWindow
     private void RenderCategoryInspector(ResearchCategoryRow category)
     {
         AddInspectorTitle("Node Category");
-        AddReadOnlyField("category", category.Category, "nexus_node_category.category. Helper Prefix와 Category Key로 자동 생성됩니다.");
+        AddEditableField("category", category.Category, value =>
+        {
+            var result = ResearchWorkbookService.TryRenameCategoryId(_workbook!, category.RowIdentity, value);
+            EnsureMutation(result);
+            RefreshSelectedObjects(category.RowIdentity, null);
+        }, "nexus_node_category.category입니다. 변경하면 이 카테고리의 노드 ID, 효과 ID와 참조가 함께 바뀝니다.",
+            confirm: value => ConfirmCategoryRename(
+                category,
+                ResearchWorkbookService.GenerateCategoryId(null, value)));
         AddEditableField("export_id", category.ExportId, value => category.ExportId = value,
             "변경된 행을 추적하는 Export ID입니다.");
         AddEditableField("helper prefix", category.HelperPrefix, value =>
         {
-            category.HelperPrefix = value;
-            var result = ResearchWorkbookService.TryRenameCategory(_workbook!, category.RowIdentity, category.CategoryKey);
+            var result = ResearchWorkbookService.TryRenameCategoryPrefix(_workbook!, category.RowIdentity, value);
             EnsureMutation(result);
             RefreshSelectedObjects(category.RowIdentity, null);
-        }, "category 식별자 앞부분입니다. 바꾸면 이 카테고리의 노드 ID와 효과 ID, 조건 참조도 함께 바뀝니다.");
+        }, "category 식별자 앞부분입니다. 바꾸면 이 카테고리의 노드 ID와 효과 ID, 조건 참조도 함께 바뀝니다.",
+            confirm: value => ConfirmCategoryRename(
+                category,
+                ResearchWorkbookService.GenerateCategoryId(value, category.CategoryKey)));
         AddEditableField("category key", category.CategoryKey, value =>
         {
             var result = ResearchWorkbookService.TryRenameCategory(_workbook!, category.RowIdentity, value);
             EnsureMutation(result);
             RefreshSelectedObjects(category.RowIdentity, null);
-        }, "소문자 영문, 숫자, 밑줄을 사용합니다. 변경 시 연결된 모든 ID를 함께 갱신합니다.");
+        }, "소문자 영문, 숫자, 밑줄을 사용합니다. 변경 시 연결된 모든 ID를 함께 갱신합니다.",
+            confirm: value => ConfirmCategoryRename(
+                category,
+                ResearchWorkbookService.GenerateCategoryId(category.HelperPrefix, value)));
         AddEditableField("index", category.Index?.ToString(CultureInfo.InvariantCulture) ?? "", value =>
             category.Index = ParseNullableInt(value, "index"), "카테고리 정렬 순서입니다.");
         AddReadOnlyField("node_name", category.NodeName, "category key에서 자동 생성되는 로컬라이징 TID입니다.");
@@ -3537,10 +3550,23 @@ public partial class ResearchEditorWindow
         });
     }
 
-    private void AddEditableField(string label, string value, Action<string> apply, string help, bool multiline = false)
-        => AddEditableField(InspectorPanel, label, value, apply, help, multiline);
+    private void AddEditableField(
+        string label,
+        string value,
+        Action<string> apply,
+        string help,
+        bool multiline = false,
+        Func<string, bool>? confirm = null)
+        => AddEditableField(InspectorPanel, label, value, apply, help, multiline, confirm);
 
-    private void AddEditableField(Panel panel, string label, string value, Action<string> apply, string help, bool multiline = false)
+    private void AddEditableField(
+        Panel panel,
+        string label,
+        string value,
+        Action<string> apply,
+        string help,
+        bool multiline = false,
+        Func<string, bool>? confirm = null)
     {
         AddFieldLabel(panel, label, help);
         var box = new TextBox
@@ -3557,9 +3583,60 @@ public partial class ResearchEditorWindow
         {
             if (_suppressInspectorCommit || Equals(box.Tag, box.Text))
                 return;
+            if (confirm is not null && !confirm(box.Text))
+            {
+                box.Text = box.Tag as string ?? "";
+                box.CaretIndex = box.Text.Length;
+                return;
+            }
             CommitInspectorEdit(() => apply(box.Text));
         };
         panel.Children.Add(box);
+    }
+
+    private bool ConfirmCategoryRename(ResearchCategoryRow category, string newCategory)
+    {
+        if (_workbook is null
+            || string.IsNullOrWhiteSpace(newCategory)
+            || Same(category.Category, newCategory))
+        {
+            return true;
+        }
+
+        var nodes = _workbook.Nodes
+            .Where(node => Same(node.Category, category.Category))
+            .ToList();
+        var linkedEffects = nodes
+            .Select(_workbook.FindEffect)
+            .Where(effect => effect is not null)
+            .Cast<ResearchEffectRow>()
+            .DistinctBy(effect => effect.RowIdentity, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var nodeIds = nodes
+            .Select(node => node.Id)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var effectIds = linkedEffects
+            .Select(effect => effect.Id)
+            .Where(id => !string.IsNullOrWhiteSpace(id))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var conditionReferenceCount = _workbook.Nodes
+            .SelectMany(node => node.Conditions)
+            .Count(nodeIds.Contains);
+        var parentEffectReferenceCount = _workbook.Effects
+            .Count(effect => effectIds.Contains(effect.ParentEffect.Trim()));
+
+        var message =
+            $"카테고리 '{category.Category}'을(를) '{newCategory}'(으)로 변경할까요?\n\n"
+            + $"연구 노드 ID {nodes.Count:N0}개와 연결 효과 ID {linkedEffects.Count:N0}개가 함께 바뀝니다.\n"
+            + $"조건 참조 {conditionReferenceCount:N0}개와 parent_effect 참조 {parentEffectReferenceCount:N0}개도 새 ID로 갱신됩니다.\n"
+            + "이 변경은 Ctrl+Z로 되돌릴 수 있습니다.";
+        return ThemedMessageBox.Show(
+                   message,
+                   "카테고리 이름 변경",
+                   MessageBoxButton.YesNo,
+                   MessageBoxImage.Warning)
+               == MessageBoxResult.Yes;
     }
 
     private void AddFieldLabel(string label, string help)

@@ -41,6 +41,21 @@ public partial class MainWindow : Window
     private const string GroupRewardPrefix = "group_reward|";
     private const string ChoiceArrayDragFormat = "NexusEditor.ChoiceArrayDrag";
     private static readonly string[] BackgroundImageExtensions = [".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"];
+    private static readonly string[] BgAnimOptions =
+    [
+        "none",
+        "zoom_in",
+        "shake_light",
+        "shake_strong",
+        "walk_bob",
+        "look_left",
+        "look_right",
+        "look_up",
+        "look_down",
+        "bright_pulse",
+        "dark_pulse",
+        "bad_end_darken"
+    ];
     private const double GraphDefaultX = 4200;
     private const double GraphDefaultY = 2600;
     private const double LegacyLayoutMaxRight = 2200;
@@ -3383,6 +3398,7 @@ public partial class MainWindow : Window
         AddText("situation_text TID", group.SituationTextTid, v => group.SituationTextTid = v);
         Action? refreshBackgroundPreview = null;
         AddBackgroundText(group, () => refreshBackgroundPreview?.Invoke());
+        AddBgAnimPicker(group);
         AddNextActionRadios(group);
         AddText("npc_id", group.NpcId, v => group.NpcId = v);
         AddText("stage_id", group.StageId, v => { group.StageId = v; DrawGraph(); });
@@ -3982,6 +3998,49 @@ public partial class MainWindow : Window
             trailingElement: picker);
     }
 
+    private void AddBgAnimPicker(ChoiceGroupRow group)
+    {
+        AddInspectorFieldHeader("bg_anim");
+        var current = group.BgAnim;
+        var combo = new ComboBox
+        {
+            ItemsSource = BgAnimOptions,
+            IsEditable = true,
+            IsTextSearchEnabled = true,
+            StaysOpenOnEdit = true,
+            Text = group.BgAnim,
+            MinHeight = 28,
+            ToolTip = "목록에서 선택하거나 bg_anim 값을 직접 입력할 수 있습니다."
+        };
+
+        void ApplyValue(string raw)
+        {
+            var next = string.IsNullOrWhiteSpace(raw) ? "none" : raw.Trim();
+            if (string.Equals(current, next, StringComparison.Ordinal))
+                return;
+            PushUndo();
+            group.BgAnim = next;
+            current = next;
+            if (!string.Equals(combo.Text, next, StringComparison.Ordinal))
+                combo.Text = next;
+            RefreshIssues();
+            DrawGraph();
+        }
+
+        combo.SelectionChanged += (_, _) =>
+        {
+            if (combo.SelectedItem is string selected)
+                ApplyValue(selected);
+        };
+        combo.LostKeyboardFocus += (_, _) => ApplyValue(combo.Text);
+        combo.KeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Enter && Keyboard.Modifiers == ModifierKeys.Control)
+                ApplyValue(combo.Text);
+        };
+        InspectorPanel.Children.Add(combo);
+    }
+
     private Action AddBackgroundPreview(ChoiceGroupRow group)
     {
         var panel = new StackPanel { Margin = new Thickness(0, 16, 0, 0) };
@@ -4156,38 +4215,7 @@ public partial class MainWindow : Window
         UIElement? trailingElement = null,
         Func<string, string>? normalizer = null)
     {
-        var header = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            HorizontalAlignment = HorizontalAlignment.Left,
-            Margin = new Thickness(0, 8, 0, 3)
-        };
-        header.Children.Add(new TextBlock
-        {
-            Text = label,
-            Foreground = new SolidColorBrush(Color.FromRgb(170, 170, 170)),
-            VerticalAlignment = VerticalAlignment.Center
-        });
-        var help = FindInspectorHelp(label);
-        if (help is not null)
-        {
-            var info = new Button
-            {
-                Content = "i",
-                Width = 18,
-                Height = 18,
-                MinHeight = 18,
-                Padding = new Thickness(0),
-                Margin = new Thickness(6, 0, 0, 0),
-                FontSize = 11,
-                ToolTip = help.Tooltip,
-                Background = new SolidColorBrush(Color.FromRgb(54, 54, 54)),
-                Foreground = new SolidColorBrush(Color.FromRgb(210, 220, 235))
-            };
-            info.Click += (_, _) => ThemedMessageBox.Show(this, help.Tooltip, $"{help.Table}.{help.Column}", MessageBoxButton.OK, MessageBoxImage.Information);
-            header.Children.Add(info);
-        }
-        InspectorPanel.Children.Add(header);
+        AddInspectorFieldHeader(label);
         var current = value;
         TextBox? box = null;
         void ApplyBoxValue(string raw, bool pushUndo)
@@ -4228,6 +4256,42 @@ public partial class MainWindow : Window
             InspectorPanel.Children.Add(row);
         }
         return new TextEditHandle(box, ApplyBoxValue);
+    }
+
+    private void AddInspectorFieldHeader(string label)
+    {
+        var header = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            Margin = new Thickness(0, 8, 0, 3)
+        };
+        header.Children.Add(new TextBlock
+        {
+            Text = label,
+            Foreground = new SolidColorBrush(Color.FromRgb(170, 170, 170)),
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        var help = FindInspectorHelp(label);
+        if (help is not null)
+        {
+            var info = new Button
+            {
+                Content = "i",
+                Width = 18,
+                Height = 18,
+                MinHeight = 18,
+                Padding = new Thickness(0),
+                Margin = new Thickness(6, 0, 0, 0),
+                FontSize = 11,
+                ToolTip = help.Tooltip,
+                Background = new SolidColorBrush(Color.FromRgb(54, 54, 54)),
+                Foreground = new SolidColorBrush(Color.FromRgb(210, 220, 235))
+            };
+            info.Click += (_, _) => ThemedMessageBox.Show(this, help.Tooltip, $"{help.Table}.{help.Column}", MessageBoxButton.OK, MessageBoxImage.Information);
+            header.Children.Add(info);
+        }
+        InspectorPanel.Children.Add(header);
     }
 
     private sealed class TextEditHandle
@@ -4276,7 +4340,7 @@ public partial class MainWindow : Window
         var known = new[]
         {
             "event_name", "first_group_id", "floor_restriction", "diff_restriction",
-            "situation_text", "next_action", "background", "npc_id", "stage_id",
+            "situation_text", "next_action", "background", "bg_anim", "npc_id", "stage_id",
             "choice_text", "click_sound", "cost_type", "cost_amount", "success_rate",
             "success_reward_type", "success_reward_amount", "success_next_group_id",
             "fail_reward_type", "fail_reward_amount", "fail_next_group_id",
@@ -5204,6 +5268,7 @@ public partial class MainWindow : Window
             Memo = "event end",
             ExportId = EventWorkbookService.DefaultEventExportId,
             Background = template?.Background ?? "",
+            BgAnim = template?.BgAnim ?? "none",
             NpcId = template?.NpcId ?? "",
             SituationTextTid = $"{id}_situation_text",
             NextAction = "exit",
@@ -5220,6 +5285,7 @@ public partial class MainWindow : Window
         ExportId = source.ExportId,
         EventId = source.EventId,
         Background = source.Background,
+        BgAnim = source.BgAnim,
         NpcId = source.NpcId,
         SituationTextTid = source.SituationTextTid,
         NextAction = source.NextAction,
@@ -5298,7 +5364,7 @@ public partial class MainWindow : Window
         foreach (var e in source.Events)
             clone.Events.Add(new EventBaseRow { Id = e.Id, Memo = e.Memo, ExportId = e.ExportId, EventNameTid = e.EventNameTid, Rarity = e.Rarity, FloorRestriction = e.FloorRestriction, DiffRestriction = e.DiffRestriction, Weight = e.Weight, FirstGroupId = e.FirstGroupId });
         foreach (var g in source.Groups)
-            clone.Groups.Add(new ChoiceGroupRow { Id = g.Id, Memo = g.Memo, ExportId = g.ExportId, EventId = g.EventId, Background = g.Background, NpcId = g.NpcId, SituationTextTid = g.SituationTextTid, NextAction = g.NextAction, StageId = g.StageId });
+            clone.Groups.Add(new ChoiceGroupRow { Id = g.Id, Memo = g.Memo, ExportId = g.ExportId, EventId = g.EventId, Background = g.Background, BgAnim = g.BgAnim, NpcId = g.NpcId, SituationTextTid = g.SituationTextTid, NextAction = g.NextAction, StageId = g.StageId });
         foreach (var c in source.Choices)
             clone.Choices.Add(CloneChoiceForClipboard(c));
         foreach (var t in source.TextEntries)

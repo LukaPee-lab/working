@@ -135,6 +135,7 @@ Research Editor는 아래 두 파일을 한 쌍으로 찾습니다.
 - `export_id`: 기본값 `manmo2429_175126`
 - `event_id`: 소속 이벤트 ID
 - `background`: 배경 리소스 키
+- `bg_anim`: 장면 진입 시 한 번 재생할 배경 삽화 연출
 - `npc_id`: NPC ID
 - `situation_text`: 상황문 TID
 - `next_action`: `choice`, `exit`, `battle`
@@ -339,6 +340,15 @@ Battle은 장면 노드 하나로 표현됩니다.
 - `background`가 비어 있으면 자동으로 기본 배경을 넣지 않고 validation error를 표시합니다.
 - `background`의 Unicode format 문자(U+200B 등)는 로드 직후 제거되어 Export Preview 변경 내역에 표시되며, 저장 직전에도 다시 정리합니다.
 
+## 배경 삽화 연출
+
+장면 Inspector의 `bg_anim`은 목록에서 선택하거나 직접 값을 입력할 수 있습니다. 기본값은 `none`입니다.
+
+- 카메라: `zoom_in`, `shake_light`, `shake_strong`, `walk_bob`, `look_left`, `look_right`, `look_up`, `look_down`
+- UI 이펙트: `bright_pulse`, `dark_pulse`, `bad_end_darken`
+- 목록에 없는 신규 연출 키도 편집형 입력란에 직접 작성할 수 있습니다.
+- 구형 workbook에 `bg_anim` 열이 없으면 첫 export 때 `background` 다음 열로 추가합니다. 이미 열이 있으면 현재 위치를 찾아 그대로 읽고 씁니다.
+
 ## 선택지 클릭 사운드
 
 선택지 Inspector의 `click_sound`는 직접 입력하거나 오른쪽 picker 버튼으로 선택할 수 있습니다.
@@ -361,7 +371,7 @@ Research Editor는 연구 카테고리, 연구 노드, 그 노드에 대응하�
 
 `nexus_node_category`에서는 다음 값을 다룹니다.
 
-- `category`: helper prefix와 category key로 자동 생성되는 카테고리 ID
+- `category`: 카테고리 ID입니다. Inspector에서 직접 바꿀 수 있으며, 적용 전에 영향 범위를 경고로 확인합니다. 변경하면 helper prefix/category key 조합도 새 ID와 일치하도록 정리됩니다.
 - `export_id`: 변경 행을 내보낼 작업자 ID
 - `helper prefix`, `category key`: 카테고리 ID의 구성 요소
 - `index`: 카테고리 정렬 순서
@@ -404,7 +414,7 @@ Research Editor는 연구 카테고리, 연구 노드, 그 노드에 대응하�
 
 ### 자동 ID와 참조 갱신
 
-- 카테고리 key 또는 prefix를 바꾸면 해당 카테고리의 node ID, effect ID, TID와 모든 condition 참조를 함께 바꿉니다.
+- category, category key 또는 helper prefix를 바꾸면 해당 카테고리의 node ID, effect ID, TID, 모든 condition 참조와 `parent_effect` 참조를 한 작업으로 함께 바꿉니다. 실제 변경 전에는 경고 창이 한 번 표시되며, 적용 뒤에도 `Ctrl+Z`로 되돌릴 수 있습니다.
 - 노드의 category, column, row, theme를 바꾸면 node ID와 effect ID, 이 노드를 가리키는 condition을 함께 바꿉니다.
 - 현재 DB처럼 노드 좌표와 효과 ID 좌표가 한 칸 어긋난 레거시 데이터도 category, column, 정렬 순서로 안정적으로 짝지어 표시합니다. 사용자가 해당 노드를 이동하거나 카테고리를 바꿀 때만 새 좌표 규칙으로 효과 ID를 정규화합니다.
 - 노드 ID는 소문자 영문, 숫자, 밑줄 규칙으로 정리됩니다.

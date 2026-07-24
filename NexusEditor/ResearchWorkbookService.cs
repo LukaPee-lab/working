@@ -1528,6 +1528,71 @@ public static class ResearchWorkbookService
         string newCategoryKey)
     {
         ArgumentNullException.ThrowIfNull(context);
+        var category = context.Categories.FirstOrDefault(row => Same(row.RowIdentity, categoryRowIdentity));
+        if (category is null)
+            return ResearchMutationResult.Failed("변경할 카테고리를 찾지 못했습니다.");
+
+        return TryRenameCategoryParts(
+            context,
+            categoryRowIdentity,
+            category.HelperPrefix,
+            newCategoryKey);
+    }
+
+    public static ResearchMutationResult TryRenameCategoryPrefix(
+        ResearchWorkbookContext context,
+        string categoryRowIdentity,
+        string newHelperPrefix)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var category = context.Categories.FirstOrDefault(row => Same(row.RowIdentity, categoryRowIdentity));
+        if (category is null)
+            return ResearchMutationResult.Failed("변경할 카테고리를 찾지 못했습니다.");
+
+        return TryRenameCategoryParts(
+            context,
+            categoryRowIdentity,
+            newHelperPrefix,
+            category.CategoryKey);
+    }
+
+    public static ResearchMutationResult TryRenameCategoryId(
+        ResearchWorkbookContext context,
+        string categoryRowIdentity,
+        string newCategoryId)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var category = context.Categories.FirstOrDefault(row => Same(row.RowIdentity, categoryRowIdentity));
+        if (category is null)
+            return ResearchMutationResult.Failed("변경할 카테고리를 찾지 못했습니다.");
+
+        var generatedCategory = SanitizeIdentifierPart(newCategoryId);
+        if (generatedCategory.Length == 0 || !IdentifierPattern.IsMatch(generatedCategory))
+            return ResearchMutationResult.Failed("category는 소문자 영문, 숫자, 밑줄만 사용할 수 있습니다.");
+
+        var prefix = SanitizeIdentifierPart(category.HelperPrefix);
+        var prefixWithSeparator = $"{prefix}_";
+        var key = prefix.Length > 0
+                  && generatedCategory.StartsWith(prefixWithSeparator, StringComparison.OrdinalIgnoreCase)
+            ? generatedCategory[prefixWithSeparator.Length..]
+            : generatedCategory;
+        if (!generatedCategory.StartsWith(prefixWithSeparator, StringComparison.OrdinalIgnoreCase))
+            prefix = "";
+
+        return TryRenameCategoryParts(
+            context,
+            categoryRowIdentity,
+            prefix,
+            key);
+    }
+
+    private static ResearchMutationResult TryRenameCategoryParts(
+        ResearchWorkbookContext context,
+        string categoryRowIdentity,
+        string newHelperPrefix,
+        string newCategoryKey)
+    {
+        var prefix = SanitizeIdentifierPart(newHelperPrefix);
         var key = SanitizeIdentifierPart(newCategoryKey);
         if (key.Length == 0 || !IdentifierPattern.IsMatch(key))
             return ResearchMutationResult.Failed("카테고리 key는 소문자 영문, 숫자, 밑줄만 사용할 수 있습니다.");
@@ -1538,15 +1603,27 @@ public static class ResearchWorkbookService
             return ResearchMutationResult.Failed("변경할 카테고리를 찾지 못했습니다.");
 
         var oldCategory = category.Category;
-        var generatedCategory = GenerateCategoryId(category.HelperPrefix, key);
+        var generatedCategory = GenerateCategoryId(prefix, key);
         if (candidate.Categories.Any(row => !Same(row.RowIdentity, category.RowIdentity) && Same(row.Category, generatedCategory)))
             return ResearchMutationResult.Failed($"이미 존재하는 카테고리입니다: {generatedCategory}");
+        if (Same(category.Category, generatedCategory)
+            && Same(category.HelperPrefix, prefix)
+            && Same(category.CategoryKey, key))
+        {
+            return new ResearchMutationResult
+            {
+                Success = true,
+                Message = "카테고리가 바뀌지 않았습니다."
+            };
+        }
 
+        category.HelperPrefix = prefix;
         category.CategoryKey = key;
         category.Category = generatedCategory;
         category.NodeName = GenerateCategoryNodeName(key);
 
         var idMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var effectIdMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var affected = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { category.RowIdentity };
         foreach (var node in candidate.Nodes.Where(node => Same(node.Category, oldCategory)))
         {
@@ -1561,15 +1638,19 @@ public static class ResearchWorkbookService
             affected.Add(node.RowIdentity);
             if (linkedEffect is not null)
             {
+                var oldEffectId = linkedEffect.Id;
                 linkedEffect.Id = node.NexusEffectId;
                 linkedEffect.LinkedNodeRowIdentity = node.RowIdentity;
                 linkedEffect.GroupMemo = ReplaceOrdinalIgnoreCase(linkedEffect.GroupMemo, $"연구소:{oldCategory}", $"연구소:{generatedCategory}");
                 linkedEffect.Memo = ReplaceOrdinalIgnoreCase(linkedEffect.Memo, $"/{oldCategory}/", $"/{generatedCategory}/");
+                if (!string.IsNullOrWhiteSpace(oldEffectId) && !Same(oldEffectId, linkedEffect.Id))
+                    effectIdMap[oldEffectId] = linkedEffect.Id;
                 affected.Add(linkedEffect.RowIdentity);
             }
         }
 
         CascadeConditionIds(candidate.Nodes, idMap, affected);
+        CascadeParentEffectIds(candidate.Effects, effectIdMap, affected);
 
         if (HasDuplicateGeneratedKeys(candidate, out var duplicateMessage))
             return ResearchMutationResult.Failed(duplicateMessage);
@@ -3895,6 +3976,21 @@ public static class ResearchWorkbookService
             }
             if (changed)
                 affected.Add(node.RowIdentity);
+        }
+    }
+
+    private static void CascadeParentEffectIds(
+        IEnumerable<ResearchEffectRow> effects,
+        IReadOnlyDictionary<string, string> idMap,
+        ISet<string> affected)
+    {
+        foreach (var effect in effects)
+        {
+            var parentEffect = effect.ParentEffect.Trim();
+            if (!idMap.TryGetValue(parentEffect, out var replacement))
+                continue;
+            effect.ParentEffect = replacement;
+            affected.Add(effect.RowIdentity);
         }
     }
 

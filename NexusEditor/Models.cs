@@ -35,6 +35,7 @@ public sealed class ChoiceGroupRow
     public string ExportId { get; set; } = EventWorkbookService.DefaultEventExportId;
     public string EventId { get; set; } = "";
     public string Background { get; set; } = "";
+    public string BgAnim { get; set; } = "none";
     public string NpcId { get; set; } = "";
     public string SituationTextTid { get; set; } = "";
     public string NextAction { get; set; } = "choice";

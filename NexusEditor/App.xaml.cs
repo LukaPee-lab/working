@@ -543,7 +543,8 @@ public partial class App : Application
 
         var test = source.DeepClone();
         var categoryIndex = test.Categories.Select(row => row.Index ?? 0).DefaultIfEmpty().Max() + 1;
-        var category = ResearchWorkbookService.CreateCategory(test, "qa_editor", categoryIndex);
+        var category = ResearchWorkbookService.CreateCategory(
+            test, "editor", categoryIndex, helperPrefix: "qa");
         var first = ResearchWorkbookService.CreateNode(test, category.Category, 101, 3);
         var second = ResearchWorkbookService.CreateNode(test, category.Category, 102, 3);
         foreach (var pair in new[] { first, second })
@@ -584,14 +585,37 @@ public partial class App : Application
             || !string.Equals(movedEffect.Id, movedFirst.NexusEffectId, StringComparison.OrdinalIgnoreCase))
             failures.Add("좌표 이동 시 node/effect/condition ID 연쇄 갱신 실패");
 
-        var renamed = ResearchWorkbookService.TryRenameCategory(test, category.RowIdentity, "qa_editor_renamed");
+        var firstEffectBeforeRename = test.FindEffect(movedFirst);
+        var secondEffectBeforeRename = test.FindEffect(movedSecond);
+        if (firstEffectBeforeRename is null || secondEffectBeforeRename is null)
+        {
+            failures.Add("카테고리 변경 QA용 연결 효과를 찾지 못함");
+        }
+        else
+        {
+            secondEffectBeforeRename.ParentEffect = firstEffectBeforeRename.Id;
+        }
+
+        var renamed = ResearchWorkbookService.TryRenameCategoryId(
+            test, category.RowIdentity, "qa_editor_renamed");
         var renamedCategory = test.Categories.First(row => row.RowIdentity == category.RowIdentity);
         var renamedNodes = test.Nodes.Where(row => row.Category == renamedCategory.Category).ToList();
+        var renamedFirstEffect = test.FindEffect(test.Nodes.First(row => row.RowIdentity == first.Node.RowIdentity));
+        var renamedSecondEffect = test.FindEffect(test.Nodes.First(row => row.RowIdentity == second.Node.RowIdentity));
         if (!renamed.Success || renamedNodes.Count != 2
+            || !string.Equals(renamedCategory.Category, "qa_editor_renamed", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(renamedCategory.HelperPrefix, "qa", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(renamedCategory.CategoryKey, "editor_renamed", StringComparison.OrdinalIgnoreCase)
             || renamedNodes.Any(node => test.FindEffect(node) is null)
             || renamedNodes.SelectMany(node => node.Conditions).Any(value =>
-                !string.IsNullOrWhiteSpace(value) && test.FindNode(value) is null))
-            failures.Add("카테고리 변경 시 node/effect/condition 연쇄 갱신 실패");
+                !string.IsNullOrWhiteSpace(value) && test.FindNode(value) is null)
+            || renamedFirstEffect is null
+            || renamedSecondEffect is null
+            || !string.Equals(
+                renamedSecondEffect.ParentEffect,
+                renamedFirstEffect.Id,
+                StringComparison.OrdinalIgnoreCase))
+            failures.Add("카테고리 변경 시 node/effect/condition/parent_effect 연쇄 갱신 실패");
 
         var revertTest = test.DeepClone();
         var effectDiff = ResearchWorkbookService.BuildDiff(revertTest)

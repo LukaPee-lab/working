@@ -468,6 +468,27 @@
             <Setter Property="BorderBrush" Value="#4a4a4a"/>
             <Setter Property="CaretBrush" Value="#ffffff"/>
         </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="Background" Value="#2b2b2b"/>
+            <Setter Property="Foreground" Value="#d8d8d8"/>
+            <Setter Property="BorderBrush" Value="#4a4a4a"/>
+            <Setter Property="Padding" Value="6,3"/>
+        </Style>
+        <Style TargetType="ComboBoxItem">
+            <Setter Property="Background" Value="#2b2b2b"/>
+            <Setter Property="Foreground" Value="#d8d8d8"/>
+            <Setter Property="Padding" Value="7,4"/>
+            <Style.Triggers>
+                <Trigger Property="IsHighlighted" Value="True">
+                    <Setter Property="Background" Value="#454545"/>
+                    <Setter Property="Foreground" Value="#ffffff"/>
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="#315a78"/>
+                    <Setter Property="Foreground" Value="#ffffff"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
         <Style TargetType="ListBox">
             <Setter Property="ScrollViewer.HorizontalScrollBarVisibility" Value="Disabled"/>
         </Style>

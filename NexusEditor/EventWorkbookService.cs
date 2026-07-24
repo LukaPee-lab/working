@@ -1389,7 +1389,7 @@ public static class EventWorkbookService
         var dimensions = new Dictionary<string, (int LastRow, int LastColumn)>(StringComparer.OrdinalIgnoreCase)
         {
             [BaseSheetName] = (Math.Max(3, model.Events.Count + 3), 9),
-            [GroupSheetName] = (Math.Max(3, model.Groups.Count + 3), 9),
+            [GroupSheetName] = (Math.Max(3, model.Groups.Count + 3), 10),
             [ChoiceSheetName] = (Math.Max(3, model.Choices.Count + 3), 15),
             [TextSheetName] = (Math.Max(1, GenerateTextEntries(model).Count + 1), 4),
             [LayoutSheetName] = (Math.Max(1, model.Layouts.Count + 1), 10)
@@ -1564,22 +1564,24 @@ public static class EventWorkbookService
 
     private static void LoadGroups(IXLWorksheet ws, EventWorkbook model)
     {
+        var columns = GroupColumns(ws);
         for (var row = 4; row <= LastRow(ws); row++)
         {
-            var id = Cell(ws, row, 1);
-            if (Blank(id) && !HasDataInColumns(ws, row, 2, 9))
+            var id = Cell(ws, row, columns["id"]);
+            if (Blank(id) && !HasDataInColumns(ws, row, 2, columns.Values.Max()))
                 continue;
             model.Groups.Add(new ChoiceGroupRow
             {
                 Id = id,
-                Memo = Cell(ws, row, 2),
-                ExportId = Default(Cell(ws, row, 3), DefaultEventExportId),
-                EventId = Cell(ws, row, 4),
-                Background = Cell(ws, row, 5),
-                NpcId = Cell(ws, row, 6),
-                SituationTextTid = Cell(ws, row, 7),
-                NextAction = Default(Cell(ws, row, 8), "choice"),
-                StageId = Cell(ws, row, 9)
+                Memo = Cell(ws, row, columns["memo"]),
+                ExportId = Default(Cell(ws, row, columns["export_id"]), DefaultEventExportId),
+                EventId = Cell(ws, row, columns["event_id"]),
+                Background = Cell(ws, row, columns["background"]),
+                BgAnim = Default(Cell(ws, row, columns["bg_anim"]), "none"),
+                NpcId = Cell(ws, row, columns["npc_id"]),
+                SituationTextTid = Cell(ws, row, columns["situation_text"]),
+                NextAction = Default(Cell(ws, row, columns["next_action"]), "choice"),
+                StageId = Cell(ws, row, columns["stage_id"])
             });
         }
     }
@@ -1748,19 +1750,21 @@ public static class EventWorkbookService
     private static void WriteGroups(IXLWorksheet ws, EventWorkbook model)
     {
         EnsureGroupHeaders(ws);
+        var columns = GroupColumns(ws);
         ClearData(ws, 4);
         var row = 4;
         foreach (var g in model.Groups.OrderBy(g => g.EventId).ThenBy(g => g.Id))
         {
-            ws.Cell(row, 1).Value = g.Id;
-            ws.Cell(row, 2).Value = g.Memo;
-            ws.Cell(row, 3).Value = g.ExportId;
-            ws.Cell(row, 4).Value = g.EventId;
-            ws.Cell(row, 5).Value = g.Background;
-            ws.Cell(row, 6).Value = g.NpcId;
-            ws.Cell(row, 7).Value = g.SituationTextTid;
-            ws.Cell(row, 8).Value = g.NextAction;
-            ws.Cell(row, 9).Value = g.StageId;
+            ws.Cell(row, columns["id"]).Value = g.Id;
+            ws.Cell(row, columns["memo"]).Value = g.Memo;
+            ws.Cell(row, columns["export_id"]).Value = g.ExportId;
+            ws.Cell(row, columns["event_id"]).Value = g.EventId;
+            ws.Cell(row, columns["background"]).Value = g.Background;
+            ws.Cell(row, columns["bg_anim"]).Value = g.BgAnim;
+            ws.Cell(row, columns["npc_id"]).Value = g.NpcId;
+            ws.Cell(row, columns["situation_text"]).Value = g.SituationTextTid;
+            ws.Cell(row, columns["next_action"]).Value = g.NextAction;
+            ws.Cell(row, columns["stage_id"]).Value = g.StageId;
             row++;
         }
     }
@@ -2036,7 +2040,7 @@ public static class EventWorkbookService
             .ToDictionary(g => g.Key, g =>
             {
                 var row = g.Last();
-                return string.Join("|", row.Memo, row.EventId, row.Background, row.NpcId, row.SituationTextTid, row.NextAction, row.StageId);
+                return string.Join("|", row.Memo, row.EventId, row.Background, row.BgAnim, row.NpcId, row.SituationTextTid, row.NextAction, row.StageId);
             }, StringComparer.OrdinalIgnoreCase);
 
     private static Dictionary<string, string> SnapshotChoices(EventWorkbook workbook) =>
@@ -2158,6 +2162,7 @@ public static class EventWorkbookService
         ExportId = source.ExportId,
         EventId = source.EventId,
         Background = source.Background,
+        BgAnim = source.BgAnim,
         NpcId = source.NpcId,
         SituationTextTid = source.SituationTextTid,
         NextAction = source.NextAction,
@@ -2214,6 +2219,7 @@ public static class EventWorkbookService
         target.ExportId = source.ExportId;
         target.EventId = source.EventId;
         target.Background = source.Background;
+        target.BgAnim = source.BgAnim;
         target.NpcId = source.NpcId;
         target.SituationTextTid = source.SituationTextTid;
         target.NextAction = source.NextAction;
@@ -2325,14 +2331,60 @@ public static class EventWorkbookService
 
     private static void EnsureGroupHeaders(IXLWorksheet ws)
     {
-        ws.Cell(3, 1).Value = "id";
-        ws.Cell(3, 3).Value = "export_id";
-        ws.Cell(3, 4).Value = "event_id";
-        ws.Cell(3, 5).Value = "background";
-        ws.Cell(3, 6).Value = "npc_id";
-        ws.Cell(3, 7).Value = "situation_text";
-        ws.Cell(3, 8).Value = "next_action";
-        ws.Cell(3, 9).Value = "stage_id";
+        var lastColumn = Math.Max(9, ws.LastColumnUsed()?.ColumnNumber() ?? 9);
+        var hasBgAnim = Enumerable.Range(1, lastColumn)
+            .Any(column => Same(Cell(ws, 3, column), "bg_anim"));
+        if (!hasBgAnim)
+        {
+            ws.Column(6).InsertColumnsBefore(1);
+            ws.Cell(1, 6).Value = Cell(ws, 1, 5);
+            ws.Cell(3, 6).Value = "bg_anim";
+        }
+
+        var columns = GroupColumns(ws);
+        foreach (var header in new[]
+                 {
+                     "id", "export_id", "event_id", "background", "bg_anim",
+                     "npc_id", "situation_text", "next_action", "stage_id"
+                 })
+        {
+            ws.Cell(3, columns[header]).Value = header;
+        }
+    }
+
+    private static Dictionary<string, int> GroupColumns(IXLWorksheet ws)
+    {
+        var columns = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["memo"] = 2
+        };
+        var lastColumn = Math.Max(9, ws.LastColumnUsed()?.ColumnNumber() ?? 9);
+        for (var column = 1; column <= lastColumn; column++)
+        {
+            var header = Cell(ws, 3, column);
+            if (NotBlank(header))
+                columns[header] = column;
+        }
+
+        // Old workbooks have no bg_anim. Loading uses an empty virtual column;
+        // export creates the real column directly after background.
+        columns.TryAdd("bg_anim", lastColumn + 1);
+
+        var legacyDefaults = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["id"] = 1,
+            ["memo"] = 2,
+            ["export_id"] = 3,
+            ["event_id"] = 4,
+            ["background"] = 5,
+            ["npc_id"] = 6,
+            ["situation_text"] = 7,
+            ["next_action"] = 8,
+            ["stage_id"] = 9
+        };
+        foreach (var (header, column) in legacyDefaults)
+            columns.TryAdd(header, column);
+        return columns;
     }
 
     private static void EnsureChoiceHeaders(IXLWorksheet ws)
