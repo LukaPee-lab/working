@@ -474,6 +474,113 @@
             <Setter Property="BorderBrush" Value="#4a4a4a"/>
             <Setter Property="Padding" Value="6,3"/>
         </Style>
+        <Style x:Key="InspectorEditableComboBox"
+               TargetType="{x:Type ComboBox}"
+               BasedOn="{StaticResource {x:Type ComboBox}}">
+            <Setter Property="MinHeight" Value="28"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="SnapsToDevicePixels" Value="True"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type ComboBox}">
+                        <Grid>
+                            <Border x:Name="OuterBorder"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="30"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="PART_EditableTextBox"
+                                             Grid.Column="0"
+                                             Style="{x:Null}"
+                                             Background="Transparent"
+                                             Foreground="{TemplateBinding Foreground}"
+                                             CaretBrush="#ffffff"
+                                             BorderThickness="0"
+                                             Padding="8,4"
+                                             VerticalContentAlignment="Center"
+                                             IsReadOnly="{TemplateBinding IsReadOnly}"
+                                             Text="{Binding Text,
+                                                            RelativeSource={RelativeSource TemplatedParent},
+                                                            Mode=TwoWay,
+                                                            UpdateSourceTrigger=PropertyChanged}"/>
+                                    <ToggleButton x:Name="DropDownToggle"
+                                                  Grid.Column="1"
+                                                  Focusable="False"
+                                                  ClickMode="Press"
+                                                  Background="#303030"
+                                                  BorderBrush="#4a4a4a"
+                                                  BorderThickness="1,0,0,0"
+                                                  IsChecked="{Binding IsDropDownOpen,
+                                                                      RelativeSource={RelativeSource TemplatedParent},
+                                                                      Mode=TwoWay}">
+                                        <ToggleButton.Template>
+                                            <ControlTemplate TargetType="{x:Type ToggleButton}">
+                                                <Border x:Name="ToggleBorder"
+                                                        Background="{TemplateBinding Background}"
+                                                        BorderBrush="{TemplateBinding BorderBrush}"
+                                                        BorderThickness="{TemplateBinding BorderThickness}">
+                                                    <Path Width="9"
+                                                          Height="5"
+                                                          HorizontalAlignment="Center"
+                                                          VerticalAlignment="Center"
+                                                          Data="M 0,0 L 4.5,4.5 L 9,0"
+                                                          Stroke="#d8d8d8"
+                                                          StrokeThickness="1.5"
+                                                          StrokeStartLineCap="Round"
+                                                          StrokeEndLineCap="Round"/>
+                                                </Border>
+                                                <ControlTemplate.Triggers>
+                                                    <Trigger Property="IsMouseOver" Value="True">
+                                                        <Setter TargetName="ToggleBorder" Property="Background" Value="#454545"/>
+                                                    </Trigger>
+                                                    <Trigger Property="IsChecked" Value="True">
+                                                        <Setter TargetName="ToggleBorder" Property="Background" Value="#3b3b3b"/>
+                                                    </Trigger>
+                                                </ControlTemplate.Triggers>
+                                            </ControlTemplate>
+                                        </ToggleButton.Template>
+                                    </ToggleButton>
+                                </Grid>
+                            </Border>
+                            <Popup x:Name="PART_Popup"
+                                   AllowsTransparency="True"
+                                   Focusable="False"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}"
+                                   Placement="Bottom"
+                                   PlacementTarget="{Binding ElementName=OuterBorder}"
+                                   PopupAnimation="Fade">
+                                <Border MinWidth="{Binding ActualWidth, ElementName=OuterBorder}"
+                                        MaxHeight="280"
+                                        Margin="0,1,0,0"
+                                        Background="#2b2b2b"
+                                        BorderBrush="#555555"
+                                        BorderThickness="1">
+                                    <ScrollViewer CanContentScroll="True"
+                                                  VerticalScrollBarVisibility="Auto">
+                                        <ItemsPresenter/>
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="OuterBorder" Property="BorderBrush" Value="#666666"/>
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="OuterBorder" Property="BorderBrush" Value="#5f91b4"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="OuterBorder" Property="Opacity" Value="0.45"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
         <Style TargetType="ComboBoxItem">
             <Setter Property="Background" Value="#2b2b2b"/>
             <Setter Property="Foreground" Value="#d8d8d8"/>

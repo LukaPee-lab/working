@@ -4009,6 +4009,7 @@ public partial class MainWindow : Window
             IsTextSearchEnabled = true,
             StaysOpenOnEdit = true,
             Text = group.BgAnim,
+            Style = (Style)FindResource("InspectorEditableComboBox"),
             MinHeight = 28,
             ToolTip = "목록에서 선택하거나 bg_anim 값을 직접 입력할 수 있습니다."
         };
