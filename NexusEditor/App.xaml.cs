@@ -210,9 +210,25 @@ public partial class App : Application
     private static List<string> RunResearchMutationQa(ResearchWorkbookContext source)
     {
         var failures = new List<string>();
-        var linkedEffectCount = source.Nodes.Count(node => source.FindEffect(node) is not null);
-        if (linkedEffectCount != source.Nodes.Count)
-            failures.Add($"기존 연구 노드-효과 연결 실패: {linkedEffectCount}/{source.Nodes.Count}");
+        var linkedEffects = source.Effects
+            .Where(effect => !string.IsNullOrWhiteSpace(effect.LinkedNodeRowIdentity))
+            .ToList();
+        if (linkedEffects.Count != source.Effects.Count)
+        {
+            failures.Add($"기존 연구 효과-노드 연결 실패: {linkedEffects.Count}/{source.Effects.Count}");
+        }
+        else
+        {
+            var mismatchedEffect = linkedEffects.FirstOrDefault(effect =>
+            {
+                var node = source.Nodes.FirstOrDefault(row =>
+                    string.Equals(row.RowIdentity, effect.LinkedNodeRowIdentity, StringComparison.OrdinalIgnoreCase));
+                return node is null
+                       || !string.Equals(node.NexusEffectId, effect.Id, StringComparison.OrdinalIgnoreCase);
+            });
+            if (mismatchedEffect is not null)
+                failures.Add($"기존 연구 효과 ID 불일치: {mismatchedEffect.Id}");
+        }
         if (Math.Abs(ResearchWorkbookService.CalculateActiveItemTotal("1;2;3") - 6d) > 0.0000001d)
             failures.Add("active_item_value 합산 helper 계산 실패");
         try
@@ -653,6 +669,13 @@ public partial class App : Application
             failures.Add("노드가 남은 카테고리가 보호되지 않음");
         if (!ResearchWorkbookService.TryDeleteCategory(deletion, category.RowIdentity, deleteContainedNodes: true).Success)
             failures.Add("노드/효과를 포함한 카테고리 연쇄 삭제 실패");
+        var deletionRoundTrip = ResearchWorkbookService.TestRoundTrip(deletion);
+        if (!deletionRoundTrip.Success)
+        {
+            failures.Add(
+                $"연구 노드/효과 삭제 후 행 압축 왕복 실패: first={deletionRoundTrip.FirstPassDifferences.Count}, " +
+                $"second={deletionRoundTrip.SecondPassDifferences.Count}, newErrors={deletionRoundTrip.NewValidationIssues.Count}");
+        }
 
         RunResearchExternalConflictQa(source, failures);
 

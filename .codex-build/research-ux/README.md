@@ -135,7 +135,6 @@ Research Editor는 아래 두 파일을 한 쌍으로 찾습니다.
 - `export_id`: 기본값 `manmo2429_175126`
 - `event_id`: 소속 이벤트 ID
 - `background`: 배경 리소스 키
-- `bg_anim`: 장면 진입 시 한 번 재생할 배경 삽화 연출
 - `npc_id`: NPC ID
 - `situation_text`: 상황문 TID
 - `next_action`: `choice`, `exit`, `battle`
@@ -315,8 +314,6 @@ Battle은 장면 노드 하나로 표현됩니다.
 - Godot은 현재 편집 중인 데이터를 임시 runtime workbook으로 저장한 뒤 `Dimension Exploration Event Player.exe`를 실행합니다.
 - Epic Seven DEV는 선택한 클라이언트의 console에 `#ct:nexus_run_event( '<event_id>' )`를 전송하고 해당 게임 창을 맨 앞으로 올립니다.
 - DEV가 여러 개 실행 중이면 창 제목, PID, 시작 시각을 보고 실행할 클라이언트를 선택합니다. STOVE 라이브 클라이언트는 목록에서 제외합니다.
-- DEV 탐색은 `Preference > Asset Path > Client Path`에 저장한 DEV 루트를 우선 사용합니다. 해당 루트의 `game\bin\release` 아래 실행 파일을 동적으로 찾으므로 드라이브 문자, 사용자명, 설치 폴더가 달라도 됩니다.
-- 기본 `ur.exe`와 `EpicSeven.exe`를 모두 지원합니다. 실행 파일 경로를 권한 문제로 읽지 못할 때는 DEV console 입력창이 실제로 있는 프로세스만 허용하므로 창 제목이 달라져도 찾을 수 있고 STOVE 라이브는 섞이지 않습니다.
 - DEV console에 `nexus_run_event needs a server active run`이 출력되면 에디터 Console에 `차원 탐사 인게임에 진입한 상태에서 재생해야 합니다.` 오류를 함께 표시합니다.
 - Godot 실행 중에는 DB 편집 UI를 잠급니다.
 - Stop 또는 다시 Play를 누르면 플레이어를 종료하고 편집 UI를 복구합니다.
@@ -340,15 +337,6 @@ Battle은 장면 노드 하나로 표현됩니다.
 - `background`가 비어 있으면 자동으로 기본 배경을 넣지 않고 validation error를 표시합니다.
 - `background`의 Unicode format 문자(U+200B 등)는 로드 직후 제거되어 Export Preview 변경 내역에 표시되며, 저장 직전에도 다시 정리합니다.
 
-## 배경 삽화 연출
-
-장면 Inspector의 `bg_anim`은 목록에서 선택하거나 직접 값을 입력할 수 있습니다. 기본값은 `none`입니다.
-
-- 카메라: `zoom_in`, `shake_light`, `shake_strong`, `walk_bob`, `look_left`, `look_right`, `look_up`, `look_down`
-- UI 이펙트: `bright_pulse`, `dark_pulse`, `bad_end_darken`
-- 목록에 없는 신규 연출 키도 편집형 입력란에 직접 작성할 수 있습니다.
-- 구형 workbook에 `bg_anim` 열이 없으면 첫 export 때 `background` 다음 열로 추가합니다. 이미 열이 있으면 현재 위치를 찾아 그대로 읽고 씁니다.
-
 ## 선택지 클릭 사운드
 
 선택지 Inspector의 `click_sound`는 직접 입력하거나 오른쪽 picker 버튼으로 선택할 수 있습니다.
@@ -371,7 +359,7 @@ Research Editor는 연구 카테고리, 연구 노드, 그 노드에 대응하�
 
 `nexus_node_category`에서는 다음 값을 다룹니다.
 
-- `category`: 카테고리 ID입니다. Inspector에서 직접 바꿀 수 있으며, 적용 전에 영향 범위를 경고로 확인합니다. 변경하면 helper prefix/category key 조합도 새 ID와 일치하도록 정리됩니다.
+- `category`: helper prefix와 category key로 자동 생성되는 카테고리 ID
 - `export_id`: 변경 행을 내보낼 작업자 ID
 - `helper prefix`, `category key`: 카테고리 ID의 구성 요소
 - `index`: 카테고리 정렬 순서
@@ -382,7 +370,7 @@ Research Editor는 연구 카테고리, 연구 노드, 그 노드에 대응하�
 - `id`: `{theme_id}_node_{category}_{column}_{row}` 규칙으로 자동 생성
 - `theme_id`, `category`, `image`, `node_permission`: 노드별로 직접 바꿀 수 있으며, 카테고리를 옮기면 관련 ID와 참조도 함께 갱신됩니다. `theme_id`는 `s1`에 고정하지 않고 소문자 ID 규칙을 따릅니다.
 - `active_item_id`, `active_item_value`, `active_step`
-- `column`, `row`: 그래프 좌표. row는 1~8을 사용합니다. row 1이 아래쪽이고 숫자가 커질수록 위로 올라가며, row 4의 카드 중심이 화면의 시각적 중앙입니다. 세로 위치는 `row 2 = 슬롯 1`, `row 3 = 슬롯 1.5`, `row 4 = 슬롯 2`처럼 숫자가 1 늘 때마다 반 슬롯씩 이동합니다. 하나의 STEP에는 최대 4개 노드만 둘 수 있습니다.
+- `column`, `row`: 그래프 좌표. row는 1~8을 사용하며, row 4가 화면의 시각적 중앙입니다. row 번호 순서대로 배치하므로 row 3은 row 2와 row 4 사이에 표시됩니다. 하나의 STEP에는 최대 4개 노드만 둘 수 있습니다.
 - `condition_node_1`~`condition_node_5`: 앞에서 열려 있어야 하는 노드 ID
 - `category_name`, `node_effect_desc`, `nexus_effect_id`: 수식과 ID 규칙으로 자동 관리
 
@@ -396,27 +384,26 @@ Research Editor는 연구 카테고리, 연구 노드, 그 노드에 대응하�
 - 마지막 `+ 권한 구역` 버튼은 마지막 구역의 STEP 하나를 새 권한 구역으로 분리합니다. 마지막 구역의 `-` 버튼은 그 구역을 앞 구역에 합칩니다. 권한 번호는 1부터 필요한 만큼 계속 만들 수 있으며 구역마다 STEP을 하나 이상 남깁니다.
 - 가장 오른쪽의 `+ STEP` 버튼은 마지막 STEP 형식을 바탕으로 유효한 노드·효과·자동 ID를 만들고, 직전 STEP에서 이어지는 조건을 연결합니다. 새 STEP은 마지막 권한 구역에 들어갑니다.
 - 노드를 클릭하면 Inspector에서 노드와 연결된 효과를 함께 편집합니다. 클릭만으로 Scene이 자동 이동하지 않으며, 선택 노드를 화면 중앙에서 찾으려면 `F`를 누릅니다.
-- 연구 노드를 좌클릭한 채 위아래로 끌면 같은 STEP 안에서 `row 1~8` 중 가장 가까운 칸으로 이동합니다. 여러 노드가 선택된 상태에서 그중 하나를 끌면 선택 노드가 같은 row 간격으로 함께 움직입니다. 이미 다른 노드가 있는 칸이거나 범위를 벗어나는 이동은 적용하지 않으며, 이동 전체를 `Ctrl+Z` 한 번으로 되돌릴 수 있습니다.
-- 노드를 한 개 선택하면 카드 옆에 `빠른 노드 편집` 창이 열립니다. `노드 설정` 탭에서는 자주 바꾸는 `image`, `active_item_id`, `active_item_value`, `active_step`을 수정하고, `효과 설정` 탭에서는 연결된 `nexus_effect`의 Export ID, 타입, 조건, 값과 나머지 원본 칼럼을 바로 수정합니다. `memo`는 `type + condition + value`가 같은 기존 연구 효과 문구를 우선 찾아 현재 카테고리·권한 구역·좌표에 맞게 자동 작성합니다. 연결 효과가 없는 노드는 같은 탭에서 효과 행을 생성할 수 있으며, Inspector에는 전체 칼럼이 계속 표시됩니다.
-- 비어 있는 노드 슬롯을 짧게 우클릭한 뒤 `연구 노드 추가`를 누르면 선택한 `STEP / row` 좌표에 정확히 새 노드와 연결 효과를 만듭니다. 빈 슬롯 좌클릭은 노드를 만들지 않고 STEP 블록 선택에만 사용합니다. 주변 노드의 연결은 자동으로 바꾸지 않습니다.
+- 노드를 한 개 선택하면 카드 옆에 `빠른 노드 편집` 창이 열립니다. 여기서 자주 바꾸는 `image`, `active_item_id`, `active_item_value`, `active_step`을 바로 수정할 수 있으며, Inspector에는 전체 칼럼과 연결 효과가 계속 표시됩니다.
+- 비어 있는 노드 슬롯을 짧게 좌클릭하면 선택한 `STEP / row` 좌표에 정확히 새 노드와 연결 효과를 만듭니다. 같은 위치에서 좌클릭 드래그하면 노드를 만들지 않고 기존 STEP 블록 선택으로 전환합니다. 주변 노드의 연결은 자동으로 바꾸지 않습니다.
 - 연구 노드를 우클릭하면 해당 노드만 삭제할 수 있습니다. 다중 선택 중에는 선택한 노드 전체를 삭제하며, 참조 중인 조건선과 연결 효과만 함께 정리합니다.
 - 기존 자동 연결은 그대로 유지됩니다. 직접 연결을 편집할 때는 출력 핀을 좌클릭한 채 드래그해 바로 다음 STEP의 입력 핀에 놓습니다.
 - 입력 핀을 우클릭하면 해당 노드로 들어오는 연결을, 출력 핀을 우클릭하면 해당 노드에서 나가는 연결을 해제합니다.
 - 이 조작은 기존 condition 값만 편집하며 DB 스키마와 Export 형식은 바꾸지 않습니다.
 - DEV의 `roadmap_line_*.png` 경로 리소스는 9-slice로 그려 길이가 달라져도 선과 모서리 두께가 일정합니다.
 - 마우스 휠은 확대/축소, 우클릭 드래그는 이동입니다. 연구 노드 위에서 시작해도 우클릭 드래그가 우선하며, 움직이지 않고 우클릭을 놓았을 때만 노드 삭제 메뉴가 열립니다. Scene의 빈 곳이나 빈 슬롯에서 좌클릭 드래그하면 선택 사각형과 겹친 STEP 블록을 한꺼번에 선택합니다. `Ctrl+클릭`으로 STEP 선택을 더하거나 뺄 수도 있습니다.
-- STEP 블록을 하나 이상 선택하고 `Ctrl+C`를 누르면 묶음으로 복사합니다. 같은 수의 대상 STEP을 선택하거나 붙여넣기 시작 STEP 하나를 선택한 뒤 `Ctrl+V`를 누르면 순서대로 붙여넣습니다. 대상 STEP이 부족하면 오른쪽 `+ STEP`으로 먼저 늘립니다. 선택한 STEP 블록에서 `Delete`를 누르면 블록 안의 연구 노드를 한 번에 삭제하며, `Ctrl+Z` 한 번으로 모두 되돌릴 수 있습니다.
+- STEP 블록을 하나 이상 선택하고 `Ctrl+C`를 누르면 묶음으로 복사합니다. 같은 수의 대상 STEP을 선택하거나 붙여넣기 시작 STEP 하나를 선택한 뒤 `Ctrl+V`를 누르면 순서대로 붙여넣습니다. 대상 STEP이 부족하면 오른쪽 `+ STEP`으로 먼저 늘립니다.
 - 연구 노드 선택에는 기존 `Ctrl+C`, `Ctrl+V`, `Delete`, `Ctrl+Z`, `F`를 그대로 지원합니다. Inspector 입력칸에 포커스가 있으면 글자 편집 단축키를 가로채지 않습니다.
-- 여러 노드를 함께 옮길 때 최종 좌표, STEP당 최대 4개, row 1~8 범위를 먼저 검사한 뒤 ID·effect ID·condition을 한 번에 갱신합니다.
+- 여러 노드를 함께 옮길 때 최종 좌표를 먼저 검사한 뒤 한 번에 적용합니다.
 - Console은 Scene 아래 분리선으로 높이를 조절할 수 있으며 최소 높이를 유지합니다. Hierarchy와 Inspector도 각각 독립적으로 폭을 조절하고 Window 메뉴에서 다시 열 수 있습니다.
 - Scene 오른쪽 분리선은 우측 도크 전체 폭을, Hierarchy와 Inspector 사이 분리선은 두 패널의 상대 폭만 조절합니다. 패널을 닫으면 최소 폭과 분리선까지 함께 접히며, 다시 열면 마지막으로 사용한 폭을 복원합니다.
-- 우클릭 메뉴로 만든 슬롯 노드와 우클릭으로 삭제한 노드는 `Ctrl+Z`로 되돌릴 수 있습니다.
+- 슬롯 생성과 우클릭 삭제는 `Ctrl+Z`로 되돌릴 수 있습니다.
 
 ### 자동 ID와 참조 갱신
 
-- category, category key 또는 helper prefix를 바꾸면 해당 카테고리의 node ID, effect ID, TID, 모든 condition 참조와 `parent_effect` 참조를 한 작업으로 함께 바꿉니다. 실제 변경 전에는 경고 창이 한 번 표시되며, 적용 뒤에도 `Ctrl+Z`로 되돌릴 수 있습니다.
+- 카테고리 key 또는 prefix를 바꾸면 해당 카테고리의 node ID, effect ID, TID와 모든 condition 참조를 함께 바꿉니다.
 - 노드의 category, column, row, theme를 바꾸면 node ID와 effect ID, 이 노드를 가리키는 condition을 함께 바꿉니다.
-- 노드 좌표와 효과 ID 좌표가 어긋난 레거시 데이터도 category, column, 정렬 순서로 먼저 짝지은 뒤, 연결된 `nexus_node.nexus_effect_id`와 `nexus_effect.id`를 현재 노드 좌표 규칙으로 맞춥니다. 변경된 ID와 `parent_effect` 참조는 Export Preview에 함께 표시됩니다.
+- 현재 DB처럼 노드 좌표와 효과 ID 좌표가 한 칸 어긋난 레거시 데이터도 category, column, 정렬 순서로 안정적으로 짝지어 표시합니다. 사용자가 해당 노드를 이동하거나 카테고리를 바꿀 때만 새 좌표 규칙으로 효과 ID를 정규화합니다.
 - 노드 ID는 소문자 영문, 숫자, 밑줄 규칙으로 정리됩니다.
 - ID를 바꾸는 연쇄 작업은 Export Preview에서도 하나의 묶음으로 Revert됩니다.
 - 참조 중인 노드나 노드가 남은 카테고리는 실수로 단독 삭제되지 않습니다. 연쇄 삭제를 선택해야 관련 참조를 함께 정리합니다.
@@ -433,7 +420,7 @@ Research Editor는 연구 카테고리, 연구 노드, 그 노드에 대응하�
 - 노드당 대응 연구 효과 정확히 1개, 고아 연구 효과 금지
 - 자동 수식과 생성 ID 일치
 
-원본 DB에 이미 있던 오류는 Console에 표시합니다. Export는 편집 때문에 새로 생기거나 개수가 늘어난 오류를 차단하며, 기존 오류를 몰래 일괄 보정하지 않습니다. 단, 연결된 node/effect ID 일치와 연구 효과 구간의 빈 행 제거는 Ruby exporter가 읽을 수 있는 저장 구조를 지키기 위한 정규화로 Export에 함께 반영합니다.
+원본 DB에 이미 있던 오류는 Console에 표시합니다. Export는 편집 때문에 새로 생기거나 개수가 늘어난 오류를 차단하며, 기존 오류를 몰래 일괄 보정하지 않습니다.
 
 ### Research Export
 
@@ -446,7 +433,7 @@ Research Editor는 연구 카테고리, 연구 노드, 그 노드에 대응하�
 - 두 번째 파일 교체가 실패하면 첫 번째 파일도 복구하며, 복구에 실패한 파일이 있으면 복구본을 삭제하지 않습니다.
 - `nexus_out_system`의 자동 수식 셀은 수식과 cached value를 함께 기록합니다. 저장 직후 XML 캐시값을 다시 읽어 Ruby exporter가 바로 사용할 값을 확인합니다.
 - `nexus_out_system`에서는 `nexus_node_category`, `nexus_node`만 편집합니다. 그 밖의 시트는 원본 수식과 cached value를 복원한 뒤 모든 데이터 셀을 원본과 비교하며, 하나라도 달라지면 대상 파일을 교체하기 전에 Export를 중단합니다.
-- `nexus_effect`에서는 연구 노드에 연결된 `nexus_effect` 행만 편집합니다. 삭제된 연구 효과는 셀만 비우지 않고 행 자체를 제거하며, 남은 연구 효과를 연속된 행으로 저장해 중간 빈 줄을 남기지 않습니다. 같은 워크북의 다른 시트 데이터도 동일한 방식으로 원본과 비교해 보존합니다.
+- `nexus_effect`에서는 연구 노드에 연결된 `nexus_effect` 행만 편집합니다. 같은 워크북의 다른 시트 데이터도 동일한 방식으로 원본과 비교해 보존합니다.
 - 로드한 뒤 다른 프로그램에서 원본 파일이 바뀌었다면 Export를 중단하고 Reload를 안내합니다. 오래된 화면 상태로 동료나 Excel의 변경을 덮어쓰지 않습니다.
 
 ## QA와 검증

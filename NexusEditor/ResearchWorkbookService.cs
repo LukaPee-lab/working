@@ -85,6 +85,8 @@ public static class ResearchWorkbookService
         Sanitize(context);
         AssociateNodeEffects(context);
         context.OriginalSnapshot = context.DeepClone(includeOriginalSnapshot: false);
+        SynchronizeLinkedEffectIds(context);
+        AssociateNodeEffects(context);
         return context;
     }
 
@@ -670,6 +672,44 @@ public static class ResearchWorkbookService
             for (var index = 0; index < Math.Min(nodes.Count, effects.Count); index++)
                 effects[index].LinkedNodeRowIdentity = nodes[index].RowIdentity;
         }
+    }
+
+    private static HashSet<string> SynchronizeLinkedEffectIds(ResearchWorkbookContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var affected = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var effectIdMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var linkedPairs = context.Nodes
+            .Select(node => (Node: node, Effect: context.FindEffect(node)))
+            .Where(pair => pair.Effect is not null)
+            .Select(pair => (pair.Node, Effect: pair.Effect!))
+            .ToList();
+
+        foreach (var (node, effect) in linkedPairs)
+        {
+            var expectedEffectId = GenerateEffectId(node.ThemeId, node.Category, node.Column, node.Row);
+            if (!Same(node.NexusEffectId, expectedEffectId))
+            {
+                node.NexusEffectId = expectedEffectId;
+                affected.Add(node.RowIdentity);
+            }
+
+            effect.LinkedNodeRowIdentity = node.RowIdentity;
+            if (Same(effect.Id, expectedEffectId))
+                continue;
+
+            var oldEffectId = effect.Id;
+            effect.Id = expectedEffectId;
+            effect.Memo = EffectMemoCoordinatePattern.Replace(
+                effect.Memo,
+                $"${{prefix}}{node.Column},{node.Row}");
+            if (NotBlank(oldEffectId))
+                effectIdMap[oldEffectId] = expectedEffectId;
+            affected.Add(effect.RowIdentity);
+        }
+
+        CascadeParentEffectIds(context.Effects, effectIdMap, affected);
+        return affected;
     }
 
     private static string NodeEffectGroupKey(ResearchNodeRow node) =>
@@ -2564,12 +2604,18 @@ public static class ResearchWorkbookService
         options ??= new ResearchSaveOptions();
         var working = context.DeepClone();
         Sanitize(working);
+        AssociateNodeEffects(working);
+        var synchronizedRows = SynchronizeLinkedEffectIds(working);
+        AssociateNodeEffects(working);
         var initialDiff = BuildDiff(working);
         if (!string.IsNullOrWhiteSpace(options.ChangedRowsExportId))
         {
             var selected = options.ExportRowIdentities is null
                 ? initialDiff
-                : initialDiff.Where(entry => options.ExportRowIdentities.Contains(entry.RowIdentity, StringComparer.OrdinalIgnoreCase)).ToList();
+                : initialDiff.Where(entry =>
+                        options.ExportRowIdentities.Contains(entry.RowIdentity, StringComparer.OrdinalIgnoreCase)
+                        || synchronizedRows.Contains(entry.RowIdentity))
+                    .ToList();
             ApplyExportId(working, selected, options.ChangedRowsExportId!);
         }
 
@@ -2767,37 +2813,39 @@ public static class ResearchWorkbookService
     private static void RewriteResearchEffects(IXLWorksheet sheet, ResearchWorkbookContext context)
     {
         var originalEffects = context.OriginalSnapshot?.Effects ?? [];
-        var currentByIdentity = context.Effects.ToDictionary(effect => effect.RowIdentity, StringComparer.OrdinalIgnoreCase);
-        var originalByIdentity = originalEffects.ToDictionary(effect => effect.RowIdentity, StringComparer.OrdinalIgnoreCase);
-
-        foreach (var original in originalEffects)
+        if (originalEffects.Count == 0)
         {
-            if (currentByIdentity.TryGetValue(original.RowIdentity, out var current))
-                WriteEffectRow(sheet, original.SourceRowNumber, current);
+            var appendStart = Math.Max(FirstDataRow, LastRow(sheet) + 1);
+            var templateRow = Math.Max(FirstDataRow, LastRow(sheet));
+            for (var index = 0; index < context.Effects.Count; index++)
+            {
+                var targetRow = appendStart + index;
+                if (targetRow > LastRow(sheet))
+                    CopyRowTemplate(sheet, templateRow, targetRow, EffectColumnCount);
+                WriteEffectRow(sheet, targetRow, context.Effects[index]);
+            }
+            return;
         }
 
-        var deletedRows = originalEffects
-            .Where(original => !currentByIdentity.ContainsKey(original.RowIdentity))
-            .Select(original => original.SourceRowNumber)
-            .Where(row => row >= FirstDataRow)
-            .Distinct()
-            .OrderByDescending(row => row)
-            .ToList();
-        foreach (var row in deletedRows)
-            sheet.Range(row, 1, row, EffectColumnCount).Clear(XLClearOptions.Contents);
-
-        var added = context.Effects
-            .Where(effect => !originalByIdentity.ContainsKey(effect.RowIdentity))
-            .ToList();
-        var templateRow = originalEffects.FirstOrDefault()?.SourceRowNumber ?? Math.Max(FirstDataRow, LastRow(sheet));
-        var reusableRows = new Queue<int>(deletedRows.OrderBy(row => row));
-        foreach (var effect in added)
+        var firstResearchRow = originalEffects.Min(effect => effect.SourceRowNumber);
+        var originalLastRow = LastRow(sheet);
+        var unrelatedRow = Enumerable.Range(firstResearchRow, originalLastRow - firstResearchRow + 1)
+            .FirstOrDefault(row =>
+                HasData(sheet, row, EffectColumnCount)
+                && !EffectIdCoordinatePattern.IsMatch(CellText(sheet.Cell(row, 1))));
+        if (unrelatedRow > 0)
         {
-            var targetRow = reusableRows.Count > 0 ? reusableRows.Dequeue() : LastRow(sheet) + 1;
-            if (targetRow > LastRow(sheet))
-                CopyRowTemplate(sheet, templateRow, targetRow, EffectColumnCount);
-            WriteEffectRow(sheet, targetRow, effect);
+            throw new InvalidDataException(
+                $"{EffectSheetName} 연구 효과 구간 {unrelatedRow}행에 다른 데이터가 있어 안전하게 행을 압축할 수 없습니다.");
         }
+
+        var requiredLastRow = firstResearchRow + context.Effects.Count - 1;
+        for (var row = originalLastRow + 1; row <= requiredLastRow; row++)
+            CopyRowTemplate(sheet, firstResearchRow, row, EffectColumnCount);
+        for (var index = 0; index < context.Effects.Count; index++)
+            WriteEffectRow(sheet, firstResearchRow + index, context.Effects[index]);
+
+        DeleteTrailingRows(sheet, firstResearchRow + context.Effects.Count, originalLastRow);
     }
 
     private static void WriteEffectRow(IXLWorksheet sheet, int row, ResearchEffectRow effect)
@@ -2826,6 +2874,7 @@ public static class ResearchWorkbookService
             expected.SourceEffectPath,
             effectPath,
             EffectSheetName);
+        VerifyCompactedResearchEffectRows(effectPath, expected.Effects.Count);
         var reloaded = Load(outSystemPath, effectPath);
         if (reloaded.Categories.Count != expected.Categories.Count
             || reloaded.Nodes.Count != expected.Nodes.Count
@@ -2834,6 +2883,18 @@ public static class ResearchWorkbookService
             throw new InvalidDataException(
                 $"저장 후 행 수가 달라졌습니다. category {expected.Categories.Count}/{reloaded.Categories.Count}, " +
                 $"node {expected.Nodes.Count}/{reloaded.Nodes.Count}, effect {expected.Effects.Count}/{reloaded.Effects.Count}");
+        }
+
+        var mismatchedEffect = reloaded.Effects.FirstOrDefault(effect =>
+        {
+            var linkedNode = reloaded.Nodes.FirstOrDefault(node =>
+                Same(node.RowIdentity, effect.LinkedNodeRowIdentity));
+            return linkedNode is null || !Same(effect.Id, linkedNode.NexusEffectId);
+        });
+        if (mismatchedEffect is not null)
+        {
+            throw new InvalidDataException(
+                $"저장 후 연구 효과와 연결 노드의 ID가 일치하지 않습니다: {mismatchedEffect.Id}");
         }
 
         var persistenceDifferences = ComparePersistedData(expected, reloaded);
@@ -2851,6 +2912,37 @@ public static class ResearchWorkbookService
         var newIssues = FindNewValidationErrors(reloadedIssues, expectedIssues, useRowIdentity: false);
         if (newIssues.Count > 0)
             throw new ResearchWorkbookValidationException(newIssues, "저장 과정에서 새로운 검증 오류가 발생했습니다.");
+    }
+
+    private static void VerifyCompactedResearchEffectRows(string effectPath, int expectedCount)
+    {
+        using var workbook = OpenWorkbookSnapshot(effectPath);
+        if (!workbook.Worksheets.TryGetWorksheet(EffectSheetName, out var sheet))
+            throw new InvalidDataException($"{EffectSheetName} 시트를 찾을 수 없습니다.");
+
+        var researchRows = Enumerable.Range(
+                FirstDataRow,
+                Math.Max(0, LastRow(sheet) - FirstDataRow + 1))
+            .Where(row => EffectIdCoordinatePattern.IsMatch(CellText(sheet.Cell(row, 1))))
+            .ToList();
+        if (researchRows.Count != expectedCount)
+        {
+            throw new InvalidDataException(
+                $"저장 후 연구 효과 행 수가 다릅니다: expected={expectedCount}, actual={researchRows.Count}");
+        }
+
+        if (researchRows.Count == 0)
+            return;
+
+        var firstRow = researchRows[0];
+        var lastRow = researchRows[^1];
+        if (lastRow - firstRow + 1 == researchRows.Count)
+            return;
+
+        var firstBlankRow = Enumerable.Range(firstRow, lastRow - firstRow + 1)
+            .First(row => !EffectIdCoordinatePattern.IsMatch(CellText(sheet.Cell(row, 1))));
+        throw new InvalidDataException(
+            $"저장된 {EffectSheetName} 연구 효과 구간에 빈 행이 남았습니다: {firstBlankRow}행");
     }
 
     private static void WriteFormulaCaches(string workbookPath, ResearchWorkbookContext context)
