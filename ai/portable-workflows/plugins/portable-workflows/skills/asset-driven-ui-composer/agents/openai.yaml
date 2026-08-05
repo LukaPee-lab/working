@@ -1,0 +1,4 @@
+interface:
+  display_name: "Asset-driven UI Composer"
+  short_description: "Compose UI mockups from approved local assets"
+  default_prompt: "Use $asset-driven-ui-composer to inventory approved UI assets and compose a traceable mockup."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Interactive Checklist Builder"
+  short_description: "Create portable single-file interactive checklists"
+  default_prompt: "Use $interactive-checklist-builder to turn this recurring process into a shareable interactive checklist."

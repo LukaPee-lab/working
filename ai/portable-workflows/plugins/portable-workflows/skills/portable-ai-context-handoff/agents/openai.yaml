@@ -1,0 +1,4 @@
+interface:
+  display_name: "Portable AI Context Handoff"
+  short_description: "Package sanitized context for a new AI session"
+  default_prompt: "Use $portable-ai-context-handoff to create a privacy-aware context handoff for a future AI session."

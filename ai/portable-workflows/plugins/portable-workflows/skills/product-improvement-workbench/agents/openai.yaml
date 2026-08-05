@@ -1,0 +1,4 @@
+interface:
+  display_name: "Product Improvement Workbench"
+  short_description: "Collect, structure, and publish product improvements"
+  default_prompt: "Use $product-improvement-workbench to organize improvement evidence and prepare a review-ready workbench."

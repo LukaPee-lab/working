@@ -1,0 +1,18 @@
+{
+  "name": "portable-workflows",
+  "version": "0.1.0",
+  "description": "Five company-neutral workflows for handoffs, improvement tracking, interactive checklists, AI context transfer, and asset-based UI composition.",
+  "author": {
+    "name": "Personal"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Portable Workflows",
+    "shortDescription": "Reusable, company-neutral productivity workflows.",
+    "longDescription": "Build evidence-backed handoffs, product-improvement workspaces, portable checklists, privacy-aware AI context packages, and UI mockups from approved local assets.",
+    "developerName": "Personal",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Help me choose and use the right Portable Workflows skill for this task."
+  }
+}
