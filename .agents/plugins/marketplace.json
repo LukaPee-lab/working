@@ -1,0 +1,20 @@
+{
+  "name": "personal",
+  "interface": {
+    "displayName": "Portable Workflows"
+  },
+  "plugins": [
+    {
+      "name": "portable-workflows",
+      "source": {
+        "source": "local",
+        "path": "./ai/portable-workflows/plugins/portable-workflows"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Evidence-backed Handoff Hub"
+  short_description: "Build traceable handoff hubs with source and QA checks"
+  default_prompt: "Use $evidence-backed-handoff-hub to turn verified project evidence into a self-contained handoff hub."
