@@ -11,7 +11,7 @@ schemas, or product-specific assets.
   machine does not install those folders automatically.
 - A shared workspace plugin is cloud-managed inside that ChatGPT workspace on
   supported plugin surfaces.
-- A private Git marketplace keeps one source of truth across machines. Each
+- A Git marketplace repository keeps one source of truth across machines. Each
   machine still installs the marketplace and keeps its own connector login and
   local permissions.
 
@@ -30,7 +30,7 @@ this package. On each Codex machine, add the containing repository as a
 marketplace source:
 
 ```powershell
-codex plugin marketplace add <owner>/<private-repository>
+codex plugin marketplace add <owner>/<repository>
 codex plugin marketplace list
 ```
 
